@@ -9,6 +9,16 @@ This file defines agent roles and handoff contracts for competition execution.
 
 ## Agent Roster
 
+## Team Assignments (Current)
+- Team member: Patrick
+- Shift coverage: Solo coverage (all active competition hours)
+- Role mapping:
+  - `solver-agent`: Patrick
+  - `eval-agent`: Patrick
+  - `redteam-agent`: Patrick
+  - `governance-agent`: Patrick
+  - `submission-agent`: Patrick
+
 ### 1) `solver-agent`
 Scope:
 - Implements baseline and advanced approaches.
