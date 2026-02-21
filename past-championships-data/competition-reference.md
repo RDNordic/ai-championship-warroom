@@ -1,40 +1,67 @@
 # Norwegian & Danish AI Championship - Competition Reference
 
-> Compiled from NORA.ai, Ambolt AI, DM-i-AI GitHub repos, Pioneer Centre articles, and web research.
+> Compiled from NORA.ai, Ambolt AI, DM-i-AI GitHub repos, Pioneer Centre articles, kode24.no, and web research.
 > Last updated: 2026-02-21
 
 ---
 
 ## 2026 Competition (THIS YEAR)
 
-**Event:** NMiAI - Norwegian AI Championship 2026
+**Event:** NM i KI / NMiAI - Norwegian AI Championship 2026
+**Organizer:** Astar Consulting (founded by Mikael Steenbuch and Erik Nymo Bohne, both 23, NTNU)
+**Partners:** Google, TEK Norge, NORA
 **Dates:** March 19-22, 2026 (4 days)
 **Locations:** Digital (remote allowed) + physical hubs in Oslo (Mesh Youngstorget) and Trondheim
 **Kickoff:** March 19 at 17:00 in Oslo; challenges released at 18:00
-**Prize pool:** NOK 1,000,000 (distributed among winning teams)
+**Expected participants:** ~1,000
+**Prize pool:** NOK 1,000,000
 **App:** https://app.ainm.no/
+**Source:** https://www.kode24.no/artikkel/nm-i-ki-arrangeres-for-forste-gang-for-alle-premiepotten-er-pa-1-million-kroner/253722
+
+### Challenge Categories (CONFIRMED)
+1. **Language models** (språkmodeller)
+2. **Computer vision**
+3. **Machine learning** (maskinlæring)
 
 ### Key Changes From 2025
-- **Open to everyone** — students, professionals, startups, and companies. Not student-only.
+- **Open to everyone** — students, professionals, retirees, companies. Not student-only.
 - **4-day format** (was 7 days in 2025).
 - **March timing** (was August in 2025).
 - **Massively increased prizes** — 1M NOK total (was 50K NOK in 2025).
 - **Free for individuals**, companies pay participation fee.
 - Physical hubs with livestreamed kickoff.
+- **~1,000 expected participants** (was 120 in 2025).
+
+### Organizer Statements (kode24.no interview)
+
+**On AI tooling (Erik Nymo Bohne):**
+> "The value of a coder in 2026 isn't syntax knowledge — it's infrastructure, code, and problem-solving. We expect top-ten finishers haven't written a single line of code themselves but relied almost entirely on language models. Otherwise, you're working too slowly."
+
+**On who can win (Steenbuch & Bohne):**
+> "We don't think a large consulting firm's AI team will necessarily win. One student alone could take victory. It's such a transformative time for AI — that's very possible."
+
+**On GDPR / security (Steenbuch):**
+> "Participants solve challenges on their own machines and send the answers back. They don't need to worry about security aspects. For actual production development, there are major concerns around GDPR — you need professionals who can serve as a human quality stamp."
+
+**On accessibility:**
+> "It's remarkable how far you can get with little tech insight. Use ChatGPT to guide you in understanding the problem and achieving solutions. Prompt coding becomes an important part of the competition itself."
 
 ### What We Know
 - 3 challenges released simultaneously at 18:00 on March 19.
-- Automated API scoring system with real-time leaderboard.
+- Categories: language models, computer vision, machine learning.
+- Automated API scoring with real-time leaderboard.
+- Solve on own machine, send answers back.
+- LLM-assisted coding explicitly expected and encouraged.
 - Supports common programming languages.
-- Compatible with APIs and ML tools.
 
 ### What We Don't Know Yet
-- Exact challenge types (revealed at kickoff).
+- Exact challenge specifications (revealed at kickoff).
 - Submission limits (single vs multiple attempts on eval set).
-- Inference constraints (cloud API ban? VRAM limits? Time limits?).
+- Inference constraints (cloud API ban? VRAM limits? Time limits per request?).
 - Whether same challenges as Danish version.
 - Top-N code verification requirement.
 - Exact scoring formula (F1-style points vs normalized placement).
+- Prize distribution structure (how 1M NOK is split).
 
 ---
 
@@ -46,7 +73,7 @@
 | 2023 | Denmark | API | ~1 week | Lunar Lander, AI Text Detector, Tumor Segmentation | Normalized 0-1 averaged |
 | 2024 | Denmark | API | 1 week | Traffic Simulation, Cell Classification, CT Inpainting | Normalized 0-1 averaged |
 | 2025 | Denmark + Norway (first) | API | 1 week (Aug 1-8) | Race Car, Emergency Healthcare RAG, Tumor Segmentation | F1-style points |
-| 2026 | Norway | API | 4 days (Mar 19-22) | TBD | TBD |
+| 2026 | Norway | API | 4 days (Mar 19-22) | Language Models, Computer Vision, Machine Learning | TBD |
 
 ---
 
