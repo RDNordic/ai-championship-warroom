@@ -9,28 +9,50 @@
 
 **Event:** NM i KI / NMiAI - Norwegian AI Championship 2026
 **Organizer:** Astar Consulting (founded by Mikael Steenbuch and Erik Nymo Bohne, both 23, NTNU)
-**Partners:** Google, TEK Norge, NORA
-**Dates:** March 19-22, 2026 (4 days)
-**Locations:** Digital (remote allowed) + physical hubs in Oslo (Mesh Youngstorget) and Trondheim
+**Partners:**
+- **Google** — infrastructure, Gen AI capabilities, and servers for participants
+- **KI Norge** (Norwegian Government AI Unit) — signed Letter of Intent
+- **NorgesGruppen Data** — main partner, defining one of the three challenges, co-sponsoring 400K NOK first prize
+- **DNV** — gold partner (energy, maritime, healthcare, digital infrastructure)
+- **Miles AS** — first gold partner (IT consulting)
+- **TEK Norge** — industry association for Norwegian tech
+- **NORA** — Norwegian AI Research Consortium
+- **ODA-Nettverk** — diversity in tech partner
+- **Mesh Community** — venue/hub partner
+
+**Dates:** March 19-22, 2026 (some sources say 19-23; treat as Thu evening → Sun)
+**Locations:** Digital (remote) + physical hubs in Oslo (Mesh Youngstorget), Trondheim (DIGS), and partner offices (Google, consulting firms)
 **Kickoff:** March 19 at 17:00 in Oslo; challenges released at 18:00
-**Expected participants:** ~1,000
-**Prize pool:** NOK 1,000,000
+**Expected participants:** ~1,000 (was 120 in 2025)
+**Prize pool:** NOK 1,000,000 (first prize: 400,000 NOK co-sponsored by NorgesGruppen Data)
 **App:** https://app.ainm.no/
-**Source:** https://www.kode24.no/artikkel/nm-i-ki-arrangeres-for-forste-gang-for-alle-premiepotten-er-pa-1-million-kroner/253722
+**Registration:** https://app.ainm.no/
+
+**Sources:**
+- https://www.kode24.no/artikkel/nm-i-ki-arrangeres-for-forste-gang-for-alle-premiepotten-er-pa-1-million-kroner/253722
+- https://www.shifter.no/nyheter/mangedobler-potten-legger-en-million-pa-bordet-for-a-kare-norges-beste-i-ai/440322
+- LinkedIn posts from Astar / NorgesGruppen Data / KI Norge
 
 ### Challenge Categories (CONFIRMED)
-1. **Language models** (språkmodeller)
-2. **Computer vision**
-3. **Machine learning** (maskinlæring)
+1. **Computer Vision**
+2. **Machine Learning**
+3. **NLP / Language Models** (språkmodeller)
+
+### Challenge Providers
+- **NorgesGruppen Data** is defining one of the three challenges based on a real business problem. NorgesGruppen has 46,000 employees, 2,000 stores, 17,000 products already using computer vision at checkout. This is very likely the **Computer Vision** challenge.
+- The other two challenge providers are not yet confirmed publicly.
 
 ### Key Changes From 2025
 - **Open to everyone** — students, professionals, retirees, companies. Not student-only.
+- **Students compete in a separate subcategory** but are also automatically entered in the main competition.
 - **4-day format** (was 7 days in 2025).
 - **March timing** (was August in 2025).
-- **Massively increased prizes** — 1M NOK total (was 50K NOK in 2025).
+- **Massively increased prizes** — 1M NOK total (was 50K NOK in 2025). First prize: 400K NOK.
 - **Free for individuals**, companies pay participation fee.
 - Physical hubs with livestreamed kickoff.
 - **~1,000 expected participants** (was 120 in 2025).
+- **Google providing infrastructure and servers** — participants may get cloud access.
+- **Government backing** via KI Norge.
 
 ### Organizer Statements (kode24.no interview)
 
@@ -48,20 +70,24 @@
 
 ### What We Know
 - 3 challenges released simultaneously at 18:00 on March 19.
-- Categories: language models, computer vision, machine learning.
+- Categories: Computer Vision, Machine Learning, NLP.
+- NorgesGruppen Data providing one challenge (likely CV — grocery/retail context).
 - Automated API scoring with real-time leaderboard.
 - Solve on own machine, send answers back.
 - LLM-assisted coding explicitly expected and encouraged.
+- Google providing infrastructure and servers to participants.
 - Supports common programming languages.
+- Students have a separate subcategory but also compete in main.
 
 ### What We Don't Know Yet
 - Exact challenge specifications (revealed at kickoff).
 - Submission limits (single vs multiple attempts on eval set).
 - Inference constraints (cloud API ban? VRAM limits? Time limits per request?).
-- Whether same challenges as Danish version.
+- Who provides the other two challenges (ML and NLP).
 - Top-N code verification requirement.
 - Exact scoring formula (F1-style points vs normalized placement).
-- Prize distribution structure (how 1M NOK is split).
+- Exact prize distribution beyond first place (400K NOK).
+- What Google infrastructure access looks like in practice.
 
 ---
 
