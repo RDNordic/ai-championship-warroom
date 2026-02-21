@@ -46,19 +46,20 @@ Source file: `past-championships-data/nora.ai-resources-faq.txt`
 3. Prepare governance evidence during development, not at the end.
 4. Treat each challenge as independent with fast branch isolation and clean handoffs.
 
-## Solo-Team Setup (Patrick)
+## Team Setup (4 Members)
 
-Single owner means role-cycling instead of parallel staffing:
-- Solver block: implement and instrument.
-- Eval block: run fixed seed regression and compare to prior checkpoint.
-- Governance block: update risk/checklist before any high-risk change.
-- Submission block: package and dry-run submission command.
+Full team enables parallel workstreams instead of role-cycling:
+- **Solver track** (Christopher lead, Patrick support): implement, instrument, iterate on models.
+- **Eval track** (Christopher lead, Oddar support): run fixed seed regression, compare checkpoints, automate scoring.
+- **Red team track** (Oddar lead, Andrew support): stress test edge cases, probe robustness, security review.
+- **Governance track** (Andrew lead, Patrick support): maintain compliance artifacts, risk register, AI Act checklist.
+- **Submission track** (Andrew lead, Patrick coordination, Oddar infra): package deliverables, dry-run submission, final gate checks.
 
-Recommended cadence:
-- 45m build
-- 15m eval
-- 10m governance update
-- 10m decision log + next task
+Recommended cadence per challenge:
+- Parallel build + eval streams (Christopher + Oddar)
+- Governance and compliance running continuously (Andrew + Patrick)
+- Sync checkpoints every 2 hours during active competition
+- Final submission gate requires Andrew (compliance) + Christopher (technical) sign-off
 
 ## Immediate Tasks (Do Today)
 
