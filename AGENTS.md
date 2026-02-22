@@ -110,3 +110,13 @@ Every handoff must include:
 1. Validity over novelty.
 2. Reproducibility over one-off wins.
 3. Compliance blockers override speed.
+
+## Repository Automation Agent
+
+### Codex (AI coding agent)
+- Scope: Implements requested repository changes, runs local verification, and reports concrete outcomes.
+- Guardrails: Does not override governance decisions; follows handoff contract and priority rules above.
+- Must output:
+- Files changed.
+- Repro/test commands run.
+- Results and known limitations.
