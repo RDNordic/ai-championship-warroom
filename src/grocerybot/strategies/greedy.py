@@ -30,10 +30,28 @@ class GreedyStrategy(Strategy):
         self._assigner = TaskAssigner()
         self._resolver = CollisionResolver()
         self._planner: LocalTripPlanner | None = None
+        self._last_positions: dict[int, Position] = {}
+        self._stuck_rounds: dict[int, int] = {}
 
     def on_game_start(self, state: GameState) -> None:
         self._grid = PassableGrid(state)
         self._planner = LocalTripPlanner(state, self._grid)
+        self._last_positions = {bot.id: bot.position for bot in state.bots}
+        self._stuck_rounds = {bot.id: 0 for bot in state.bots}
+
+    def _step_to_free_neighbor(
+        self,
+        bot_id: int,
+        pos: Position,
+        blocked: frozenset[Position],
+    ) -> MoveAction | None:
+        grid = self._grid
+        assert grid is not None
+        for nb in grid.neighbors(pos):
+            if nb in blocked:
+                continue
+            return MoveAction(bot=bot_id, action=direction_for_move(pos, nb))
+        return None
 
     def _move_away_from_dropoff(
         self,
@@ -71,6 +89,13 @@ class GreedyStrategy(Strategy):
 
         snapshot = self._order_tracker.snapshot(state)
         bots = sorted(state.bots, key=lambda b: b.id)
+        current_positions = {bot.id: bot.position for bot in bots}
+        for bot in bots:
+            prev = self._last_positions.get(bot.id)
+            if prev is None or prev != bot.position:
+                self._stuck_rounds[bot.id] = 0
+            else:
+                self._stuck_rounds[bot.id] = self._stuck_rounds.get(bot.id, 0) + 1
         if snapshot is None:
             return [WaitAction(bot=bot.id) for bot in bots]
 
@@ -79,18 +104,18 @@ class GreedyStrategy(Strategy):
             bot_id for bot_id, task in tasks.items()
             if task.kind == "drop_off"
         }
-        occupied_by_non_seeker = any(
-            bot.position == state.drop_off and bot.id not in dropoff_seekers
-            for bot in bots
+        seeker_cells = frozenset(
+            b.position for b in bots if b.id in dropoff_seekers
         )
         proposed: dict[int, BotAction] = {}
-        claimed_cells: set[Position] = set()
-        spawn = (state.grid.width - 2, state.grid.height - 2)
 
-        for idx, bot in enumerate(bots):
+        for bot in bots:
             task = tasks.get(bot.id, AssignedTask(bot.id, "wait"))
-            higher_current = {b.position for b in bots[idx + 1:]}
-            blocked = frozenset((claimed_cells | higher_current) - {bot.position, spawn})
+            occupied_now = {
+                other.position for other in bots
+                if other.id != bot.id and other.position != bot.position
+            }
+            blocked = frozenset(occupied_now)
 
             if task.kind == "pick":
                 action = planner.next_pick_action(
@@ -115,38 +140,32 @@ class GreedyStrategy(Strategy):
                 and dist_to_drop <= 1
                 and (isinstance(action, WaitAction) or next_pos == state.drop_off)
             )
-            is_stuck_seeker = (
-                bot.id in dropoff_seekers
-                and occupied_by_non_seeker
-                and dist_to_drop == 1
-                and isinstance(action, WaitAction)
-            )
             if is_blocker:
                 min_distance = 1 if bot.position == state.drop_off else 2
                 step = self._move_away_from_dropoff(
                     bot.id,
                     bot.position,
                     state.drop_off,
-                    blocked,
+                    blocked | seeker_cells,
                     min_distance=min_distance,
                 )
                 if step is not None:
                     action = step
                     next_pos = next_position_for_action(bot.position, action)
-            elif is_stuck_seeker:
-                step = self._move_away_from_dropoff(
-                    bot.id,
-                    bot.position,
-                    state.drop_off,
-                    blocked,
-                    min_distance=2,
+
+            if (
+                isinstance(action, WaitAction)
+                and task.kind in {"pick", "drop_off"}
+                and self._stuck_rounds.get(bot.id, 0) >= 3
+            ):
+                nudge = self._step_to_free_neighbor(
+                    bot.id, bot.position, blocked,
                 )
-                if step is not None:
-                    action = step
-                    next_pos = next_position_for_action(bot.position, action)
+                if nudge is not None:
+                    action = nudge
 
             proposed[bot.id] = action
-            if next_pos != spawn:
-                claimed_cells.add(next_pos)
 
-        return self._resolver.resolve(state, proposed)
+        resolved = self._resolver.resolve(state, proposed)
+        self._last_positions = current_positions
+        return resolved

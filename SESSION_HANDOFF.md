@@ -2,37 +2,48 @@
 
 ## Checkpoint
 
-M3 two-phase TaskAssigner fix implemented and tested. Medium score improved 2→11 (300 rounds, 6 items, 1 order). Further bottleneck analysis needed.
+M3 traffic-control v1 is implemented and validated; Medium score improved from 2 to 19 (300 rounds, 9 items, 2 orders), but throughput is still below target.
 
 ## Latest Work
 
-- Confirmed Easy theoretical max = 118; memory_solo already optimal (no room to improve via memory).
-- Diagnosed M3 TaskAssigner starvation bug: single-pass bot-ID-order assignment let empty bots "reserve" active items via pickup before bots already carrying those items were evaluated.
-- Implemented two-phase assignment in `planner.py` `TaskAssigner.assign()`:
-  - Phase A: scan ALL bots for carried active items → assign `drop_off` first
-  - Phase B: assign pickups for remaining uncovered active needs (bot-ID order)
-- Added test `test_carried_active_items_get_dropoff_regardless_of_id` verifying Bot 2 with matching items gets `drop_off` even though Bot 0/1 are processed first.
-- Quality gates: 110 tests pass, ruff clean.
+- Implemented stronger traffic resolution in `planner.py` `CollisionResolver`:
+  - best-effort subset selection of proposed moves
+  - exact server-style simulation for occupancy blocking
+  - rotating per-round fairness tie-break (not always bot-id first)
+- Removed drop-off pathing exception (`go_drop_off` now respects blocked cells).
+- Refactored `greedy.py` to remove one-tick `claimed_cells` starvation behavior:
+  - generate per-bot desired actions
+  - resolve contention in resolver
+  - add simple anti-stall nudge when blocked for several rounds
+- Added resolver tests for:
+  - following into vacated cells
+  - spawn not being exempt after round 0
+  - round-rotating tie-break behavior
+- Quality gates currently pass:
+  - `python -m pytest` (113 passed)
+  - `python -m ruff check` clean
+  - `python -m mypy src/grocerybot/planner.py src/grocerybot/strategies/greedy.py` clean
+- Latest observed Medium run: Score 19, Items 9, Orders 2.
 
 ## Known Issues
 
-- Medium score = 11 (was 2) — still very low. Latest replay: `game_20260301_115034.jsonl`.
-- Preview items not yet assigned in Phase B (only active needs covered).
-- Possible remaining bottlenecks: excessive wait assignments, collision-resolver over-constraining movement, inefficient pickup routing.
+- Medium still underperforms expected multi-bot throughput.
+- No persistent bot intents; bots can still thrash/replan each tick.
+- Drop-off area control is still reactive and can waste rounds.
 
 ## Next Steps
 
-1. Analyze replay `game_20260301_115034.jsonl` for remaining bottlenecks:
-   - Wait ratio per bot (how many rounds wasted)
-   - Whether bots get stuck in long wait streaks
-   - Whether collision resolver is downgrading too many moves to waits
-   - Whether pickup routing is inefficient (long paths when shorter exist)
-2. Add preview pickup assignment in Phase B for bots with no active work.
-3. Consider whether `OrderTracker.snapshot()` should account for bot inventories when computing `active_needed` (currently it doesn't — `TaskAssigner` handles it).
-4. Re-run Medium and iterate on score.
+1. Implement v2 persistent intents per bot (`pick`, `deliver`, `park`) and only replan on invalidation/arrival/order change.
+2. Add blocked-counter recovery policy:
+   - if blocked N ticks, reroute or step aside deterministically.
+3. Add explicit drop-off parking/staging cells and grant delivery-intent bots right-of-way in contention.
+4. Replay-analysis pass on latest Medium game to measure:
+   - wait ratio per bot
+   - longest blocked streak
+   - action-to-state success rate (attempted move vs actual move).
 
 ## Restart Prompt
 
 ```text
-Read CONTEXT.md and SESSION_HANDOFF.md. M3 greedy strategy scores 11 on Medium after two-phase TaskAssigner fix. Analyze replay game_20260301_115034.jsonl to find remaining bottlenecks (wait ratios, stuck periods, collision downgrades, routing inefficiency). Then implement fixes and re-run.
+Read CONTEXT.md and SESSION_HANDOFF.md. M3 v1 traffic resolver is in and Medium is now 19, but still low. Implement v2 control: persistent intents, blocked-counter recovery, and explicit drop-off parking/right-of-way. Then rerun Medium and compare bot wait/utilization metrics against prior replay.
 ```

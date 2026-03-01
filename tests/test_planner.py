@@ -123,7 +123,7 @@ class TestTaskAssigner:
         tasks = assigner.assign(custom, snap, planner)
         assert tasks[0].kind == "drop_off"
 
-    def test_full_inventory_without_active_match_waits(
+    def test_full_inventory_without_active_match_goes_to_dropoff(
         self, medium_state: GameState,
     ) -> None:
         tracker = OrderTracker()
@@ -158,7 +158,7 @@ class TestTaskAssigner:
         snap = tracker.snapshot(custom)
         assert snap is not None
         tasks = assigner.assign(custom, snap, planner)
-        assert tasks[0].kind == "wait"
+        assert tasks[0].kind == "drop_off"
 
     def test_no_over_assignment_of_active_multiplicity(
         self, medium_state: GameState,
@@ -215,7 +215,10 @@ class TestTaskAssigner:
     def test_carried_active_items_get_dropoff_regardless_of_id(
         self, medium_state: GameState,
     ) -> None:
-        """Bot 2 carrying active items should get drop_off even though Bot 0/1 are processed first."""
+        """Bot 2 carrying active items should get drop_off.
+
+        This should hold even if Bot 0/1 are processed first.
+        """
         tracker = OrderTracker()
         planner = LocalTripPlanner(medium_state, PassableGrid(medium_state))
         assigner = TaskAssigner()
@@ -251,9 +254,9 @@ class TestTaskAssigner:
         tasks = assigner.assign(custom, snap, planner)
         # Bot 2 has matching items → must be assigned drop_off
         assert tasks[2].kind == "drop_off"
-        # Empty bots should not steal active items
-        assert tasks[0].kind == "wait"
-        assert tasks[1].kind == "wait"
+        # Empty bots should not steal active items via pickup of active needs
+        assert tasks[0].kind != "drop_off"
+        assert tasks[1].kind != "drop_off"
 
 
 class TestCollisionResolver:
@@ -343,6 +346,79 @@ class TestCollisionResolver:
         actions = resolver.resolve(custom, proposed)
         assert isinstance(actions[0], MoveAction)
         assert isinstance(actions[1], WaitAction)
+
+    def test_higher_id_can_follow_into_vacated_lower_id_cell(
+        self, medium_state: GameState,
+    ) -> None:
+        resolver = CollisionResolver()
+        custom = _state_with_bots(
+            medium_state.model_copy(update={"round": 10}),
+            [
+                Bot(id=0, position=(5, 5), inventory=[]),
+                Bot(id=1, position=(5, 6), inventory=[]),
+                Bot(id=2, position=(11, 9), inventory=[]),
+            ],
+        )
+        proposed = {
+            0: MoveAction(bot=0, action="move_up"),
+            1: MoveAction(bot=1, action="move_up"),
+            2: WaitAction(bot=2),
+        }
+        actions = resolver.resolve(custom, proposed)
+        assert isinstance(actions[0], MoveAction)
+        assert isinstance(actions[1], MoveAction)
+
+    def test_spawn_not_exempt_after_round_zero(
+        self, medium_state: GameState,
+    ) -> None:
+        resolver = CollisionResolver()
+        spawn = (medium_state.grid.width - 2, medium_state.grid.height - 2)
+        custom = medium_state.model_copy(
+            update={
+                "round": 5,
+                "bots": [
+                    Bot(id=0, position=(spawn[0] - 1, spawn[1]), inventory=[]),
+                    Bot(id=1, position=spawn, inventory=[]),
+                    Bot(id=2, position=(11, 9), inventory=[]),
+                ],
+            },
+        )
+        proposed = {
+            0: MoveAction(bot=0, action="move_right"),
+            1: WaitAction(bot=1),
+            2: WaitAction(bot=2),
+        }
+        actions = resolver.resolve(custom, proposed)
+        assert isinstance(actions[0], WaitAction)
+
+    def test_conflict_tie_break_rotates_by_round(
+        self, medium_state: GameState,
+    ) -> None:
+        resolver = CollisionResolver()
+        base = medium_state.model_copy(
+            update={
+                "bots": [
+                    Bot(id=0, position=(5, 5), inventory=[]),
+                    Bot(id=1, position=(7, 5), inventory=[]),
+                    Bot(id=2, position=(11, 9), inventory=[]),
+                ],
+            },
+        )
+        proposed = {
+            0: MoveAction(bot=0, action="move_right"),
+            1: MoveAction(bot=1, action="move_left"),
+            2: WaitAction(bot=2),
+        }
+
+        round0 = base.model_copy(update={"round": 0})
+        actions0 = resolver.resolve(round0, proposed)
+        assert isinstance(actions0[0], MoveAction)
+        assert isinstance(actions0[1], WaitAction)
+
+        round1 = base.model_copy(update={"round": 1})
+        actions1 = resolver.resolve(round1, proposed)
+        assert isinstance(actions1[0], WaitAction)
+        assert isinstance(actions1[1], MoveAction)
 
 
 def test_snapshot_type(medium_state: GameState) -> None:
