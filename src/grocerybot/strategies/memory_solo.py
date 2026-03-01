@@ -1,16 +1,18 @@
 """Memory-enhanced solo bot strategy.
 
 First run of the day: discovery mode (behaves like solo.py, saves order history).
-Subsequent runs: optimized mode (pre-planned routes, batch pickups, preview pre-pick).
+Subsequent runs: optimized mode (uses memory for next-order prediction).
 """
 
 from __future__ import annotations
+
+from functools import cache
+from itertools import combinations
 
 from grocerybot.daily_memory import (
     DailySnapshot,
     OrderRecord,
     build_snapshot_from_state,
-    get_item_positions,
     load_snapshot,
     merge_orders,
     save_snapshot,
@@ -35,6 +37,8 @@ from grocerybot.models import (
 from grocerybot.strategies.base import Strategy
 
 Position = tuple[int, int]
+PREVIEW_DETOUR_BUDGET = 2
+INF = 999999
 
 
 def _remaining_needed(order: Order, inventory: list[str]) -> list[str]:
@@ -63,26 +67,76 @@ def _get_preview_order(state: GameState) -> Order | None:
     return None
 
 
+def _remove_one(items: tuple[str, ...], item: str) -> tuple[str, ...]:
+    idx = items.index(item)
+    return items[:idx] + items[idx + 1:]
+
+
+def _pick_multiset_combinations(
+    items: list[str],
+    k: int,
+) -> set[tuple[str, ...]]:
+    """Unique k-sized multiset combinations from a list with duplicates."""
+    if k <= 0:
+        return {()}
+    if k > len(items):
+        return set()
+    result: set[tuple[str, ...]] = set()
+    for idxs in combinations(range(len(items)), k):
+        combo = tuple(sorted(items[i] for i in idxs))
+        result.add(combo)
+    return result
+
+
+def _consume_needed(
+    needed: list[str],
+    picked: tuple[str, ...],
+) -> tuple[int, list[str], list[str]]:
+    """Consume picked items against needed multiset.
+
+    Returns:
+      matched_count, remaining_needed, picked_excess
+    """
+    remaining = list(needed)
+    excess: list[str] = []
+    matched = 0
+    for item in picked:
+        if item in remaining:
+            remaining.remove(item)
+            matched += 1
+        else:
+            excess.append(item)
+    return matched, remaining, excess
+
+
 class MemorySoloStrategy(Strategy):
-    """Single-bot strategy with daily memory for route optimization."""
+    """Single-bot strategy with memory + exact short-horizon trip planning."""
 
     def __init__(self, level: str = "easy") -> None:
         self._level = level
         self._grid: PassableGrid | None = None
         self._dropoff_dist: dict[Position, int] = {}
+        self._type_to_adjs: dict[str, list[Position]] = {}
+
         self._snap: DailySnapshot | None = None
         self._seen_orders: list[OrderRecord] = []
         self._has_memory = False
+        self._order_id_to_idx: dict[str, int] = {}
+
         self._dist_cache: dict[Position, dict[Position, int]] = {}
 
     def on_game_start(self, state: GameState) -> None:
         self._grid = PassableGrid(state)
         self._dropoff_dist = bfs_distance_map(state.drop_off, self._grid)
+        self._type_to_adjs = self._build_type_to_adjs(state, self._grid)
 
         snap = load_snapshot(self._level)
         if snap is not None:
             self._snap = snap
             self._has_memory = True
+            self._order_id_to_idx = {
+                o.id: i for i, o in enumerate(snap.orders)
+            }
         else:
             self._snap = build_snapshot_from_state(state, self._level)
             self._has_memory = False
@@ -111,36 +165,51 @@ class MemorySoloStrategy(Strategy):
         needed_active = _remaining_needed(active, inventory)
         preview = _get_preview_order(state)
         needed_preview = _remaining_needed(preview, inventory) if preview else []
+        if not needed_preview and self._has_memory:
+            needed_preview = self._get_next_order_items(active, inventory)
 
-        # Phase 1: Inventory full → deliver
+        # Inventory hard-cap always forces delivery.
         if len(inventory) >= 3:
             return [self._go_drop_off(bot.id, pos, state.drop_off, grid)]
 
-        # Phase 2: All active items collected → deliver
-        # On the way, opportunistically grab adjacent preview items
-        if not needed_active and inventory:
-            if needed_preview and len(inventory) < 3:
-                opp = self._opportunistic_pick(
-                    state, bot.id, pos, needed_preview, grid,
-                )
-                if opp is not None:
-                    return [opp]
-            return [self._go_drop_off(bot.id, pos, state.drop_off, grid)]
-
-        # Phase 3: Plan what to pick up this trip
+        # Exact trip planner: choose best pickup multiset, then execute first step.
         trip = self._plan_trip(
-            pos, inventory, needed_active, needed_preview, grid,
+            pos,
+            inventory,
+            needed_active,
+            needed_preview,
+            grid,
         )
         if trip:
-            action = self._go_pick_item(state, bot.id, pos, trip, grid)
+            action = self._go_pick_planned_item(
+                state,
+                bot.id,
+                pos,
+                trip,
+                grid,
+            )
             if action is not None:
                 return [action]
 
-        # Phase 4: Have items but can't find more → deliver
         if inventory:
             return [self._go_drop_off(bot.id, pos, state.drop_off, grid)]
 
         return [WaitAction(bot=bot.id)]
+
+    def _build_type_to_adjs(
+        self,
+        state: GameState,
+        grid: PassableGrid,
+    ) -> dict[str, list[Position]]:
+        """Precompute all walkable pickup cells per item type."""
+        per_type: dict[str, set[Position]] = {}
+        for item in state.items:
+            for adj in adjacent_walkable(item.position, grid):
+                per_type.setdefault(item.type, set()).add(adj)
+        return {
+            item_type: sorted(adjs)
+            for item_type, adjs in per_type.items()
+        }
 
     # ------------------------------------------------------------------
     # Accumulate orders for memory
@@ -158,6 +227,34 @@ class MemorySoloStrategy(Strategy):
                 )
 
     # ------------------------------------------------------------------
+    # Memory-based next-order prediction
+    # ------------------------------------------------------------------
+
+    def _get_next_order_items(
+        self,
+        active: Order,
+        inventory: list[str],
+    ) -> list[str]:
+        """Predict items for the next order (preview) from memory."""
+        if self._snap is None:
+            return []
+
+        active_idx = self._order_id_to_idx.get(active.id)
+        if active_idx is None:
+            return []
+
+        next_idx = active_idx + 1
+        orders = self._snap.orders
+        if next_idx >= len(orders):
+            return []
+
+        next_items = list(orders[next_idx].items_required)
+        for inv_item in inventory:
+            if inv_item in next_items:
+                next_items.remove(inv_item)
+        return next_items
+
+    # ------------------------------------------------------------------
     # Trip planning
     # ------------------------------------------------------------------
 
@@ -168,95 +265,239 @@ class MemorySoloStrategy(Strategy):
         needed_active: list[str],
         needed_preview: list[str],
         grid: PassableGrid,
-    ) -> set[str]:
-        """Decide item types to collect this trip. Active first, then preview."""
+    ) -> tuple[str, ...]:
+        """Choose pickup multiset using exact route costs (not nearest-first)."""
         space = 3 - len(inventory)
+        if space <= 0:
+            return ()
+
+        candidates = self._generate_trip_candidates(
+            space=space,
+            needed_active=needed_active,
+            needed_preview=needed_preview,
+        )
+        if not candidates:
+            return ()
+
+        if needed_active:
+            return self._choose_best_active_candidate(
+                pos=pos,
+                candidates=candidates,
+                needed_active=needed_active,
+                needed_preview=needed_preview,
+                grid=grid,
+            )
+        return self._choose_best_preview_candidate(
+            pos=pos,
+            candidates=candidates,
+            needed_preview=needed_preview,
+            grid=grid,
+        )
+
+    def _generate_trip_candidates(
+        self,
+        space: int,
+        needed_active: list[str],
+        needed_preview: list[str],
+    ) -> set[tuple[str, ...]]:
+        """Generate feasible pickup multisets for this trip."""
         if space <= 0:
             return set()
 
-        # Order active items by nearest-neighbor from current position
-        ordered = self._nearest_neighbor_order(pos, needed_active, grid)
-        trip = ordered[:space]
+        candidates: set[tuple[str, ...]] = set()
 
-        # Fill remaining space with preview items
-        remaining_space = space - len(trip)
-        if remaining_space > 0 and needed_preview:
-            preview_ordered = self._nearest_neighbor_order(
-                pos, needed_preview, grid,
+        if needed_active:
+            # Active doesn't fit in this trip: choose best subset of size=space.
+            if len(needed_active) >= space:
+                return _pick_multiset_combinations(needed_active, space)
+
+            # Active fits: include all active, optionally fill with preview.
+            base = tuple(sorted(needed_active))
+            candidates.add(base)
+            remaining_space = space - len(needed_active)
+            for k in range(1, remaining_space + 1):
+                for preview_combo in _pick_multiset_combinations(
+                    needed_preview, k,
+                ):
+                    candidates.add(tuple(sorted(base + preview_combo)))
+            return candidates
+
+        # Active already satisfied by inventory: optional preview detour.
+        candidates.add(())
+        for k in range(1, space + 1):
+            candidates.update(
+                _pick_multiset_combinations(needed_preview, k),
             )
-            trip.extend(preview_ordered[:remaining_space])
+        return candidates
 
-        return set(trip)
+    def _choose_best_active_candidate(
+        self,
+        pos: Position,
+        candidates: set[tuple[str, ...]],
+        needed_active: list[str],
+        needed_preview: list[str],
+        grid: PassableGrid,
+    ) -> tuple[str, ...]:
+        """Choose active-focused trip by score efficiency per action."""
+        best: tuple[str, ...] = ()
+        best_key: tuple[int, int, int] | None = None
 
-    def _nearest_neighbor_order(
+        for cand in sorted(candidates):
+            route_cost, _, _ = self._best_route_for_pickups(pos, cand, grid)
+            if route_cost >= INF:
+                continue
+
+            active_matched, active_remaining, excess = _consume_needed(
+                needed_active,
+                cand,
+            )
+            active_complete = not active_remaining
+
+            preview_matched = 0
+            if active_complete and excess:
+                preview_matched, _, _ = _consume_needed(
+                    needed_preview,
+                    tuple(excess),
+                )
+
+            score_est = active_matched + preview_matched
+            if active_complete:
+                score_est += 5
+            if score_est <= 0:
+                continue
+
+            # Higher is better: score per route action, then raw score, then lower cost.
+            eff = (score_est * 1000) // route_cost
+            key = (eff, score_est, -route_cost)
+            if best_key is None or key > best_key:
+                best_key = key
+                best = cand
+
+        return best
+
+    def _choose_best_preview_candidate(
+        self,
+        pos: Position,
+        candidates: set[tuple[str, ...]],
+        needed_preview: list[str],
+        grid: PassableGrid,
+    ) -> tuple[str, ...]:
+        """Choose preview detours only when extra travel is bounded."""
+        direct_to_drop = self._dropoff_dist.get(pos, INF)
+        if direct_to_drop >= INF:
+            return ()
+        direct_cost = direct_to_drop + 1
+
+        best: tuple[str, ...] = ()
+        best_key: tuple[int, int, int] | None = None
+
+        for cand in sorted(candidates):
+            if not cand:
+                continue
+
+            route_cost, _, _ = self._best_route_for_pickups(pos, cand, grid)
+            if route_cost >= INF:
+                continue
+
+            preview_matched, _, _ = _consume_needed(needed_preview, cand)
+            if preview_matched <= 0:
+                continue
+
+            extra_cost = route_cost - direct_cost
+            if extra_cost > PREVIEW_DETOUR_BUDGET + preview_matched:
+                continue
+
+            eff = (preview_matched * 1000) // max(extra_cost, 1)
+            key = (eff, preview_matched, -extra_cost)
+            if best_key is None or key > best_key:
+                best_key = key
+                best = cand
+
+        return best
+
+    def _best_route_for_pickups(
         self,
         start: Position,
-        item_types: list[str],
+        pickups: tuple[str, ...],
         grid: PassableGrid,
-    ) -> list[str]:
-        """Reorder item types by nearest-neighbor greedy from start."""
-        if not item_types:
-            return []
+    ) -> tuple[int, str | None, Position | None]:
+        """Exact shortest route cost for `start -> pickups -> drop_off`.
 
-        remaining = list(item_types)
-        result: list[str] = []
-        current = start
+        Returns:
+          (total_cost, first_item_type, first_pick_position)
+        """
+        remaining = tuple(sorted(pickups))
+        if not remaining:
+            d = self._dropoff_dist.get(start, INF)
+            if d >= INF:
+                return INF, None, None
+            return d + 1, None, None
 
-        while remaining:
-            best_type: str | None = None
-            best_dist = 999999
-            best_adj: Position | None = None
+        @cache
+        def tail_cost(current: Position, rem: tuple[str, ...]) -> int:
+            if not rem:
+                d_drop = self._dropoff_dist.get(current, INF)
+                if d_drop >= INF:
+                    return INF
+                return d_drop + 1
 
-            for itype in remaining:
-                adj_pos = self._find_nearest_shelf_adj(
-                    current, itype, grid,
-                )
-                if adj_pos is None:
+            best = INF
+            seen_types: set[str] = set()
+            for item_type in rem:
+                if item_type in seen_types:
                     continue
-                dist = self._cached_dist(adj_pos, current, grid)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_type = itype
-                    best_adj = adj_pos
+                seen_types.add(item_type)
+                next_rem = _remove_one(rem, item_type)
+                for adj in self._type_to_adjs.get(item_type, []):
+                    d = self._cached_dist(adj, current, grid)
+                    if d >= INF:
+                        continue
+                    rest = tail_cost(adj, next_rem)
+                    if rest >= INF:
+                        continue
+                    total = d + 1 + rest  # move + pick + rest
+                    if total < best:
+                        best = total
+            return best
 
-            if best_type is None:
-                break
-            result.append(best_type)
-            remaining.remove(best_type)
-            if best_adj is not None:
-                current = best_adj
+        best_total = INF
+        best_first_type: str | None = None
+        best_first_adj: Position | None = None
 
-        return result
+        seen_types: set[str] = set()
+        for item_type in remaining:
+            if item_type in seen_types:
+                continue
+            seen_types.add(item_type)
 
-    def _find_nearest_shelf_adj(
-        self,
-        from_pos: Position,
-        item_type: str,
-        grid: PassableGrid,
-    ) -> Position | None:
-        """Find the nearest walkable cell adjacent to any shelf of item_type."""
-        if self._snap is None:
-            return None
+            next_rem = _remove_one(remaining, item_type)
+            for adj in self._type_to_adjs.get(item_type, []):
+                d = self._cached_dist(adj, start, grid)
+                if d >= INF:
+                    continue
+                rest = tail_cost(adj, next_rem)
+                if rest >= INF:
+                    continue
+                total = d + 1 + rest
 
-        positions = get_item_positions(self._snap, item_type)
-        best_adj: Position | None = None
-        best_dist = 999999
+                tie_key = (item_type, adj[0], adj[1])
+                if best_first_adj is None or best_first_type is None:
+                    best_tie_key = ("~", INF, INF)
+                else:
+                    best_tie_key = (
+                        best_first_type,
+                        best_first_adj[0],
+                        best_first_adj[1],
+                    )
 
-        for shelf_pos in positions:
-            for adj in adjacent_walkable(shelf_pos, grid):
-                d = self._cached_dist(adj, from_pos, grid)
-                if d < best_dist:
-                    best_dist = d
-                    best_adj = adj
-        return best_adj
+                if total < best_total or (
+                    total == best_total and tie_key < best_tie_key
+                ):
+                    best_total = total
+                    best_first_type = item_type
+                    best_first_adj = adj
 
-    def _cached_dist(
-        self, goal: Position, start: Position, grid: PassableGrid,
-    ) -> int:
-        """BFS distance from start to goal, with caching."""
-        if goal not in self._dist_cache:
-            self._dist_cache[goal] = bfs_distance_map(goal, grid)
-        return self._dist_cache[goal].get(start, 999999)
+        return best_total, best_first_type, best_first_adj
 
     # ------------------------------------------------------------------
     # Navigation actions
@@ -278,54 +519,58 @@ class MemorySoloStrategy(Strategy):
             )
         return WaitAction(bot=bot_id)
 
-    def _go_pick_item(
+    def _go_pick_planned_item(
         self,
         state: GameState,
         bot_id: int,
         pos: Position,
-        wanted_types: set[str],
+        pickups: tuple[str, ...],
         grid: PassableGrid,
     ) -> BotAction | None:
-        """Navigate to the nearest item of any wanted type and pick it up."""
-        candidates: list[tuple[int, str, Position, list[Position]]] = []
-        for item in state.items:
-            if item.type not in wanted_types:
-                continue
-            for adj in adjacent_walkable(item.position, grid):
-                path = astar(pos, adj, grid)
-                if path:
-                    candidates.append((len(path), item.id, adj, path))
-
-        if not candidates:
+        """Execute the first step of the planned pickup route."""
+        _, item_type, target = self._best_route_for_pickups(pos, pickups, grid)
+        if item_type is None or target is None:
             return None
 
-        candidates.sort()
-        _, item_id, target, path = candidates[0]
-
         if pos == target:
+            item_id = self._pick_item_id_for_type(state, pos, item_type, grid)
+            if item_id is None:
+                return None
             return PickUpAction(bot=bot_id, action="pick_up", item_id=item_id)
-        if len(path) > 1:
+
+        path = astar(pos, target, grid)
+        if path and len(path) > 1:
             return MoveAction(
                 bot=bot_id, action=direction_for_move(pos, path[1]),
             )
         return None
 
-    def _opportunistic_pick(
+    def _pick_item_id_for_type(
         self,
         state: GameState,
-        bot_id: int,
         pos: Position,
-        needed_preview: list[str],
+        item_type: str,
         grid: PassableGrid,
-    ) -> BotAction | None:
-        """Grab a preview item only if we're already adjacent to its shelf."""
-        needed_set = set(needed_preview)
+    ) -> str | None:
+        """Pick a concrete item_id of `item_type` adjacent to current pos."""
+        candidates: list[str] = []
         for item in state.items:
-            if item.type not in needed_set:
+            if item.type != item_type:
                 continue
-            adj = adjacent_walkable(item.position, grid)
-            if pos in adj:
-                return PickUpAction(
-                    bot=bot_id, action="pick_up", item_id=item.id,
-                )
-        return None
+            if pos in adjacent_walkable(item.position, grid):
+                candidates.append(item.id)
+        if not candidates:
+            return None
+        candidates.sort()
+        return candidates[0]
+
+    def _cached_dist(
+        self,
+        goal: Position,
+        start: Position,
+        grid: PassableGrid,
+    ) -> int:
+        """BFS distance from start to goal, with caching."""
+        if goal not in self._dist_cache:
+            self._dist_cache[goal] = bfs_distance_map(goal, grid)
+        return self._dist_cache[goal].get(start, INF)
