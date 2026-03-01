@@ -16,9 +16,9 @@ import websockets
 
 
 load_dotenv()
-raw = (os.getenv("GROCERY_BOT_TOKEN") or "").strip()
+raw = (os.getenv("GROCERY_BOT_TOKEN_EXPERT") or "").strip()
 if not raw:
-    raise SystemExit("Missing GROCERY_BOT_TOKEN in .env")
+    raise SystemExit("Missing GROCERY_BOT_TOKEN_EXPERT in .env")
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
