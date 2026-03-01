@@ -2,38 +2,33 @@
 
 ## Checkpoint
 
-M2 (Solo Bot) implemented and live-tested (118 pts on Easy). Daily memory system built but optimized mode not yet improving over discovery mode.
+Easy single-bot memory strategy now uses exact short-horizon trip planning and scored 128 (53 items, 15 orders).
 
 ## Latest Work
 
-- Implemented grid.py: PassableGrid, BFS, A*, bfs_distance_map, adjacent_walkable, direction_for_move
-- Implemented strategies/solo.py: single-bot A* with batch pickup
-- Fixed critical bug: active order lookup by status=="active" (not active_order_index as array index)
-- Fixed WS endpoint to wss://game.ainm.no/ws (official docs, not MCP server's game-dev URL)
-- Saved official docs to spec/official-docs.md, added errata to spec/protocol.md
-- Built daily_memory.py: DailySnapshot persistence keyed by date+level
-- Built strategies/memory_solo.py: discovery/optimized auto-switching, nearest-neighbor routing, preview pre-pick
-- Added on_game_over hook to Strategy ABC + client.py
-- 92 tests pass, ruff clean, mypy clean
+- Replaced nearest-neighbor pickup logic in `memory_solo` with an exact short-horizon trip planner.
+- Added pickup multiset candidate generation that handles duplicates and inventory cap.
+- Added route-cost optimization for `start -> pickups -> drop_off` with caching and deterministic tie-breaking.
+- Kept memory-based next-order prediction, but moved pickup decisions to the planner.
+- Updated `tests/test_memory_solo.py` for new planner behavior and planned pickup actions.
+- Verified quality gates: `python -m pytest` (93 passed), `python -m ruff check` clean, `python -m mypy` clean.
+- Live Easy results observed this session: `solo` 101/12, prior `memory_solo` 117/14, new planner `memory_solo` 128/15.
 
 ## Known Issues
 
-- **memory_solo optimized mode scores identical to discovery mode (118)** — needs investigation:
-  - Is the snapshot actually being saved/loaded? Check data/easy_YYYY-MM-DD.json exists
-  - Is `_has_memory` True on 2nd run? Add logging to verify
-  - Nearest-neighbor routing may not differ from reactive greedy when items restock and shelves are nearby
-  - Real win: pre-knowing the full order sequence to optimize across orders
-- active_order_index is a global counter, NOT an index into the orders array
-- Orders are infinite (official docs confirm, not capped at total_orders)
+- M3 multi-bot planner is not implemented yet (`planner.py`, `greedy` strategy).
+- `scripts/replay.py` is still TODO.
+- Pytest still reports `Unknown config option: asyncio_mode` warning.
 
 ## Next Steps
 
-1. **Debug memory_solo optimized mode**: verify snapshot save/load, check _has_memory flag, compare decision paths
-2. **Cross-order optimization**: pick items for order N+1 on return trip from delivering order N
-3. **Consider M3 (Greedy Multi-Bot)**: grid.py + daily_memory ready; need planner.py
+1. Implement M3 core in `src/grocerybot/planner.py` (OrderTracker, TaskAssigner, CollisionResolver).
+2. Create `src/grocerybot/strategies/greedy.py` with greedy global assignment + local route-cost planning.
+3. Add `tests/test_planner.py` and strategy tests; register `greedy` in strategy registry.
+4. Run Medium benchmark and compare throughput/collision behavior.
 
 ## Restart Prompt
 
-```
-Read CONTEXT.md and SESSION_HANDOFF.md. M2 done (118 pts Easy), daily memory built but optimized mode not improving score. Debug why memory_solo 2nd run scores same as 1st. Check: is snapshot saved? Is it loaded? Does _has_memory=True change behavior? The real optimization is cross-order pre-picking using the known order sequence.
+```text
+Read CONTEXT.md and SESSION_HANDOFF.md. Easy planner upgrade is done: memory_solo now uses exact short-horizon trip optimization and scored 128 (53 items, 15 orders). Start M3 by implementing planner.py (OrderTracker, TaskAssigner, CollisionResolver), then strategies/greedy.py using greedy assignment + route-cost local planning, with tests and Medium benchmark.
 ```

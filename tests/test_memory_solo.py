@@ -9,7 +9,7 @@ import pytest
 
 from grocerybot.daily_memory import DailySnapshot, OrderRecord
 from grocerybot.grid import PassableGrid, adjacent_walkable
-from grocerybot.models import GameState, PickUpAction
+from grocerybot.models import GameState, MoveAction, PickUpAction
 from grocerybot.strategies.memory_solo import (
     MemorySoloStrategy,
     _get_active_order,
@@ -137,12 +137,12 @@ class TestPlanTrip:
             (5, 4),
             ["existing1", "existing2"],  # 2 items in inventory
             ["milk", "bread"],  # need 2 active
-            [],
+            [],  # no preview
             grid,
         )
         assert len(trip) <= 1  # only 1 space left
 
-    def test_adds_preview_if_space(
+    def test_does_not_mix_preview_when_active_incomplete(
         self,
         easy_state: GameState,
         grid: PassableGrid,
@@ -158,35 +158,75 @@ class TestPlanTrip:
             (5, 4),
             [],  # empty inventory
             ["milk"],  # 1 active needed
-            ["bread"],  # 1 preview available
+            ["butter"],  # 1 preview available
             grid,
         )
-        assert len(trip) == 2  # 1 active + 1 preview
+        assert "milk" in trip
+
+    def test_collects_preview_when_active_done(
+        self,
+        easy_state: GameState,
+        grid: PassableGrid,
+    ) -> None:
+        strategy = MemorySoloStrategy(level="easy")
+        with patch(
+            "grocerybot.strategies.memory_solo.load_snapshot",
+            return_value=None,
+        ):
+            strategy.on_game_start(easy_state)
+
+        milk_item = next(i for i in easy_state.items if i.type == "milk")
+        pos = adjacent_walkable(milk_item.position, grid)[0]
+
+        trip = strategy._plan_trip(
+            pos,
+            ["yogurt"],  # active already satisfied by inventory
+            [],  # no active items needed
+            ["milk", "butter"],  # preview available
+            grid,
+        )
+        assert set(trip).issubset({"milk", "butter"})
+        assert len(trip) > 0
 
 
-class TestOpportunisticPick:
-    def test_pick_when_adjacent(
+class TestPlannedPickupAction:
+    def test_pick_when_at_target(
         self, easy_state: GameState, grid: PassableGrid,
     ) -> None:
         strategy = MemorySoloStrategy(level="easy")
-        # Find an item and an adjacent walkable cell
-        item = easy_state.items[0]
-        adj = adjacent_walkable(item.position, grid)
-        assert len(adj) > 0
+        with patch(
+            "grocerybot.strategies.memory_solo.load_snapshot",
+            return_value=None,
+        ):
+            strategy.on_game_start(easy_state)
 
-        action = strategy._opportunistic_pick(
-            easy_state, 0, adj[0], [item.type], grid,
+        item = next(i for i in easy_state.items if i.type == "milk")
+        adj = adjacent_walkable(item.position, grid)
+        assert adj
+
+        action = strategy._go_pick_planned_item(
+            easy_state, 0, adj[0], ("milk",), grid,
         )
         assert action is not None
         assert isinstance(action, PickUpAction)
-        assert action.item_id == item.id
+        assert action.item_id.startswith("item_")
 
-    def test_no_pick_when_not_adjacent(
+    def test_move_toward_target_when_not_adjacent(
         self, easy_state: GameState, grid: PassableGrid,
     ) -> None:
         strategy = MemorySoloStrategy(level="easy")
-        # Use a position far from any item
-        action = strategy._opportunistic_pick(
-            easy_state, 0, (5, 8), ["milk"], grid,
+        with patch(
+            "grocerybot.strategies.memory_solo.load_snapshot",
+            return_value=None,
+        ):
+            strategy.on_game_start(easy_state)
+
+        action = strategy._go_pick_planned_item(
+            easy_state,
+            0,
+            easy_state.bots[0].position,
+            ("milk",),
+            grid,
         )
-        assert action is None
+        assert action is not None
+        assert isinstance(action, MoveAction)
