@@ -14,7 +14,6 @@ from urllib.parse import parse_qs, urlparse
 from dotenv import load_dotenv
 import websockets
 
-random.seed(42)
 
 load_dotenv()
 raw = (os.getenv("GROCERY_BOT_TOKEN_HARD") or "").strip()
