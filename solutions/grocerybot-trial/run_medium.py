@@ -477,7 +477,7 @@ class TrialBot:
                 dist = self._manhattan(tuple(bot["position"]), tuple(item["position"]))
                 # Delivery bots with free slots may still batch-pick, but bias to nearby items.
                 if useful_delivery:
-                    dist += max(3, dist // 3)
+                    dist += max(2, dist // 4)
                 candidates.append((dist, bot["id"], item["id"]))
 
         candidates.sort(key=lambda x: x[0])
