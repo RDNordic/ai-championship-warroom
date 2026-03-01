@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from grocerybot.models import BotAction, GameState
+    from grocerybot.models import BotAction, GameOver, GameState
 
 
 class Strategy(ABC):
@@ -24,3 +24,6 @@ class Strategy(ABC):
     @abstractmethod
     def decide(self, state: GameState) -> list[BotAction]:
         """Return one action per bot. Must complete within the time budget."""
+
+    def on_game_over(self, result: GameOver) -> None:
+        """Called once after game_over. Override to persist state."""
