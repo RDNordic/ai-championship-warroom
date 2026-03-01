@@ -810,14 +810,7 @@ class TrialBot:
         if not candidates:
             return None
 
-        drop_off = tuple(state["drop_off"])
-        chosen = min(
-            candidates,
-            key=lambda item: (
-                self._manhattan(tuple(item["position"]), drop_off),
-                item["id"],
-            ),
-        )
+        chosen = candidates[0]
         self.bot_targets.pop(bot["id"], None)
         reserved_items.add(chosen["id"])
         needed[chosen["type"]] -= 1
