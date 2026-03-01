@@ -23,6 +23,9 @@ env/
 # Replay logs (can be large)
 *.jsonl
 
+# Daily memory snapshots
+data/
+
 # IDE
 .vscode/
 .idea/

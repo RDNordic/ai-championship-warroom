@@ -77,7 +77,7 @@ def main() -> None:
 
     ws_url = args.ws_url or os.environ.get("GROCERY_BOT_WS_URL", DEFAULT_WS_URL)
 
-    strategy = get_strategy(args.strategy)
+    strategy = get_strategy(args.strategy, level=args.level)
     level_str = f" [yellow]{args.level}[/yellow]" if args.level else ""
     console.print(f"Strategy: [bold]{args.strategy}[/bold]{level_str}")
     console.print(f"Endpoint: [dim]{ws_url}[/dim]")
