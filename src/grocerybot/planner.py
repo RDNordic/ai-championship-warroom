@@ -385,7 +385,7 @@ class LocalTripPlanner:
 
 
 class TaskAssigner:
-    """Greedy sequential assignment in bot-id order."""
+    """Two-phase assignment: delivery-first, then pickups."""
 
     def assign(
         self,
@@ -395,24 +395,24 @@ class TaskAssigner:
     ) -> dict[int, AssignedTask]:
         tasks: dict[int, AssignedTask] = {}
         remaining_active = list(snapshot.active_needed)
-        remaining_preview = list(snapshot.preview_needed)
+        bots = sorted(state.bots, key=lambda b: b.id)
 
-        for bot in sorted(state.bots, key=lambda b: b.id):
-            matched_inv, rem_after_inv, _ = _consume_needed(
+        # Phase A: bots carrying active items → drop_off
+        for bot in bots:
+            matched, rem, _ = _consume_needed(
                 remaining_active, tuple(bot.inventory),
             )
-            has_deliverable_active = matched_inv > 0
-
-            if has_deliverable_active:
+            if matched > 0:
                 tasks[bot.id] = AssignedTask(bot.id, "drop_off")
-                remaining_active = rem_after_inv
-                continue
+                remaining_active = rem
 
+        # Phase B: unassigned bots → pickup or wait
+        for bot in bots:
+            if bot.id in tasks:
+                continue
             if len(bot.inventory) >= 3:
-                # Full with no deliverable active item: avoid drop-off loop.
                 tasks[bot.id] = AssignedTask(bot.id, "wait")
                 continue
-
             if remaining_active:
                 picks = planner.plan_trip(
                     bot.position, bot.inventory, remaining_active, [],
@@ -420,18 +420,8 @@ class TaskAssigner:
                 if picks:
                     tasks[bot.id] = AssignedTask(bot.id, "pick", picks)
                     _, remaining_active, _ = _consume_needed(remaining_active, picks)
-                else:
-                    tasks[bot.id] = AssignedTask(bot.id, "wait")
-                continue
-
-            picks = planner.plan_trip(
-                bot.position, bot.inventory, [], remaining_preview,
-            )
-            if picks:
-                tasks[bot.id] = AssignedTask(bot.id, "pick", picks)
-                _, remaining_preview, _ = _consume_needed(remaining_preview, picks)
-            else:
-                tasks[bot.id] = AssignedTask(bot.id, "wait")
+                    continue
+            tasks[bot.id] = AssignedTask(bot.id, "wait")
 
         return tasks
 
