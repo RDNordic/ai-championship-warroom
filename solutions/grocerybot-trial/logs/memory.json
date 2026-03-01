@@ -3,25 +3,25 @@
     "medium_score_to_beat": 19
   },
   "best_scores": {
-    "medium": 99,
-    "hard": 71,
+    "medium": 116,
+    "hard": 99,
     "expert": 60,
     "easy": 110
   },
-  "run_count": 23,
+  "run_count": 34,
   "latest_run": {
-    "run_id": "20260301_220218",
-    "started_utc": "2026-03-01T22:02:18.703301+00:00",
-    "duration_s": 16.038,
-    "difficulty": "easy",
-    "map_id": "c89da2ec-3ca7-40c9-a3b1-8036fca3d0b7",
-    "map_seed": 7001,
+    "run_id": "20260301_223725",
+    "started_utc": "2026-03-01T22:37:25.854628+00:00",
+    "duration_s": 16.553,
+    "difficulty": "hard",
+    "map_id": "05ddc283-9097-4314-824c-90b3269a3d95",
+    "map_seed": 7003,
     "team_id": "ed319d9d-1b43-4e46-8b3d-f9bbf1c0d98b",
-    "score": 109,
+    "score": 3,
     "rounds_used": 300,
-    "items_delivered": 44,
-    "orders_completed": 13,
-    "replay_file": "game_20260301_220218.jsonl",
-    "action_counts_json": "{\"drop_off\": 16, \"move_down\": 48, \"move_left\": 75, \"move_right\": 68, \"move_up\": 48, \"pick_up\": 44, \"wait\": 1}"
+    "items_delivered": 3,
+    "orders_completed": 0,
+    "replay_file": "game_20260301_223725.jsonl",
+    "action_counts_json": "{\"drop_off\": 2, \"move_down\": 266, \"move_left\": 355, \"move_right\": 293, \"move_up\": 285, \"pick_up\": 7, \"wait\": 292}"
   }
 }
