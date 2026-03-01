@@ -341,7 +341,7 @@ class TrialBot:
                 b["id"],
             ),
         )
-        return {b["id"] for b in ranked[:2]}
+        return {b["id"] for b in ranked[:1]}
 
     def _select_dropoff_queue_primary(
         self, queue_ids: set[int], bots: list[dict], drop_off: tuple[int, int]
