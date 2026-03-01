@@ -971,7 +971,7 @@ class TrialBot:
         occupied_now: set[tuple[int, int]],
         reserved_next: set[tuple[int, int]],
     ) -> dict:
-        if self.wait_streak.get(bot_id, 0) >= 2:
+        if self.wait_streak.get(bot_id, 0) >= 3:
             nudge = self._random_nudge(bot_id, pos, state, occupied_now, reserved_next)
             if nudge is not None:
                 return nudge
