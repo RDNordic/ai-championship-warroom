@@ -1,5 +1,11 @@
 # Grocery Bot WebSocket Protocol
 
+> **ERRATA (2026-03-01)**: MCP server docs had wrong URLs. Official docs (spec/official-docs.md) say:
+> - Endpoint: `wss://game.ainm.no/ws` (NOT `game-dev.ainm.no`)
+> - Token source: `app.ainm.no/challenge` (NOT `dev.ainm.no`)
+> - Orders are **infinite** (no `total_orders` cap — rounds are the only limit)
+> - Cooldown: 60s between games, 40/hr, 300/day per team
+
 > Every rule is tagged **[GLOBAL]**, **[EASY]**, **[MEDIUM]**, **[HARD]**, or **[EXPERT]**.
 > If the MCP server did not explicitly state something, it is marked **[UNKNOWN]**.
 

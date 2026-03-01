@@ -49,6 +49,7 @@ async def play(
                         items_delivered=msg.items_delivered,
                         orders_completed=msg.orders_completed,
                     )
+                    strategy.on_game_over(msg)
                     return msg
 
                 state: GameState = msg
