@@ -235,7 +235,6 @@ class TrialBot:
         occupied_now = {tuple(b["position"]) for b in bots}
         reserved_next: set[tuple[int, int]] = set()
         reserved_items: set[str] = set()
-        round_number = int(state.get("round", -1))
 
         active_order = self._get_order_by_status(state, "active")
         active_needed_raw = self._required_minus_delivered(active_order)
@@ -245,8 +244,7 @@ class TrialBot:
         preview_needed = self._needed_counts_for_order(preview_order, bots)
         preview_item_ids = self._preview_item_ids(state["items"], preview_needed)
         preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, bots)
-        preview_cap_limit = 2 if round_number < 140 else 3
-        preview_duty_cap = min(max(0, len(bots) - 1), preview_cap_limit)
+        preview_duty_cap = min(max(0, len(bots) - 1), 3)
 
         # Pre-pick preview items once active needs are already in-flight/carried.
         if sum(needed.values()) == 0:
@@ -271,7 +269,7 @@ class TrialBot:
         for bot in bots:
             action = self._decide_one(
                 bot=bot,
-                round_number=round_number,
+                round_number=int(state.get("round", -1)),
                 state=state,
                 needed=needed,
                 drop_off=drop_off,
