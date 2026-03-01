@@ -212,9 +212,10 @@ class TestTaskAssigner:
         if first.kind == "pick":
             assert "cheese" in first.pickups
 
-    def test_preview_can_be_assigned_when_active_guaranteed(
+    def test_carried_active_items_get_dropoff_regardless_of_id(
         self, medium_state: GameState,
     ) -> None:
+        """Bot 2 carrying active items should get drop_off even though Bot 0/1 are processed first."""
         tracker = OrderTracker()
         planner = LocalTripPlanner(medium_state, PassableGrid(medium_state))
         assigner = TaskAssigner()
@@ -224,8 +225,8 @@ class TestTaskAssigner:
                 "orders": [
                     Order(
                         id="a0",
-                        items_required=["milk"],
-                        items_delivered=[],
+                        items_required=["cream", "cream", "milk"],
+                        items_delivered=["milk"],
                         complete=False,
                         status="active",
                     ),
@@ -238,20 +239,21 @@ class TestTaskAssigner:
                     ),
                 ],
                 "bots": [
-                    Bot(id=0, position=(9, 2), inventory=["milk"]),
-                    Bot(id=1, position=(8, 2), inventory=[]),
-                    Bot(id=2, position=(11, 9), inventory=[]),
+                    Bot(id=0, position=(5, 5), inventory=[]),
+                    Bot(id=1, position=(5, 6), inventory=[]),
+                    Bot(id=2, position=(3, 9), inventory=["cream", "cream", "cream"]),
                 ],
             },
         )
         snap = tracker.snapshot(custom)
         assert snap is not None
-        assert snap.active_needed == ["milk"]
+        assert snap.active_needed == ["cream", "cream"]
         tasks = assigner.assign(custom, snap, planner)
-        assert any(
-            task.kind == "pick" and "butter" in task.pickups
-            for task in tasks.values()
-        )
+        # Bot 2 has matching items → must be assigned drop_off
+        assert tasks[2].kind == "drop_off"
+        # Empty bots should not steal active items
+        assert tasks[0].kind == "wait"
+        assert tasks[1].kind == "wait"
 
 
 class TestCollisionResolver:
