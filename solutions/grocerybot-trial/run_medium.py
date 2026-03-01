@@ -940,7 +940,7 @@ class TrialBot:
         candidates = self._staging_candidates
         n = len(candidates)
         best_goal: Optional[tuple[int, int]] = None
-        search_span = min(24, n)
+        search_span = min(20, n)
         for i in range(search_span):
             idx = (bot_id + (i * 3)) % n
             cell = candidates[idx]
