@@ -62,6 +62,21 @@ Review prompts to use at step 3:
 - Don't build automation prematurely — wait until a workflow repeats 3+ times.
 - Use slash commands as the intermediate step before full skill development.
 
+## Commit-Before-Run / Revert-On-Regression Protocol
+For any iterative scoring challenge (e.g. Grocery Bot), follow this discipline:
+
+1. **Commit before every run.** Use descriptive messages: `grocerybot: score=110 easy, added solo lookahead`.
+2. **One change per commit.** Makes it trivial to bisect which change helped vs. hurt.
+3. **Run after each change.** Compare score against the current best.
+4. **Revert immediately if score drops.** `git checkout -- <file>` — do not rationalize regressions.
+5. **Tag new high-water marks.** After any new best: `git tag easy-best-110 HEAD`.
+6. **Never iterate on uncommitted code.** If a change doesn't improve, revert before trying the next idea.
+7. **Median over 3 runs for noisy challenges.** If variance is high, compare medians not single runs.
+8. **Time-box tuning.** If no improvement in 30 min on a difficulty, move to the next one.
+9. **Add `random.seed(42)` early** to eliminate variance from random nudge/tiebreaking logic, making A/B testing reliable.
+
+This protocol was proven in pre-competition trials: it prevented the "over-engineering death spiral" where each added heuristic interacted with previous ones and cratered scores (110 → 26 on Easy).
+
 ## Challenge-Level CLAUDE.md
 Each `solutions/challenge-N/` folder may contain its own `CLAUDE.md` with challenge-specific rules that inherit from and extend this file.
 

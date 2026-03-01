@@ -27,3 +27,14 @@ Target: Beat Medium score **19**
 - 20260301_215012 | diff=easy | score=103 | items=43 | orders=12 | medium_best=99 | replay=game_20260301_215012.jsonl
 - 20260301_215705 | diff=easy | score=103 | items=43 | orders=12 | medium_best=99 | replay=game_20260301_215705.jsonl
 - 20260301_220218 | diff=easy | score=109 | items=44 | orders=13 | medium_best=99 | replay=game_20260301_220218.jsonl
+- 20260301_221440 | diff=medium | score=52 | items=22 | orders=6 | medium_best=99 | replay=game_20260301_221440.jsonl
+- 20260301_221531 | diff=medium | score=52 | items=22 | orders=6 | medium_best=99 | replay=game_20260301_221531.jsonl
+- 20260301_221623 | diff=medium | score=52 | items=22 | orders=6 | medium_best=99 | replay=game_20260301_221623.jsonl
+- 20260301_221702 | diff=medium | score=36 | items=16 | orders=4 | medium_best=99 | replay=game_20260301_221702.jsonl
+- 20260301_221741 | diff=medium | score=116 | items=51 | orders=13 | medium_best=116 | replay=game_20260301_221741.jsonl
+- 20260301_222205 | diff=medium | score=11 | items=6 | orders=1 | medium_best=116 | replay=game_20260301_222205.jsonl
+- 20260301_223038 | diff=hard | score=19 | items=9 | orders=2 | medium_best=116 | replay=game_20260301_223038.jsonl
+- 20260301_223221 | diff=hard | score=70 | items=30 | orders=8 | medium_best=116 | replay=game_20260301_223221.jsonl
+- 20260301_223325 | diff=hard | score=36 | items=16 | orders=4 | medium_best=116 | replay=game_20260301_223325.jsonl
+- 20260301_223438 | diff=hard | score=99 | items=44 | orders=11 | medium_best=116 | replay=game_20260301_223438.jsonl
+- 20260301_223725 | diff=hard | score=3 | items=3 | orders=0 | medium_best=116 | replay=game_20260301_223725.jsonl
