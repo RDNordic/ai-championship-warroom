@@ -3,21 +3,31 @@
 Date: 2026-03-01 (UTC)
 
 ## Current Objective
-Run Expert (10 bots, 28x18) for first score — the only remaining map.
+Push Easy score from 128 → 137+ to take first place. Then re-run Medium, Hard, Expert.
+
+## Leaderboard
+- **1st place: 137 points**
+- **Our total: 128** (currently 2nd or lower)
+- Gap to close: **9 points on Easy alone could win it**
 
 ## Current Best Scores
-- Easy: **128**
+- Easy: **128** — primary optimization target
 - Medium: **99** (stable, deterministic)
-- Hard: **71** (stable, deterministic — runs 9 & 10 identical)
-- Expert: not yet attempted (10 bots, 28x18)
-- **Current leaderboard total: 298** (rank 40, Easy + Medium + Hard)
+- Hard: **71** (stable, deterministic)
+- Expert: **60** (first run, likely improvable)
+- **Current leaderboard total: ~358** (Easy + Medium + Hard + Expert)
 
 ## Exact Artifact References
-- Code: `C:\Users\John Brown\ai-championship-warroom\solutions\grocerybot-trial\run_bot.py`
-- Run history: `C:\Users\John Brown\ai-championship-warroom\solutions\grocerybot-trial\logs\run_history.csv`
-- Memory state: `C:\Users\John Brown\ai-championship-warroom\solutions\grocerybot-trial\logs\memory.json`
-- Human run notes: `C:\Users\John Brown\ai-championship-warroom\solutions\grocerybot-trial\logs\TRIAL_MEMORY.md`
-- Game API docs: `C:\Users\John Brown\ai-championship-warroom\past-championships-data\Grocery-bot-Game-AI-documentation-2026.txt`
+- Core logic: `run_bot.py` (~1244 lines)
+- **Per-difficulty runners** (new):
+  - `run_easy.py` → reads `GROCERY_BOT_TOKEN_EASY` from `.env`
+  - `run_medium.py` → reads `GROCERY_BOT_TOKEN_MEDIUM` from `.env`
+  - `run_hard.py` → reads `GROCERY_BOT_TOKEN_HARD` from `.env`
+  - `run_expert.py` → reads `GROCERY_BOT_TOKEN_EXPERT` from `.env`
+- Run history: `logs/run_history.csv`
+- Memory state: `logs/memory.json`
+- Human run notes: `logs/TRIAL_MEMORY.md`
+- Game API docs: `past-championships-data/Grocery-bot-Game-AI-documentation-2026.txt`
 
 ## Difficulty Specs
 | Level  | Grid  | Bots | Aisles | Item Types | Order Size |
@@ -28,8 +38,8 @@ Run Expert (10 bots, 28x18) for first score — the only remaining map.
 | Expert | 28x18 | 10  | 5      | 16         | 4-6        |
 
 ## What Is Proven
-- Bot scales from 1 to 5 bots without code changes (Medium 3 bots, Hard 5 bots).
-- Expert (10 bots) is untested — potential issues: drop-off congestion, BFS timing, coordination overhead.
+- Bot scales from 1 to 10 bots without code changes.
+- Expert (10 bots) scored 60 on first run — drop-off congestion and 851 waits suggest room to improve.
 - Safety guards active: token expiry, planner exception fallback, 1.8s timeout fallback, action sanitization.
 - Deterministic runs: same seed + same code = same score (confirmed on Hard).
 - Logging: replay jsonl + CSV + memory json + markdown log.
@@ -44,28 +54,55 @@ Run Expert (10 bots, 28x18) for first score — the only remaining map.
 - Light late-game: detour pickups stop after round 250; idle bots stop after round 270.
 - Anti-deadlock: random nudge after 3 consecutive waits at same position.
 
-## Expert-Specific Concerns
-1. **Drop-off bottleneck**: 10 bots, 1 drop-off cell. Current 2-bot queue may not scale.
-2. **BFS performance**: 28x18 grid with 10 bots — should stay well under 1.8s but watch timing.
-3. **Coordination overhead**: `preview_duty_cap = min(bots-1, 3)` = 3 preview bots. Remaining 7 do active order work.
-4. **Order size 4-6**: larger orders may need more delivery throughput.
+## Easy-Mode Optimization Ideas (128 → 137+)
+Easy = 1 bot, 12x10 grid, 2 aisles, 4 item types, orders of 3-4 items.
+With only 1 bot, multi-bot features (delivery slots, preview duty, queue pipeline) are effectively disabled. Optimization should focus on:
+1. **Pathing efficiency** — minimize BFS steps per item; consider if greedy nearest-item is leaving points on the table.
+2. **Order completion speed** — faster drop-offs = more orders = more score.
+3. **Late-game cutoffs** — round 250/270 cutoffs may be too conservative for 1-bot easy mode.
+4. **Item pickup order** — optimal TSP-like ordering for 3-4 items per order on a small grid.
+5. **Drop-off timing** — with 1 bot there's no queue contention, so drop-off should be immediate.
 
-## Hard Run History (for reference)
-- Run 7: score 64, delivered 29, pickups 53, waits 39 (original baseline).
-- Run 8: score 18, delivered 8, pickups 47, waits 201 (round 250 cutoff — reverted).
-- Run 9: score 71, delivered 31, pickups 32, waits 146 (cutoff reverted, new best).
-- Run 10: score 71, delivered 31, pickups 32, waits 146 (identical, deterministic confirmation).
+## Run Commands (per difficulty)
+```bash
+# Easy
+& ".venv\Scripts\python.exe" run_easy.py
+
+# Medium
+& ".venv\Scripts\python.exe" run_medium.py
+
+# Hard
+& ".venv\Scripts\python.exe" run_hard.py
+
+# Expert
+& ".venv\Scripts\python.exe" run_expert.py
+
+# Generic (uses GROCERY_BOT_TOKEN directly)
+& ".venv\Scripts\python.exe" run_bot.py
+```
+
+## Token Setup (per difficulty)
+1. Go to app.ainm.no/challenge, select the difficulty, click **Play**.
+2. Save token to `.env` under the matching variable:
+   - `GROCERY_BOT_TOKEN_EASY=<token>`
+   - `GROCERY_BOT_TOKEN_MEDIUM=<token>`
+   - `GROCERY_BOT_TOKEN_HARD=<token>`
+   - `GROCERY_BOT_TOKEN_EXPERT=<token>`
+3. Run the corresponding `run_<difficulty>.py` script.
+
+## Run History Summary
+| Run | Difficulty | Score | Items | Orders | Key observation |
+|-----|-----------|-------|-------|--------|-----------------|
+| 1-5 | Medium | 2→19 | 2→9 | 0→2 | Early iterations |
+| 6   | Medium | **99** | 44 | 11 | Current best, 9 waits only |
+| 7   | Hard   | 64  | 29 | 7  | Baseline |
+| 8   | Hard   | 18  | 8  | 2  | Round 250 cutoff regression |
+| 9-10| Hard   | **71** | 31 | 8  | Current best, deterministic |
+| 11  | Expert | **60** | 30 | 6  | First run, 851 waits |
 
 ## Next Steps
-1. **Run Expert** — get first score, observe action counts and bottlenecks.
-2. Analyze Expert replay if score is low — likely drop-off congestion with 10 bots.
-3. If Expert bottlenecked: consider increasing queue size from 2 to 3, or reducing staging congestion.
-4. Optimize across all maps once Expert baseline is established.
-
-## Repro Command
-`& "C:\Users\John Brown\ai-championship-warroom\solutions\grocerybot-trial\.venv\Scripts\python.exe" "C:\Users\John Brown\ai-championship-warroom\solutions\grocerybot-trial\run_bot.py"`
-
-## Token Setup
-1. Go to app.ainm.no/challenge, select **Expert** map, click **Play**.
-2. Save token to `.env`: `GROCERY_BOT_TOKEN=<token>`
-3. Run the repro command above.
+1. **Get fresh Easy token** → paste into `GROCERY_BOT_TOKEN_EASY` in `.env`.
+2. **Run `run_easy.py`** → establish baseline with current code.
+3. **Analyze Easy replay** → identify where the 1 bot is wasting moves.
+4. **Optimize for Easy** → target 137+ points.
+5. Re-run Medium, Hard, Expert with any improvements.
