@@ -621,7 +621,7 @@ class TrialBot:
             return pick
 
         if useful_inventory:
-            if round_number <= 250 and len(inventory) < 3:
+            if round_number <= 255 and len(inventory) < 3:
                 detour = self._delivery_detour_action(
                     bot_id=bot_id,
                     pos=pos,
