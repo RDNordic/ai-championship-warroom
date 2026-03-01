@@ -15,3 +15,5 @@ Target: Beat Medium score **19**
 - 20260301_195505 | diff=hard | score=71 | items=31 | orders=8 | medium_best=99 | replay=game_20260301_195505.jsonl
 - 20260301_195826 | diff=hard | score=71 | items=31 | orders=8 | medium_best=99 | replay=game_20260301_195826.jsonl
 - 20260301_200517 | diff=expert | score=60 | items=30 | orders=6 | medium_best=99 | replay=game_20260301_200517.jsonl
+- 20260301_201714 | diff=easy | score=1 | items=1 | orders=0 | medium_best=99 | replay=game_20260301_201714.jsonl
+- 20260301_203018 | diff=easy | score=1 | items=1 | orders=0 | medium_best=99 | replay=game_20260301_203018.jsonl
