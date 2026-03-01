@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from grocerybot.strategies.greedy import GreedyStrategy
 from grocerybot.strategies.logger import LoggerStrategy
 from grocerybot.strategies.memory_solo import MemorySoloStrategy
 from grocerybot.strategies.solo import SoloStrategy
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
     from grocerybot.strategies.base import Strategy
 
 STRATEGIES: dict[str, type[Strategy]] = {
+    "greedy": GreedyStrategy,
     "logger": LoggerStrategy,
     "solo": SoloStrategy,
     "memory_solo": MemorySoloStrategy,
