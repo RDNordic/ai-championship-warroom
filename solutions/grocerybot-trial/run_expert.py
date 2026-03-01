@@ -899,7 +899,7 @@ class TrialBot:
         # "On the way" heuristic: allow small detours only.
         direct = self._manhattan(pos, drop_off)
         via_item = self._manhattan(pos, item_pos) + self._manhattan(item_pos, drop_off)
-        return via_item <= direct + 5 and self._manhattan(pos, item_pos) <= 8
+        return via_item <= direct + 12 and self._manhattan(pos, item_pos) <= 18
 
     def _stage_near_dropoff(
         self,
