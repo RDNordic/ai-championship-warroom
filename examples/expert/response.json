@@ -1,0 +1,14 @@
+{
+  "actions": [
+    {"bot": 0, "action": "move_right"},
+    {"bot": 1, "action": "pick_up", "item_id": "item_10"},
+    {"bot": 2, "action": "drop_off"},
+    {"bot": 3, "action": "move_down"},
+    {"bot": 4, "action": "move_left"},
+    {"bot": 5, "action": "drop_off"},
+    {"bot": 6, "action": "pick_up", "item_id": "item_13"},
+    {"bot": 7, "action": "move_up"},
+    {"bot": 8, "action": "wait"},
+    {"bot": 9, "action": "drop_off"}
+  ]
+}
