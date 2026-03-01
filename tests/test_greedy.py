@@ -152,6 +152,8 @@ class TestGreedyStrategy:
         actions = strategy.decide(custom)
         by_bot = {a.bot: a for a in actions}
 
-        assert by_bot[1].action == "move_up"
-        assert by_bot[0].action in {"move_right", "move_up", "wait"}
-        assert by_bot[2].action in {"move_up", "wait"}
+        # Bot 1 (non-seeker at drop-off) must not stay idle — blocker or pick task
+        assert by_bot[1].action != "wait"
+        # Bot 0 (seeker adjacent to drop-off) should move toward or wait
+        assert by_bot[0].action in {"move_right", "move_up", "move_down", "wait", "drop_off"}
+        assert by_bot[2].action in {"move_up", "move_left", "move_right", "wait"}

@@ -407,19 +407,28 @@ class TaskAssigner:
                 remaining_active = rem
 
         # Phase B: unassigned bots → pickup or wait
+        remaining_preview = list(snapshot.preview_needed)
         for bot in bots:
             if bot.id in tasks:
                 continue
             if len(bot.inventory) >= 3:
-                tasks[bot.id] = AssignedTask(bot.id, "wait")
+                tasks[bot.id] = AssignedTask(bot.id, "drop_off")
                 continue
             if remaining_active:
                 picks = planner.plan_trip(
-                    bot.position, bot.inventory, remaining_active, [],
+                    bot.position, bot.inventory, remaining_active, remaining_preview,
                 )
                 if picks:
                     tasks[bot.id] = AssignedTask(bot.id, "pick", picks)
                     _, remaining_active, _ = _consume_needed(remaining_active, picks)
+                    continue
+            if remaining_preview:
+                picks = planner.plan_trip(
+                    bot.position, bot.inventory, remaining_preview, [],
+                )
+                if picks:
+                    tasks[bot.id] = AssignedTask(bot.id, "pick", picks)
+                    _, remaining_preview, _ = _consume_needed(remaining_preview, picks)
                     continue
             tasks[bot.id] = AssignedTask(bot.id, "wait")
 
@@ -427,31 +436,83 @@ class TaskAssigner:
 
 
 class CollisionResolver:
-    """Single-step collision resolver mirroring server id-order semantics."""
+    """Single-step traffic resolver under server id-order semantics.
+
+    Chooses a best-effort subset of proposed move actions each tick using:
+    - exact simulation of server movement rules (id order, occupied-cell blocking)
+    - rotating tie-break priority for fairness across bots
+    """
+
+    def _simulate(
+        self,
+        state: GameState,
+        candidate: dict[int, BotAction],
+    ) -> tuple[dict[int, BotAction], set[int]]:
+        bots = sorted(state.bots, key=lambda b: b.id)
+        positions: dict[int, Position] = {bot.id: bot.position for bot in bots}
+        counts: dict[Position, int] = {}
+        for pos in positions.values():
+            counts[pos] = counts.get(pos, 0) + 1
+
+        final: dict[int, BotAction] = {}
+        moved: set[int] = set()
+        for bot in bots:
+            bot_id = bot.id
+            action = candidate.get(bot_id, WaitAction(bot=bot_id))
+            if isinstance(action, MoveAction):
+                current = positions[bot_id]
+                nxt = next_position_for_action(current, action)
+                if counts.get(nxt, 0) > 0:
+                    action = WaitAction(bot=bot_id)
+                else:
+                    counts[current] -= 1
+                    if counts[current] == 0:
+                        del counts[current]
+                    counts[nxt] = counts.get(nxt, 0) + 1
+                    positions[bot_id] = nxt
+                    moved.add(bot_id)
+            final[bot_id] = action
+        return final, moved
 
     def resolve(
         self,
         state: GameState,
         proposed: dict[int, BotAction],
     ) -> list[BotAction]:
-        spawn = (state.grid.width - 2, state.grid.height - 2)
-        positions: dict[int, Position] = {
-            bot.id: bot.position for bot in state.bots
-        }
-        final_actions: list[BotAction] = []
-        for bot in sorted(state.bots, key=lambda b: b.id):
-            action = proposed.get(bot.id, WaitAction(bot=bot.id))
-            current_pos = positions[bot.id]
-            next_pos = next_position_for_action(current_pos, action)
+        bots = sorted(state.bots, key=lambda b: b.id)
+        bot_ids = [b.id for b in bots]
+        movers = [
+            bot_id
+            for bot_id in bot_ids
+            if isinstance(proposed.get(bot_id, WaitAction(bot=bot_id)), MoveAction)
+        ]
 
-            occupied_by_other = {
-                pos for other_id, pos in positions.items()
-                if other_id != bot.id
+        # Fair tie-break among equal-throughput candidates.
+        rotation = state.round % max(len(bot_ids), 1)
+        priority = bot_ids[rotation:] + bot_ids[:rotation]
+        weight = {bot_id: len(priority) - idx for idx, bot_id in enumerate(priority)}
+
+        best_actions: dict[int, BotAction] | None = None
+        best_key: tuple[int, int] | None = None
+
+        for mask in range(1 << len(movers)):
+            enabled = {
+                movers[i] for i in range(len(movers))
+                if mask & (1 << i)
             }
-            if next_pos != spawn and next_pos in occupied_by_other:
-                action = WaitAction(bot=bot.id)
-                next_pos = current_pos
+            candidate: dict[int, BotAction] = {}
+            for bot_id in bot_ids:
+                action = proposed.get(bot_id, WaitAction(bot=bot_id))
+                if isinstance(action, MoveAction) and bot_id not in enabled:
+                    candidate[bot_id] = WaitAction(bot=bot_id)
+                else:
+                    candidate[bot_id] = action
 
-            positions[bot.id] = next_pos
-            final_actions.append(action)
-        return final_actions
+            final, moved = self._simulate(state, candidate)
+            key = (len(moved), sum(weight[bot_id] for bot_id in moved))
+            if best_key is None or key > best_key:
+                best_key = key
+                best_actions = final
+
+        assert best_actions is not None
+        return [best_actions[bot_id] for bot_id in bot_ids]
