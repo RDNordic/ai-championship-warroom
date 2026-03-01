@@ -212,7 +212,6 @@ def token_is_expired(claims: dict) -> tuple[bool, Optional[datetime]]:
 class TrialBot:
     def __init__(self) -> None:
         self.shelves: set[tuple[int, int]] = set()
-        self._walls: set[tuple[int, int]] = set()
         self.bot_targets: dict[int, str] = {}
         self.last_drop_round: dict[int, int] = {}
         self._staging_cache_key: Optional[tuple] = None
@@ -222,8 +221,6 @@ class TrialBot:
         self.last_action: dict[int, str] = {}
 
     def decide(self, state: dict) -> list[dict]:
-        if not self._walls:
-            self._walls = {tuple(w) for w in state["grid"]["walls"]}
         for item in state["items"]:
             self.shelves.add(tuple(item["position"]))
         self._refresh_staging_candidates(state)
@@ -392,7 +389,8 @@ class TrialBot:
     def _refresh_staging_candidates(self, state: dict) -> None:
         width = state["grid"]["width"]
         height = state["grid"]["height"]
-        key = (width, height, tuple(sorted(self._walls)), tuple(sorted(self.shelves)))
+        walls = {tuple(w) for w in state["grid"]["walls"]}
+        key = (width, height, tuple(sorted(walls)), tuple(sorted(self.shelves)))
         if key == self._staging_cache_key:
             return
 
@@ -407,7 +405,7 @@ class TrialBot:
         for x in range(width):
             for y in range(height):
                 cell = (x, y)
-                if cell in self._walls or cell in self.shelves:
+                if cell in walls or cell in self.shelves:
                     continue
                 d = abs(cx - x) + abs(cy - y)
                 candidates.append((d, cell))
@@ -986,6 +984,7 @@ class TrialBot:
     ) -> Optional[dict]:
         width = state["grid"]["width"]
         height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
         blocked = (occupied_now - {pos}) | reserved_next
 
         options: list[tuple[int, int]] = []
@@ -993,7 +992,7 @@ class TrialBot:
             x, y = n
             if not (0 <= x < width and 0 <= y < height):
                 continue
-            if n in self._walls or n in self.shelves or n in blocked:
+            if n in walls or n in self.shelves or n in blocked:
                 continue
             options.append(n)
         if not options:
@@ -1074,12 +1073,13 @@ class TrialBot:
 
         width = state["grid"]["width"]
         height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
 
         def passable(p: tuple[int, int]) -> bool:
             x, y = p
             if not (0 <= x < width and 0 <= y < height):
                 return False
-            if p in self._walls:
+            if p in walls:
                 return False
             if p in self.shelves:
                 return False
@@ -1127,13 +1127,14 @@ class TrialBot:
     ) -> set[tuple[int, int]]:
         width = state["grid"]["width"]
         height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
         blocked = occupied_now - {self_pos}
         goals: set[tuple[int, int]] = set()
         for p in self._neighbors(shelf_pos):
             x, y = p
             if not (0 <= x < width and 0 <= y < height):
                 continue
-            if p in self._walls or p in self.shelves or p in blocked:
+            if p in walls or p in self.shelves or p in blocked:
                 continue
             goals.add(p)
         return goals
