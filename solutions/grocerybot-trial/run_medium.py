@@ -823,16 +823,22 @@ class TrialBot:
         needed: Counter,
         reserved_items: set[str],
     ) -> Optional[dict]:
+        drop_off = tuple(state["drop_off"])
         best_item = None
-        best_dist = 10**9
+        best_key = (10**9, 10**9, "")
         for item in state["items"]:
             if item["id"] in reserved_items:
                 continue
             if needed[item["type"]] <= 0:
                 continue
-            dist = self._manhattan(pos, tuple(item["position"]))
-            if dist < best_dist:
-                best_dist = dist
+            item_pos = tuple(item["position"])
+            key = (
+                self._manhattan(pos, item_pos),
+                self._manhattan(item_pos, drop_off),
+                item["id"],
+            )
+            if key < best_key:
+                best_key = key
                 best_item = item
         return best_item
 
