@@ -244,7 +244,7 @@ class TrialBot:
         preview_needed = self._needed_counts_for_order(preview_order, bots)
         preview_item_ids = self._preview_item_ids(state["items"], preview_needed)
         preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, bots)
-        preview_duty_cap = min(max(0, len(bots) - 1), 4)
+        preview_duty_cap = min(max(0, len(bots) - 1), 3)
 
         # Pre-pick preview items once active needs are already in-flight/carried.
         if sum(needed.values()) == 0:
