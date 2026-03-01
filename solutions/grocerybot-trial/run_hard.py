@@ -546,7 +546,7 @@ class TrialBot:
                 allow_occupied_goals=False,
             )
 
-        if round_number > 270 and not useful_inventory:
+        if round_number > 285 and not useful_inventory:
             self.bot_targets.pop(bot_id, None)
             return {"bot": bot_id, "action": "wait"}
 
