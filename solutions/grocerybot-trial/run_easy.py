@@ -16,9 +16,9 @@ import websockets
 
 
 load_dotenv()
-raw = (os.getenv("GROCERY_BOT_TOKEN") or "").strip()
+raw = (os.getenv("GROCERY_BOT_TOKEN_EASY") or "").strip()
 if not raw:
-    raise SystemExit("Missing GROCERY_BOT_TOKEN in .env")
+    raise SystemExit("Missing GROCERY_BOT_TOKEN_EASY in .env")
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -218,6 +218,14 @@ class TrialBot:
         self.wait_streak: dict[int, int] = {}
         self.last_observed_pos: dict[int, tuple[int, int]] = {}
         self.last_action: dict[int, str] = {}
+        self.position_history: dict[int, deque[tuple[int, int]]] = {}
+        self.lock_commit_until_round: dict[int, int] = {}
+        self.last_inventory_count: dict[int, int] = {}
+        self.last_pick_item: dict[int, str] = {}
+        self.blocked_pick_item_until: dict[str, int] = {}
+        self.successful_pick_count: dict[str, int] = {}
+        self._distance_cache_key: Optional[tuple] = None
+        self._distance_cache: dict[tuple[tuple[int, int], tuple[int, int]], int] = {}
 
     def decide(self, state: dict) -> list[dict]:
         for item in state["items"]:
@@ -225,6 +233,8 @@ class TrialBot:
         self._refresh_staging_candidates(state)
 
         bots = sorted(state["bots"], key=lambda b: b["id"])
+        round_number = int(state.get("round", -1))
+        self._update_pick_failure_state(bots, round_number)
         self._update_wait_state(bots)
         items_by_id = {item["id"]: item for item in state["items"]}
         occupied_now = {tuple(b["position"]) for b in bots}
@@ -239,7 +249,8 @@ class TrialBot:
         preview_needed = self._needed_counts_for_order(preview_order, bots)
         preview_item_ids = self._preview_item_ids(state["items"], preview_needed)
         preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, bots)
-        preview_duty_cap = min(max(0, len(bots) - 1), 3)
+        # For solo bot: allow preview pre-picking (original formula gives 0 for 1 bot)
+        preview_duty_cap = max(1, min(max(0, len(bots) - 1), 3))
 
         # Pre-pick preview items once active needs are already in-flight/carried.
         if sum(needed.values()) == 0:
@@ -264,7 +275,7 @@ class TrialBot:
         for bot in bots:
             action = self._decide_one(
                 bot=bot,
-                round_number=int(state.get("round", -1)),
+                round_number=round_number,
                 state=state,
                 needed=needed,
                 drop_off=drop_off,
@@ -284,7 +295,38 @@ class TrialBot:
             )
             actions.append(action)
             self.last_action[bot["id"]] = action["action"]
+            if action["action"] == "pick_up" and isinstance(action.get("item_id"), str):
+                self.last_pick_item[bot["id"]] = action["item_id"]
         return actions
+
+    def _update_pick_failure_state(self, bots: list[dict], round_number: int) -> None:
+        active_ids = {b["id"] for b in bots}
+        for bot in bots:
+            bot_id = bot["id"]
+            inv_count = len(bot["inventory"])
+            prev_count = self.last_inventory_count.get(bot_id)
+            prev_action = self.last_action.get(bot_id)
+            if prev_action == "pick_up" and prev_count is not None and inv_count <= prev_count:
+                item_id = self.last_pick_item.get(bot_id)
+                if item_id:
+                    # Treat failed pick IDs as depleted/unreliable for the rest of the run.
+                    self.blocked_pick_item_until[item_id] = round_number + 10000
+                    if self.bot_targets.get(bot_id) == item_id:
+                        self.bot_targets.pop(bot_id, None)
+            elif prev_action == "pick_up" and prev_count is not None and inv_count > prev_count:
+                item_id = self.last_pick_item.get(bot_id)
+                if item_id:
+                    self.successful_pick_count[item_id] = self.successful_pick_count.get(item_id, 0) + 1
+            self.last_inventory_count[bot_id] = inv_count
+
+        for bot_id in list(self.last_inventory_count.keys()):
+            if bot_id not in active_ids:
+                self.last_inventory_count.pop(bot_id, None)
+                self.last_pick_item.pop(bot_id, None)
+
+        for item_id, until_round in list(self.blocked_pick_item_until.items()):
+            if round_number > until_round:
+                self.blocked_pick_item_until.pop(item_id, None)
 
     def _update_wait_state(self, bots: list[dict]) -> None:
         active_ids = {b["id"] for b in bots}
@@ -298,12 +340,18 @@ class TrialBot:
             else:
                 self.wait_streak[bot_id] = 0
             self.last_observed_pos[bot_id] = pos
+            hist = self.position_history.setdefault(bot_id, deque(maxlen=12))
+            hist.append(pos)
 
         for bot_id in list(self.wait_streak.keys()):
             if bot_id not in active_ids:
                 self.wait_streak.pop(bot_id, None)
                 self.last_observed_pos.pop(bot_id, None)
                 self.last_action.pop(bot_id, None)
+                self.position_history.pop(bot_id, None)
+                self.lock_commit_until_round.pop(bot_id, None)
+                self.last_pick_item.pop(bot_id, None)
+                self.last_inventory_count.pop(bot_id, None)
 
     def _dropoff_clearance_bots(
         self, bots: list[dict], drop_off: tuple[int, int], delivery_alloc: dict[int, Counter]
@@ -530,6 +578,7 @@ class TrialBot:
                     reserved_next=reserved_next,
                 )
             self.bot_targets.pop(bot_id, None)
+            self.lock_commit_until_round.pop(bot_id, None)
             self.last_drop_round[bot_id] = round_number
             return {"bot": bot_id, "action": "drop_off"}
 
@@ -546,8 +595,9 @@ class TrialBot:
                 allow_occupied_goals=False,
             )
 
-        if round_number > 270 and not useful_inventory:
+        if round_number > 298 and not useful_inventory:
             self.bot_targets.pop(bot_id, None)
+            self.lock_commit_until_round.pop(bot_id, None)
             return {"bot": bot_id, "action": "wait"}
 
         if has_non_useful_inventory and len(inventory) >= 3:
@@ -578,13 +628,20 @@ class TrialBot:
                 len(preview_duty_bots) < preview_duty_cap
             )
             if preview_duty_allowed:
-                preview_pick = self._pick_if_adjacent(bot, state, preview_needed, reserved_items)
+                preview_pick = self._pick_if_adjacent(
+                    bot,
+                    state,
+                    preview_needed,
+                    reserved_items,
+                    round_number,
+                )
                 if preview_pick is not None:
                     preview_duty_bots.add(bot_id)
                     return preview_pick
 
                 preview_target = self._locked_or_best_item(
                     bot_id=bot_id,
+                    round_number=round_number,
                     pos=pos,
                     state=state,
                     needed=preview_needed,
@@ -612,53 +669,155 @@ class TrialBot:
                             allow_occupied_goals=False,
                         )
 
-        pick = self._pick_if_adjacent(bot, state, needed, reserved_items)
+        pick = self._pick_if_adjacent(bot, state, needed, reserved_items, round_number)
         if pick is not None:
             return pick
 
+        if (
+            not inventory
+            and self._is_position_oscillation(bot_id, window=7)
+            and self.bot_targets.get(bot_id) in items_by_id
+        ):
+            # Temporary commit prevents rapid target flipping in tight corridors.
+            self.lock_commit_until_round[bot_id] = max(
+                self.lock_commit_until_round.get(bot_id, -1),
+                round_number + 10,
+            )
+
         if useful_inventory:
-            if round_number <= 250 and len(inventory) < 3:
-                detour = self._delivery_detour_action(
+            # Solo-bot optimization: keep collecting needed items before heading
+            # to drop-off. Only go to drop-off when inventory is full (3) or
+            # no more needed items exist, or very late in the game.
+            still_needed = sum(needed.values())
+            if len(inventory) < 3 and still_needed > 0 and round_number <= 295:
+                # Target the next needed item directly (no detour distance limit)
+                target_item = self._locked_or_best_item(
                     bot_id=bot_id,
+                    round_number=round_number,
                     pos=pos,
                     state=state,
                     needed=needed,
-                    drop_off=drop_off,
-                    occupied_now=occupied_now,
                     reserved_items=reserved_items,
-                    reserved_next=reserved_next,
                     items_by_id=items_by_id,
                     assigned_item_id=assigned_item_id,
                 )
-                if detour is not None:
-                    return detour
+                if target_item is not None:
+                    self._refresh_distance_cache(state)
+                    active_item_pos = tuple(target_item["position"])
+                    active_static_goals = self._walkable_adjacent_static(active_item_pos, state)
+                    dist_to_active = (
+                        self._distance_to_any_goal(pos, active_static_goals, state)
+                        if active_static_goals
+                        else None
+                    )
 
-            # Two-bot delivery pipeline:
-            # - queue leader paths to drop_off
-            # - runner-up (second in queue) stages adjacent
-            # - others stage near drop_off
-            if bot_id in dropoff_queue_ids and bot_id != dropoff_queue_leader:
-                staged = self._stage_near_dropoff(
-                    bot_id=bot_id,
-                    pos=pos,
-                    drop_off=drop_off,
-                    state=state,
-                    occupied_now=occupied_now,
-                    reserved_next=reserved_next,
-                )
-                if staged is not None:
-                    return staged
-            if dropoff_queue_ids and bot_id not in dropoff_queue_ids:
-                staged = self._stage_near_dropoff(
-                    bot_id=bot_id,
-                    pos=pos,
-                    drop_off=drop_off,
-                    state=state,
-                    occupied_now=occupied_now,
-                    reserved_next=reserved_next,
-                )
-                if staged is not None:
-                    return staged
+                    # Smart early delivery: if third useful item is too expensive,
+                    # deliver two useful items now.
+                    useful_count = self._delivery_count(useful_delivery)
+                    if len(inventory) == 2 and useful_count >= 2:
+                        direct_drop_cost = self._distance_between_cells(pos, drop_off, state)
+                        active_to_drop_cost: Optional[int] = None
+                        for g in active_static_goals:
+                            d = self._distance_between_cells(g, drop_off, state)
+                            if d is None:
+                                continue
+                            if active_to_drop_cost is None or d < active_to_drop_cost:
+                                active_to_drop_cost = d
+                        if (
+                            direct_drop_cost is not None
+                            and dist_to_active is not None
+                            and active_to_drop_cost is not None
+                        ):
+                            detour_cost = dist_to_active + active_to_drop_cost
+                            if detour_cost > (1.5 * direct_drop_cost):
+                                self.bot_targets.pop(bot_id, None)
+                                return self._move_toward(
+                                    bot_id=bot_id,
+                                    start=pos,
+                                    goals={drop_off},
+                                    state=state,
+                                    occupied_now=occupied_now,
+                                    reserved_next=reserved_next,
+                                    allow_occupied_goals=True,
+                                    relax_reservation_if_blocked=True,
+                                )
+
+                    # Mixed batch opportunism: if a preview item is near the active
+                    # target corridor and costs <= +3 BFS steps, grab it first.
+                    chosen_item = target_item
+                    if len(inventory) < 3 and sum(preview_needed.values()) > 0 and dist_to_active is not None:
+                        best_preview = None
+                        best_via_cost: Optional[int] = None
+                        for item in state["items"]:
+                            if item["id"] in reserved_items:
+                                continue
+                            if self._item_pick_temporarily_blocked(item["id"], round_number):
+                                continue
+                            if preview_needed[item["type"]] <= 0:
+                                continue
+                            preview_pos = tuple(item["position"])
+                            if self._manhattan(preview_pos, active_item_pos) > 2:
+                                continue
+                            preview_goals = self._walkable_adjacent_static(preview_pos, state)
+                            if not preview_goals:
+                                continue
+                            dist_to_preview = self._distance_to_any_goal(pos, preview_goals, state)
+                            if dist_to_preview is None:
+                                continue
+
+                            preview_to_active: Optional[int] = None
+                            for pg in preview_goals:
+                                for ag in active_static_goals:
+                                    d = self._distance_between_cells(pg, ag, state)
+                                    if d is None:
+                                        continue
+                                    if preview_to_active is None or d < preview_to_active:
+                                        preview_to_active = d
+                            if preview_to_active is None:
+                                continue
+
+                            via_cost = dist_to_preview + preview_to_active
+                            if via_cost > dist_to_active + 3:
+                                continue
+                            if (
+                                best_via_cost is None
+                                or via_cost < best_via_cost
+                                or (via_cost == best_via_cost and item["id"] < best_preview["id"])
+                            ):
+                                best_preview = item
+                                best_via_cost = via_cost
+
+                        if best_preview is not None:
+                            chosen_item = best_preview
+                            self.bot_targets[bot_id] = best_preview["id"]
+                            if best_preview["id"] in preview_item_ids:
+                                preview_duty_bots.add(bot_id)
+
+                    reserved_items.add(chosen_item["id"])
+                    item_type = chosen_item["type"]
+                    if chosen_item["id"] == target_item["id"]:
+                        if needed[item_type] > 0:
+                            needed[item_type] -= 1
+                    else:
+                        if preview_needed[item_type] > 0:
+                            preview_needed[item_type] -= 1
+                        elif needed[item_type] > 0:
+                            needed[item_type] -= 1
+
+                    item_pos = tuple(chosen_item["position"])
+                    goals = self._adjacent_walkable(item_pos, state, occupied_now, pos)
+                    if goals:
+                        return self._move_toward(
+                            bot_id=bot_id,
+                            start=pos,
+                            goals=goals,
+                            state=state,
+                            occupied_now=occupied_now,
+                            reserved_next=reserved_next,
+                            allow_occupied_goals=False,
+                        )
+
+            # Head to drop-off
             self.bot_targets.pop(bot_id, None)
             action = self._move_toward(
                 bot_id=bot_id,
@@ -684,6 +843,7 @@ class TrialBot:
 
         target_item = self._locked_or_best_item(
             bot_id=bot_id,
+            round_number=round_number,
             pos=pos,
             state=state,
             needed=needed,
@@ -739,6 +899,7 @@ class TrialBot:
     def _locked_or_best_item(
         self,
         bot_id: int,
+        round_number: int,
         pos: tuple[int, int],
         state: dict,
         needed: Counter,
@@ -746,26 +907,35 @@ class TrialBot:
         items_by_id: dict[str, dict],
         assigned_item_id: Optional[str],
     ) -> Optional[dict]:
-        if assigned_item_id:
-            assigned = items_by_id.get(assigned_item_id)
-            if (
-                assigned
-                and assigned_item_id not in reserved_items
-                and needed[assigned["type"]] > 0
-            ):
-                self.bot_targets[bot_id] = assigned_item_id
-                return assigned
-
+        # Lock-first policy for stability: an existing valid lock is never
+        # replaced by round-by-round assignment churn.
         locked_item_id = self.bot_targets.get(bot_id)
         if locked_item_id:
             locked_item = items_by_id.get(locked_item_id)
             if (
                 locked_item
                 and locked_item_id not in reserved_items
+                and not self._item_pick_temporarily_blocked(locked_item_id, round_number)
                 and needed[locked_item["type"]] > 0
             ):
                 return locked_item
             self.bot_targets.pop(bot_id, None)
+
+        commit_until = self.lock_commit_until_round.get(bot_id, -1)
+        if round_number > commit_until:
+            self.lock_commit_until_round.pop(bot_id, None)
+
+        # Only use assignment hint when no valid lock exists.
+        if assigned_item_id:
+            assigned = items_by_id.get(assigned_item_id)
+            if (
+                assigned
+                and assigned_item_id not in reserved_items
+                and not self._item_pick_temporarily_blocked(assigned_item_id, round_number)
+                and needed[assigned["type"]] > 0
+            ):
+                self.bot_targets[bot_id] = assigned_item_id
+                return assigned
 
         locked_by_others = {
             item_id
@@ -773,6 +943,8 @@ class TrialBot:
             if other_bot_id != bot_id
         }
         chosen = self._select_target_item(
+            bot_id=bot_id,
+            round_number=round_number,
             pos=pos,
             state=state,
             needed=needed,
@@ -788,6 +960,7 @@ class TrialBot:
         state: dict,
         needed: Counter,
         reserved_items: set[str],
+        round_number: int,
     ) -> Optional[dict]:
         pos = tuple(bot["position"])
         if len(bot["inventory"]) >= 3:
@@ -796,6 +969,8 @@ class TrialBot:
         candidates: list[dict] = []
         for item in state["items"]:
             if item["id"] in reserved_items:
+                continue
+            if self._item_pick_temporarily_blocked(item["id"], round_number):
                 continue
             if needed[item["type"]] <= 0:
                 continue
@@ -806,31 +981,326 @@ class TrialBot:
         if not candidates:
             return None
 
-        chosen = candidates[0]
+        chosen = min(
+            candidates,
+            key=lambda item: (self.successful_pick_count.get(item["id"], 0), item["id"]),
+        )
         self.bot_targets.pop(bot["id"], None)
+        self.lock_commit_until_round.pop(bot["id"], None)
         reserved_items.add(chosen["id"])
         needed[chosen["type"]] -= 1
         return {"bot": bot["id"], "action": "pick_up", "item_id": chosen["id"]}
 
+    def _is_position_oscillation(self, bot_id: int, window: int = 7) -> bool:
+        hist = self.position_history.get(bot_id)
+        if not hist or len(hist) < window:
+            return False
+        tail = list(hist)[-window:]
+        unique = len(set(tail))
+        if unique < 2 or unique > 3:
+            return False
+        return True
+
+    def _item_pick_temporarily_blocked(self, item_id: str, round_number: int) -> bool:
+        until_round = self.blocked_pick_item_until.get(item_id)
+        if until_round is None:
+            return False
+        return round_number <= until_round
+
     def _select_target_item(
         self,
+        bot_id: int,
+        round_number: int,
         pos: tuple[int, int],
         state: dict,
         needed: Counter,
         reserved_items: set[str],
     ) -> Optional[dict]:
+        if len(state.get("bots", [])) == 1:
+            solo_bot = state["bots"][0]
+            if solo_bot["id"] == bot_id:
+                capacity_left = max(0, 3 - len(solo_bot.get("inventory", [])))
+                if capacity_left > 0:
+                    solo_choice = self._select_solo_item_with_lookahead(
+                        round_number=round_number,
+                        pos=pos,
+                        state=state,
+                        needed=needed,
+                        reserved_items=reserved_items,
+                        capacity_left=capacity_left,
+                    )
+                    if solo_choice is not None:
+                        return solo_choice
+
+        self._refresh_distance_cache(state)
         best_item = None
         best_dist = 10**9
         for item in state["items"]:
             if item["id"] in reserved_items:
                 continue
+            if self._item_pick_temporarily_blocked(item["id"], round_number):
+                continue
             if needed[item["type"]] <= 0:
                 continue
-            dist = self._manhattan(pos, tuple(item["position"]))
+            item_pos = tuple(item["position"])
+            goals = self._walkable_adjacent_static(item_pos, state)
+            dist = self._distance_to_any_goal(pos, goals, state) if goals else None
+            if dist is None:
+                dist = self._manhattan(pos, item_pos)
+            dist += 2 * self.successful_pick_count.get(item["id"], 0)
             if dist < best_dist:
                 best_dist = dist
                 best_item = item
         return best_item
+
+    def _select_solo_item_with_lookahead(
+        self,
+        round_number: int,
+        pos: tuple[int, int],
+        state: dict,
+        needed: Counter,
+        reserved_items: set[str],
+        capacity_left: int,
+    ) -> Optional[dict]:
+        if capacity_left <= 0 or sum(needed.values()) <= 0:
+            return None
+
+        self._refresh_distance_cache(state)
+        drop_off = tuple(state["drop_off"])
+
+        candidates: list[dict] = []
+        for item in state["items"]:
+            if item["id"] in reserved_items:
+                continue
+            if self._item_pick_temporarily_blocked(item["id"], round_number):
+                continue
+            if needed[item["type"]] <= 0:
+                continue
+            goals = self._walkable_adjacent_static(tuple(item["position"]), state)
+            if not goals:
+                continue
+            dist_from_pos = self._distance_to_any_goal(pos, goals, state)
+            if dist_from_pos is None:
+                continue
+            candidates.append(
+                {
+                    "id": item["id"],
+                    "type": item["type"],
+                    "item": item,
+                    "goals": goals,
+                    "start_dist": dist_from_pos + (2 * self.successful_pick_count.get(item["id"], 0)),
+                }
+            )
+
+        if not candidates:
+            return None
+
+        # Keep a compact set of nearby candidates per item type.
+        per_type: dict[str, list[dict]] = {}
+        for cand in candidates:
+            per_type.setdefault(cand["type"], []).append(cand)
+        shortlist: list[dict] = []
+        for item_type, group in per_type.items():
+            group.sort(key=lambda c: (c["start_dist"], c["id"]))
+            needed_cap = max(1, needed[item_type])
+            shortlist.extend(group[: min(len(group), needed_cap + 3)])
+
+        if not shortlist:
+            return None
+
+        route_len = min(capacity_left, sum(needed.values()))
+        if route_len <= 0:
+            return None
+
+        by_id = {cand["id"]: cand for cand in shortlist}
+        ordered_ids = [cand["id"] for cand in sorted(shortlist, key=lambda c: (c["start_dist"], c["id"]))]
+        best_sequence: Optional[list[str]] = None
+        best_cost = 10**9
+
+        def evaluate(seq_ids: list[str]) -> None:
+            nonlocal best_sequence, best_cost
+            cost = self._sequence_route_cost(
+                start=pos,
+                sequence_ids=seq_ids,
+                candidates_by_id=by_id,
+                drop_off=drop_off,
+                state=state,
+            )
+            if cost is None:
+                return
+            if cost < best_cost:
+                best_cost = cost
+                best_sequence = list(seq_ids)
+                return
+            if cost == best_cost and best_sequence is not None:
+                if tuple(seq_ids) < tuple(best_sequence):
+                    best_sequence = list(seq_ids)
+
+        def search(target_len: int, remaining: Counter, used_ids: set[str], seq_ids: list[str]) -> None:
+            if len(seq_ids) == target_len:
+                evaluate(seq_ids)
+                return
+            for item_id in ordered_ids:
+                if item_id in used_ids:
+                    continue
+                cand = by_id[item_id]
+                item_type = cand["type"]
+                if remaining[item_type] <= 0:
+                    continue
+                used_ids.add(item_id)
+                seq_ids.append(item_id)
+                remaining[item_type] -= 1
+                search(target_len, remaining, used_ids, seq_ids)
+                remaining[item_type] += 1
+                seq_ids.pop()
+                used_ids.remove(item_id)
+
+        # Prefer full bag routes first; fall back to shorter routes if needed.
+        for target_len in range(route_len, 0, -1):
+            best_sequence = None
+            best_cost = 10**9
+            search(target_len, Counter(needed), set(), [])
+            if best_sequence:
+                first_id = best_sequence[0]
+                return by_id[first_id]["item"]
+
+        return None
+
+    def _sequence_route_cost(
+        self,
+        start: tuple[int, int],
+        sequence_ids: list[str],
+        candidates_by_id: dict[str, dict],
+        drop_off: tuple[int, int],
+        state: dict,
+    ) -> Optional[int]:
+        costs: dict[tuple[int, int], int] = {start: 0}
+        for item_id in sequence_ids:
+            goals = candidates_by_id[item_id]["goals"]
+            next_costs: dict[tuple[int, int], int] = {}
+            for goal in goals:
+                best_goal_cost: Optional[int] = None
+                for cell, cell_cost in costs.items():
+                    dist = self._distance_between_cells(cell, goal, state)
+                    if dist is None:
+                        continue
+                    total = cell_cost + dist
+                    if best_goal_cost is None or total < best_goal_cost:
+                        best_goal_cost = total
+                if best_goal_cost is not None:
+                    next_costs[goal] = best_goal_cost
+            if not next_costs:
+                return None
+            costs = next_costs
+
+        best_total: Optional[int] = None
+        for cell, cell_cost in costs.items():
+            dist_to_drop = self._distance_between_cells(cell, drop_off, state)
+            if dist_to_drop is None:
+                continue
+            total = cell_cost + dist_to_drop
+            if best_total is None or total < best_total:
+                best_total = total
+        return best_total
+
+    def _refresh_distance_cache(self, state: dict) -> None:
+        grid = state["grid"]
+        walls = tuple(sorted(tuple(w) for w in grid["walls"]))
+        shelves = tuple(sorted(self.shelves))
+        key = (grid["width"], grid["height"], walls, shelves)
+        if key != self._distance_cache_key:
+            self._distance_cache_key = key
+            self._distance_cache = {}
+
+    def _walkable_adjacent_static(
+        self,
+        shelf_pos: tuple[int, int],
+        state: dict,
+    ) -> tuple[tuple[int, int], ...]:
+        width = state["grid"]["width"]
+        height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
+        cells: list[tuple[int, int]] = []
+        for p in self._neighbors(shelf_pos):
+            x, y = p
+            if not (0 <= x < width and 0 <= y < height):
+                continue
+            if p in walls or p in self.shelves:
+                continue
+            cells.append(p)
+        return tuple(cells)
+
+    def _distance_to_any_goal(
+        self,
+        start: tuple[int, int],
+        goals: tuple[tuple[int, int], ...],
+        state: dict,
+    ) -> Optional[int]:
+        best: Optional[int] = None
+        for goal in goals:
+            dist = self._distance_between_cells(start, goal, state)
+            if dist is None:
+                continue
+            if best is None or dist < best:
+                best = dist
+        return best
+
+    def _distance_between_cells(
+        self,
+        a: tuple[int, int],
+        b: tuple[int, int],
+        state: dict,
+    ) -> Optional[int]:
+        if a == b:
+            return 0
+        left, right = (a, b) if a <= b else (b, a)
+        key = (left, right)
+        if key in self._distance_cache:
+            return self._distance_cache[key]
+
+        dist = self._bfs_distance(a, {b}, state)
+        if dist is None:
+            return None
+        self._distance_cache[key] = dist
+        return dist
+
+    def _bfs_distance(
+        self,
+        start: tuple[int, int],
+        goals: set[tuple[int, int]],
+        state: dict,
+    ) -> Optional[int]:
+        if start in goals:
+            return 0
+        if not goals:
+            return None
+
+        width = state["grid"]["width"]
+        height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
+
+        def passable(p: tuple[int, int]) -> bool:
+            x, y = p
+            if not (0 <= x < width and 0 <= y < height):
+                return False
+            if p in walls or p in self.shelves:
+                return False
+            return True
+
+        q: deque[tuple[tuple[int, int], int]] = deque([(start, 0)])
+        seen: set[tuple[int, int]] = {start}
+        while q:
+            cur, dist = q.popleft()
+            for nxt in self._neighbors(cur):
+                if nxt in seen:
+                    continue
+                if not passable(nxt):
+                    continue
+                if nxt in goals:
+                    return dist + 1
+                seen.add(nxt)
+                q.append((nxt, dist + 1))
+        return None
 
     def _has_useful_inventory(self, inventory: list[str], remaining_needed: Counter) -> bool:
         if not inventory:
