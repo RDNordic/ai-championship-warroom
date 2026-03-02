@@ -5,8 +5,9 @@
 Each difficulty has its own fully independent bot file. You can tune one without affecting the others.
 
 ## Active Window
-- Focus now: `Hard` challenge in a fresh tuning window.
-- Keep `run_medium.py` frozen at the current 118-capable build while tuning Hard.
+- Focus now: `Easy` challenge in a new experiment window.
+- Keep `run_medium.py` frozen at the 118-capable build.
+- Keep `run_hard.py` unchanged unless explicitly switching focus back to Hard.
 
 ### 1. Get a fresh token
 Go to `app.ainm.no/challenge` -> select difficulty -> click **Play**.
@@ -21,7 +22,7 @@ GROCERY_BOT_TOKEN_EXPERT=<token>
 
 ### 3. Run the matching script
 ```powershell
-# Easy (best: 110)
+# Easy (best: 119)
 & ".venv\Scripts\python.exe" run_easy.py
 
 # Medium (best: 118)
@@ -69,9 +70,24 @@ Each `run_*.py` is a complete self-contained copy of bot logic.
 # Last 10 runs across all difficulties
 Get-Content .\logs\run_history.csv | Select-Object -Last 10
 
-# Last 10 hard runs only
-Import-Csv .\logs\run_history.csv | Where-Object { $_.difficulty -eq 'hard' } | Select-Object -Last 10
+# Last 10 easy runs only
+Import-Csv .\logs\run_history.csv | Where-Object { $_.difficulty -eq 'easy' } | Select-Object -Last 10
+
+# Best score per difficulty
+Import-Csv .\logs\run_history.csv | Group-Object difficulty | ForEach-Object {
+  $_.Group | Sort-Object {[int]$_.score} -Descending | Select-Object -First 1
+} | Format-Table difficulty,score,run_id,replay_file -AutoSize
 ```
+
+## Current Easy Notes (Active)
+- Best easy replay: `logs/game_20260302_125953.jsonl` (119, 14 orders).
+- Recent regressions (reverted experimental tweaks):
+  - `logs/game_20260302_130323.jsonl` (93)
+  - `logs/game_20260302_130504.jsonl` (95)
+- Keep current `run_easy.py` baseline patch:
+  - Solo `useful_inventory` branch uses active-order-only demand (`active_needed`) for item collection decisions.
+  - This prevents route lookahead from including preview demand while carrying active-order cargo.
+- Next step: test one new Easy change at a time and validate quickly against the 119 baseline before keeping.
 
 ## Current Medium Notes (Frozen)
 - Verified high runs on current medium build:
@@ -81,15 +97,9 @@ Import-Csv .\logs\run_history.csv | Where-Object { $_.difficulty -eq 'hard' } | 
 - Medium commits to keep:
   - `d704c3d` (late-game preview pivot guard + earlier detour cutoff)
   - `6b24f2c` (drop-off ring fallback staging)
-- Do not modify `run_medium.py` during Hard tuning unless explicitly switching focus.
+- Do not modify `run_medium.py` during Easy tuning unless explicitly switching focus.
 
-## Current Hard Notes (Active)
+## Current Hard Notes (Paused)
 - Best hard replay: `logs/game_20260301_223438.jsonl` (99).
 - Near-best hard replay: `logs/game_20260301_225157.jsonl` (98).
-- Fresh-window baseline (2026-03-02):
-  - `logs/game_20260302_112639.jsonl` (20)
-  - `logs/game_20260302_112818.jsonl` (91)
-  - `logs/game_20260302_112945.jsonl` (20)
-  - Baseline summary: min=20, median=20, max=91
-- Hard has high variance and collapse risk, so test in 3-run batches and keep one-change increments.
-- Immediate next step: apply one low-risk stability change to `run_hard.py` and re-test in 3 runs.
+- Hard tuning is paused while Easy experiments are active.

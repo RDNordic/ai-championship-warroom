@@ -218,13 +218,19 @@ class TrialBot:
         self.wait_streak: dict[int, int] = {}
         self.last_observed_pos: dict[int, tuple[int, int]] = {}
         self.last_action: dict[int, str] = {}
+        self.last_inventory_size: dict[int, int] = {}
+        self.last_pick_item: dict[int, str] = {}
+        self.pick_fail_streak: dict[str, int] = {}
+        self.pick_block_until_round: dict[str, int] = {}
 
     def decide(self, state: dict) -> list[dict]:
         for item in state["items"]:
             self.shelves.add(tuple(item["position"]))
         self._refresh_staging_candidates(state)
 
+        round_number = int(state.get("round", -1))
         bots = sorted(state["bots"], key=lambda b: b["id"])
+        self._update_pick_retry_state(bots, round_number)
         self._update_wait_state(bots)
         items_by_id = {item["id"]: item for item in state["items"]}
         occupied_now = {tuple(b["position"]) for b in bots}
@@ -258,13 +264,49 @@ class TrialBot:
             needed=needed,
             clear_dropoff_ids=clear_dropoff_ids,
             delivery_alloc=delivery_alloc,
+            round_number=round_number,
         )
+        preview_priority_bots: set[int] = set()
+        if sum(preview_needed.values()) > 0:
+            # Option A: when active order is fully covered by currently carried
+            # + assigned items, send surplus bots to preview with full priority.
+            coverage = Counter()
+            for alloc in delivery_alloc.values():
+                coverage.update(alloc)
+            for item_id in assignments.values():
+                item = items_by_id.get(item_id)
+                if item is not None:
+                    coverage[item["type"]] += 1
+
+            active_fully_covered = all(
+                coverage[item_type] >= count for item_type, count in active_needed_raw.items()
+            )
+            if active_fully_covered:
+                surplus_bots = [
+                    b
+                    for b in bots
+                    if b["id"] not in assignments
+                    and b["id"] not in clear_dropoff_ids
+                    and self._delivery_count(delivery_alloc.get(b["id"], Counter())) == 0
+                    and len(b["inventory"]) < 3
+                ]
+                preview_assignments = self._build_greedy_assignments(
+                    bots=surplus_bots,
+                    items=state["items"],
+                    needed=preview_needed,
+                    clear_dropoff_ids=clear_dropoff_ids,
+                    delivery_alloc=delivery_alloc,
+                    round_number=round_number,
+                )
+                assignments.update(preview_assignments)
+                preview_priority_bots = set(preview_assignments.keys())
+                preview_duty_bots.update(preview_priority_bots)
         actions: list[dict] = []
 
         for bot in bots:
             action = self._decide_one(
                 bot=bot,
-                round_number=int(state.get("round", -1)),
+                round_number=round_number,
                 state=state,
                 needed=needed,
                 drop_off=drop_off,
@@ -281,10 +323,60 @@ class TrialBot:
                 preview_duty_cap=preview_duty_cap,
                 dropoff_queue_ids=dropoff_queue_ids,
                 dropoff_queue_leader=dropoff_queue_leader,
+                preview_priority=bot["id"] in preview_priority_bots,
             )
             actions.append(action)
             self.last_action[bot["id"]] = action["action"]
+            if action["action"] == "pick_up":
+                item_id = action.get("item_id")
+                if isinstance(item_id, str) and item_id:
+                    self.last_pick_item[bot["id"]] = item_id
+                else:
+                    self.last_pick_item.pop(bot["id"], None)
+            else:
+                self.last_pick_item.pop(bot["id"], None)
         return actions
+
+    def _update_pick_retry_state(self, bots: list[dict], round_number: int) -> None:
+        active_ids = {b["id"] for b in bots}
+        for bot in bots:
+            bot_id = bot["id"]
+            prev_action = self.last_action.get(bot_id)
+            prev_size = self.last_inventory_size.get(bot_id)
+            current_size = len(bot["inventory"])
+            if prev_action == "pick_up":
+                attempted_item_id = self.last_pick_item.get(bot_id)
+                if attempted_item_id and prev_size is not None:
+                    if current_size <= prev_size:
+                        streak = self.pick_fail_streak.get(attempted_item_id, 0) + 1
+                        self.pick_fail_streak[attempted_item_id] = streak
+                        cooldown_rounds = min(18, 4 + ((streak - 1) * 2))
+                        until_round = round_number + cooldown_rounds
+                        self.pick_block_until_round[attempted_item_id] = max(
+                            self.pick_block_until_round.get(attempted_item_id, -1),
+                            until_round,
+                        )
+                        for target_bot_id, target_item_id in list(self.bot_targets.items()):
+                            if target_item_id == attempted_item_id:
+                                self.bot_targets.pop(target_bot_id, None)
+                    else:
+                        self.pick_fail_streak.pop(attempted_item_id, None)
+                        self.pick_block_until_round.pop(attempted_item_id, None)
+            self.last_inventory_size[bot_id] = current_size
+
+        for bot_id in list(self.last_inventory_size.keys()):
+            if bot_id not in active_ids:
+                self.last_inventory_size.pop(bot_id, None)
+                self.last_pick_item.pop(bot_id, None)
+
+        for item_id, until_round in list(self.pick_block_until_round.items()):
+            if until_round < round_number:
+                self.pick_block_until_round.pop(item_id, None)
+                self.pick_fail_streak.pop(item_id, None)
+
+    def _item_pick_blocked(self, item_id: str, round_number: int) -> bool:
+        until_round = self.pick_block_until_round.get(item_id)
+        return until_round is not None and round_number <= until_round
 
     def _update_wait_state(self, bots: list[dict]) -> None:
         active_ids = {b["id"] for b in bots}
@@ -439,6 +531,7 @@ class TrialBot:
         needed: Counter,
         clear_dropoff_ids: set[int],
         delivery_alloc: dict[int, Counter],
+        round_number: int,
     ) -> dict[int, str]:
         assignments: dict[int, str] = {}
         needed_left = Counter(needed)
@@ -469,6 +562,8 @@ class TrialBot:
             useful_delivery = self._delivery_count(delivery_alloc.get(bot["id"], Counter())) > 0
             for item in items:
                 if bot_needed_left[item["type"]] <= 0:
+                    continue
+                if self._item_pick_blocked(item["id"], round_number):
                     continue
                 dist = self._manhattan(tuple(bot["position"]), tuple(item["position"]))
                 # Delivery bots with free slots may still batch-pick, but bias to nearby items.
@@ -513,6 +608,7 @@ class TrialBot:
         preview_duty_cap: int,
         dropoff_queue_ids: set[int],
         dropoff_queue_leader: Optional[int],
+        preview_priority: bool,
     ) -> dict:
         bot_id = bot["id"]
         pos = tuple(bot["position"])
@@ -578,7 +674,13 @@ class TrialBot:
                 len(preview_duty_bots) < preview_duty_cap
             )
             if preview_duty_allowed:
-                preview_pick = self._pick_if_adjacent(bot, state, preview_needed, reserved_items)
+                preview_pick = self._pick_if_adjacent(
+                    bot,
+                    state,
+                    preview_needed,
+                    reserved_items,
+                    round_number,
+                )
                 if preview_pick is not None:
                     preview_duty_bots.add(bot_id)
                     return preview_pick
@@ -591,6 +693,7 @@ class TrialBot:
                     reserved_items=reserved_items,
                     items_by_id=items_by_id,
                     assigned_item_id=None,
+                    round_number=round_number,
                 )
                 if preview_target is not None:
                     reserved_items.add(preview_target["id"])
@@ -612,7 +715,55 @@ class TrialBot:
                             allow_occupied_goals=False,
                         )
 
-        pick = self._pick_if_adjacent(bot, state, needed, reserved_items)
+        if preview_priority and not useful_inventory:
+            preview_pick = self._pick_if_adjacent(
+                bot,
+                state,
+                preview_needed,
+                reserved_items,
+                round_number,
+            )
+            if preview_pick is not None:
+                preview_duty_bots.add(bot_id)
+                return preview_pick
+
+            preview_target = self._locked_or_best_item(
+                bot_id=bot_id,
+                pos=pos,
+                state=state,
+                needed=preview_needed,
+                reserved_items=reserved_items,
+                items_by_id=items_by_id,
+                assigned_item_id=assigned_item_id,
+                round_number=round_number,
+            )
+            if preview_target is not None:
+                reserved_items.add(preview_target["id"])
+                item_type = preview_target["type"]
+                if preview_needed[item_type] > 0:
+                    preview_needed[item_type] -= 1
+                if preview_target["id"] in preview_item_ids:
+                    preview_duty_bots.add(bot_id)
+                item_pos = tuple(preview_target["position"])
+                goals = self._adjacent_walkable(item_pos, state, occupied_now, pos)
+                if goals:
+                    return self._move_toward(
+                        bot_id=bot_id,
+                        start=pos,
+                        goals=goals,
+                        state=state,
+                        occupied_now=occupied_now,
+                        reserved_next=reserved_next,
+                        allow_occupied_goals=False,
+                    )
+
+        pick = self._pick_if_adjacent(
+            bot,
+            state,
+            needed,
+            reserved_items,
+            round_number,
+        )
         if pick is not None:
             return pick
 
@@ -629,6 +780,7 @@ class TrialBot:
                     reserved_next=reserved_next,
                     items_by_id=items_by_id,
                     assigned_item_id=assigned_item_id,
+                    round_number=round_number,
                 )
                 if detour is not None:
                     return detour
@@ -690,6 +842,7 @@ class TrialBot:
             reserved_items=reserved_items,
             items_by_id=items_by_id,
             assigned_item_id=assigned_item_id,
+            round_number=round_number,
         )
         if target_item is None:
             self.bot_targets.pop(bot_id, None)
@@ -745,12 +898,14 @@ class TrialBot:
         reserved_items: set[str],
         items_by_id: dict[str, dict],
         assigned_item_id: Optional[str],
+        round_number: int,
     ) -> Optional[dict]:
         if assigned_item_id:
             assigned = items_by_id.get(assigned_item_id)
             if (
                 assigned
                 and assigned_item_id not in reserved_items
+                and not self._item_pick_blocked(assigned_item_id, round_number)
                 and needed[assigned["type"]] > 0
             ):
                 self.bot_targets[bot_id] = assigned_item_id
@@ -762,6 +917,7 @@ class TrialBot:
             if (
                 locked_item
                 and locked_item_id not in reserved_items
+                and not self._item_pick_blocked(locked_item_id, round_number)
                 and needed[locked_item["type"]] > 0
             ):
                 return locked_item
@@ -777,6 +933,7 @@ class TrialBot:
             state=state,
             needed=needed,
             reserved_items=reserved_items | locked_by_others,
+            round_number=round_number,
         )
         if chosen is not None:
             self.bot_targets[bot_id] = chosen["id"]
@@ -788,6 +945,7 @@ class TrialBot:
         state: dict,
         needed: Counter,
         reserved_items: set[str],
+        round_number: int,
     ) -> Optional[dict]:
         pos = tuple(bot["position"])
         if len(bot["inventory"]) >= 3:
@@ -796,6 +954,8 @@ class TrialBot:
         candidates: list[dict] = []
         for item in state["items"]:
             if item["id"] in reserved_items:
+                continue
+            if self._item_pick_blocked(item["id"], round_number):
                 continue
             if needed[item["type"]] <= 0:
                 continue
@@ -818,11 +978,14 @@ class TrialBot:
         state: dict,
         needed: Counter,
         reserved_items: set[str],
+        round_number: int,
     ) -> Optional[dict]:
         best_item = None
         best_dist = 10**9
         for item in state["items"]:
             if item["id"] in reserved_items:
+                continue
+            if self._item_pick_blocked(item["id"], round_number):
                 continue
             if needed[item["type"]] <= 0:
                 continue
@@ -853,6 +1016,7 @@ class TrialBot:
         reserved_next: set[tuple[int, int]],
         items_by_id: dict[str, dict],
         assigned_item_id: Optional[str],
+        round_number: int,
     ) -> Optional[dict]:
         if not assigned_item_id:
             return None
@@ -860,6 +1024,8 @@ class TrialBot:
         if item is None:
             return None
         if assigned_item_id in reserved_items:
+            return None
+        if self._item_pick_blocked(assigned_item_id, round_number):
             return None
         item_type = item["type"]
         if needed[item_type] <= 0:

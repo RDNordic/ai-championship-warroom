@@ -244,7 +244,8 @@ class TrialBot:
         active_order = self._get_order_by_status(state, "active")
         active_needed_raw = self._required_minus_delivered(active_order)
         delivery_alloc, _ = self._allocate_delivery_slots(bots, active_needed_raw)
-        needed = self._needed_counts_for_order(active_order, bots)
+        active_needed = self._needed_counts_for_order(active_order, bots)
+        needed = Counter(active_needed)
         preview_order = self._get_order_by_status(state, "preview")
         preview_needed = self._needed_counts_for_order(preview_order, bots)
         preview_item_ids = self._preview_item_ids(state["items"], preview_needed)
@@ -265,7 +266,7 @@ class TrialBot:
                 for b in bots
             )
             if sum(preview_needed.values()) > 0 and can_preview:
-                needed = preview_needed
+                needed = Counter(preview_needed)
 
         drop_off = tuple(state["drop_off"])
         dropoff_queue_ids = self._select_dropoff_queue_leader(bots, drop_off, delivery_alloc)
@@ -288,6 +289,7 @@ class TrialBot:
                 round_number=round_number,
                 state=state,
                 needed=needed,
+                active_needed=active_needed,
                 drop_off=drop_off,
                 occupied_now=occupied_now,
                 reserved_items=reserved_items,
@@ -631,6 +633,7 @@ class TrialBot:
         round_number: int,
         state: dict,
         needed: Counter,
+        active_needed: Counter,
         drop_off: tuple[int, int],
         occupied_now: set[tuple[int, int]],
         reserved_items: set[str],
@@ -833,14 +836,19 @@ class TrialBot:
             )
 
         if useful_inventory:
-            # Solo-bot optimization: keep collecting needed items before heading
-            # to drop-off. Only go to drop-off when inventory is full (3) or
-            # no more needed items exist, or very late in the game.
-            still_needed = sum(needed.values())
+            # Solo bot carrying active-order items should only collect active needs.
+            collect_needed = needed
+            if len(state.get("bots", [])) == 1:
+                collect_needed = Counter(active_needed)
+
+            # Keep collecting needed items before heading to drop-off. Only go
+            # to drop-off when inventory is full (3), no more needed items
+            # exist, or very late in the game.
+            still_needed = sum(collect_needed.values())
             min_trip_cost = self._min_pickup_delivery_trip_cost(
                 pos=pos,
                 state=state,
-                needed=needed,
+                needed=collect_needed,
                 round_number=round_number,
                 reserved_items=reserved_items,
             )
@@ -869,7 +877,7 @@ class TrialBot:
                 and self._can_start_pickup_delivery_trip(
                     pos=pos,
                     state=state,
-                    needed=needed,
+                    needed=collect_needed,
                     round_number=round_number,
                     safety_buffer=0,
                     reserved_items=reserved_items,
@@ -882,7 +890,7 @@ class TrialBot:
                     round_number=round_number,
                     pos=pos,
                     state=state,
-                    needed=needed,
+                    needed=collect_needed,
                     reserved_items=reserved_items,
                     items_by_id=items_by_id,
                     assigned_item_id=assigned_item_id,
@@ -934,8 +942,8 @@ class TrialBot:
                     reserved_items.add(chosen_item["id"])
                     item_type = chosen_item["type"]
                     if chosen_item["id"] == target_item["id"]:
-                        if needed[item_type] > 0:
-                            needed[item_type] -= 1
+                        if collect_needed[item_type] > 0:
+                            collect_needed[item_type] -= 1
                     else:
                         if preview_needed[item_type] > 0:
                             preview_needed[item_type] -= 1
