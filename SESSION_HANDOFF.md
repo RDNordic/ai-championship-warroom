@@ -2,49 +2,57 @@
 
 ## Checkpoint
 
-`medium_v4` is now implemented and wired; first live result is improved (score 65), and the next task is replay-driven bottleneck analysis.
+`optimized_medium_v4` is now working as intended: the plan prefix is replayed exactly, then control falls back to heuristics; latest live score is 91.
 
 ## Latest Work
 
-- Added `src/grocerybot/strategies/medium_v4.py`.
-- `medium_v4` architecture:
-  - deterministic exact small matching for active/preview item assignment (`_optimal_matching`)
-  - persistent intents via existing `IntentManager`
-  - prioritized reservation traffic control with edge-conflict/swap blocking
-  - delivery leader gating near drop-off
-  - conservative preview gate
-- Registered strategy key in `src/grocerybot/strategies/__init__.py`:
-  - `"medium_v4": MediumV4Strategy`
-- Added tests in `tests/test_medium_v4.py`:
-  - action count/wiring
-  - non-dropoff collision safety
-  - replay diagnostics payload + timeout behavior
-- Validation completed:
-  - `python -m pytest tests/test_medium_v4.py -q`
-  - `python -m pytest tests/test_medium_v2.py tests/test_medium_v3.py tests/test_medium_v4.py -q`
-  - `python -m ruff check src/grocerybot/strategies/medium_v4.py tests/test_medium_v4.py`
-  - `python -m mypy src/grocerybot/strategies/medium_v4.py`
-- Latest reported live run (`medium_v4`):
-  - Score: 65
-  - Rounds used: 300
-  - Items delivered: 30
-  - Orders completed: 7
+- Added offline planner script:
+  - `scripts/optimize_medium_v4.py`
+  - Builds `data/medium_YYYY-MM-DD_plan_v4.json` with `actions` + per-round `checkpoints`.
+- Planner now auto-merges known orders from `--current-run` replay into `data/medium_2026-03-02.json` before planning.
+  - Snapshot grew from 7 known orders to 11 known orders.
+- Added runtime strategy:
+  - `src/grocerybot/strategies/optimized_medium_v4.py`
+  - Replays plan by round with state validation, then falls back to `medium_v4`.
+- Improved replay robustness:
+  - checkpoint mismatch is advisory (not immediate global disable)
+  - per-bot skip tolerance prevents single missed pick from killing plan
+  - fallback only on sustained failure / plan end
+- Registered strategy:
+  - `src/grocerybot/strategies/__init__.py` includes `"optimized_medium_v4"`.
+- Added tests:
+  - `tests/test_optimized_medium_v4.py`
+- Validation run:
+  - `ruff` clean
+  - `mypy` clean (with `PYTHONPATH=src`)
+  - `pytest tests/test_optimized_medium_v4.py` passed
+
+## Current Results
+
+- Offline plan for first 9 known orders:
+  - 251 rounds, score 81 at round 251.
+- Live run:
+  - `game_medium_20260302_214042.jsonl`
+  - Final score 91, items 41, orders 10.
+- Plan adherence check:
+  - rounds 0-250 matched `plan_v4` exactly (100% round and per-bot action match).
+  - rounds 251-299 are fallback phase.
 
 ## Known Issues
 
-- Only one `medium_v4` live result is recorded so far; variance across runs is unknown.
-- Throughput still trails strong benchmark runs (friend run around 104).
-- Need replay-level diagnosis for where time is being lost (assignment, congestion, or drop-off cycling).
+- Medium score still below best known benchmark (~104).
+- Fallback phase (post-plan) is still mostly single-bot throughput.
+- `medium_v3.py` has unrelated local modifications in working tree; not part of this checkpoint.
 
 ## Next Steps
 
-1. Analyze the latest `medium_v4` replay with `scripts/analyze_replay.py`.
-2. Compare utilization/stall metrics against the friend replay (`game_medium_104_20260302_111256.jsonl`).
-3. Identify the dominant throughput limiter (single root cause).
-4. Patch only that limiter in `medium_v4`, rerun, and compare score + diagnostics.
+1. Regenerate plan with `--max-orders 10` (or 11) from latest replay.
+2. Run `optimized_medium_v4` and verify exact adherence for expanded plan horizon.
+3. Optimize fallback window only (post-plan) for multi-bot contribution near drop-off.
+4. Batch 3 runs and compare median score against current 91 baseline.
 
 ## Restart Prompt
 
 ```text
-Read CONTEXT.md and SESSION_HANDOFF.md. Continue from medium_v4 (current score 65). Analyze the latest medium_v4 replay with scripts/analyze_replay.py, compare against game_medium_104_20260302_111256.jsonl, identify the dominant throughput bottleneck, patch only that path in medium_v4, and rerun to measure score/traffic changes.
+Read CONTEXT.md and SESSION_HANDOFF.md. Continue optimizing medium using optimized_medium_v4. Regenerate plan_v4 for max-orders 10 or 11 from latest replay, run a new game, verify exact plan adherence, then improve only the fallback phase (rounds after planned prefix) to increase final score beyond 91.
 ```
