@@ -2,51 +2,56 @@
 
 ## Checkpoint
 
-Offline optimizer and Easy replay strategy are implemented; `optimized_easy` now replays plan actions first and falls back to `memory_solo` heuristics when plan is exhausted or invalid.
+Medium strategy work is active: `medium_v2` and `medium_v3` exist, diagnostics are integrated, and `medium_v3` has hotfixes for drop-off deadlocks but performance is still variable.
 
 ## Latest Work
 
-- Added `scripts/optimize.py`:
-  - loads `data/{level}_{date}.json`
-  - builds `PassableGrid` from synthetic `GameState`
-  - computes exact known-order plan with route planning + cross-order inventory DP (inventory cap 3 respected)
-  - writes `data/{level}_{date}_plan.json`
-  - reports rounds vs baseline and vs current run order count
-- Added `optimized_easy` strategy: `src/grocerybot/strategies/optimized_easy.py`.
-  - replays plan actions in order, resolves `pick_up` from `item_type` to concrete `item_id`
-  - honors plan cap from `summary.optimal_rounds_for_current_run_orders` (e.g. 241)
-  - falls back to `memory_solo` for remaining rounds
-- Added desync hardening:
-  - skip benign no-op plan entries (`drop_off` on drop-off with empty inventory) instead of disabling plan immediately
-  - keep cursor-based replay rather than strict round-key lockstep
-- Fixed optimizer order-boundary model:
-  - zero-cost pre-consumption of carried matching items at drop-off when next order activates
-- Registered strategy in `src/grocerybot/strategies/__init__.py` as `optimized_easy`.
-- Added tests `tests/test_optimized_easy.py` (7 tests covering replay, fallback, invalid actions, skip behavior, round cap).
-- Validation:
-  - `python -m pytest` -> 121 passed
-  - `python -m ruff check ...` clean
-  - `python -m mypy src/grocerybot/strategies/optimized_easy.py scripts/optimize.py` clean
+- Added replay filename level tagging (`game_<level>_yyyymmdd_hhmmss.jsonl`) via:
+  - `src/grocerybot/util/logger.py`
+  - `src/grocerybot/client.py`
+  - `scripts/run.py`
+- Added `medium_v2` strategy:
+  - `src/grocerybot/strategies/medium_v2.py`
+  - min-cost-ish greedy assignment + candidate-based traffic resolution
+- Added strategy diagnostics pipeline:
+  - strategy hook in `src/grocerybot/strategies/base.py`
+  - replay write in `src/grocerybot/client.py`
+  - analyzer support in `scripts/analyze_replay.py` and `scripts/analyze_deep.py`
+- Added `medium_v3` strategy:
+  - `src/grocerybot/strategies/medium_v3.py`
+  - greedy active allocation, reservation traffic, delivery leader, stricter preview gate
+- `medium_v3` was patched twice:
+  1. Decongestion/anti-oscillation patch improved one run to score 36
+  2. Over-constrained patch caused hard deadlock (score 18) and was hotfixed
+- Added/updated tests:
+  - `tests/test_medium_v2.py`
+  - `tests/test_medium_v3.py`
+  - includes drop-off clearance and diagnostics checks
+- Strategy registry updated:
+  - `src/grocerybot/strategies/__init__.py` now includes `medium_v2`, `medium_v3`
 
 ## Known Issues
 
-- Plan format is functional but not yet fully aligned with the original plan-doc schema (`pos`, compact `order_summary`, etc.).
-- Live run parity still needs confirmation after the latest cursor/skip desync fix.
-- `.claude/` and `optimal_solver/` exist untracked in repo and were intentionally not included in commit.
+- `medium_v3` remains unstable across runs (observed scores 36 and 18).
+- Deadlock risk near drop-off corridor is reduced but not eliminated.
+- Throughput still far below benchmark friend run (`104`) especially in order-cycle time.
+- Existing analyzers parse native replay schema directly; friend log schema required ad-hoc adapter in session.
 
 ## Next Steps
 
-1. Run live Easy benchmark with `optimized_easy` and latest plan:
-   - regenerate plan: `python scripts/optimize.py --level easy --date 2026-03-02 --current-run <latest_replay.jsonl>`
-   - run bot: `python scripts/run.py --level easy --strategy optimized_easy`
-2. Compare replay vs plan for first 241 rounds and measure:
-   - first mismatch round (if any)
-   - score/orders by round 241 and round 300
-3. If mismatch remains, add trace logging in `optimized_easy` for plan cursor + skip decisions.
-4. Optional cleanup: align optimizer JSON/console output to the exact plan doc format.
+1. Run 5 consecutive medium games with `medium_v3` and collect replay names.
+2. For each replay, record:
+   - score, items, orders
+   - rounds with `traffic_blocks`
+   - max stuck streak per bot
+3. Identify dominant failure pattern across the 5 runs (not a single replay).
+4. Patch `medium_v3` only on that dominant failure path:
+   - prefer relaxed drop-off lane rules for pickers
+   - allow controlled delivery sidestep with bounded retries
+5. Re-run the same 5-game batch and compare mean/median score.
 
 ## Restart Prompt
 
 ```text
-Read CONTEXT.md and SESSION_HANDOFF.md. Verify live Easy performance of optimized_easy using the latest optimizer plan. Regenerate plan, run optimized_easy, then compare replay-vs-plan up to capped plan rounds (currently 241). If mismatch occurs, instrument optimized_easy cursor/skip logic and fix desync.
+Read CONTEXT.md and SESSION_HANDOFF.md. Continue Medium optimization on `medium_v3` using a 5-replay batch evaluation. Run five medium games, analyze each replay (score, items, orders, traffic_blocks, stuck streaks), identify the dominant failure mode, patch only that path, and rerun the same 5-game batch to compare mean/median score.
 ```

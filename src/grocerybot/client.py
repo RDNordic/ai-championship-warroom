@@ -28,10 +28,11 @@ async def play(
     token: str,
     strategy: Strategy,
     ws_url: str = DEFAULT_WS_URL,
+    level: str | None = None,
 ) -> GameOver:
     """Connect to the game server and run the strategy until game over."""
     url = f"{ws_url}?token={token}"
-    replay = ReplayWriter()
+    replay = ReplayWriter(level=level)
 
     try:
         async with websockets.connect(url) as ws:
@@ -66,6 +67,20 @@ async def play(
                 response = BotResponse(actions=actions)
                 response_data = json.loads(response.model_dump_json())
                 replay.write(response_data)
+                diagnostics = strategy.replay_diagnostics(
+                    state=state,
+                    actions=actions,
+                    timed_out=timer.exceeded,
+                )
+                if diagnostics is not None:
+                    replay.write(
+                        {
+                            "type": "strategy_diagnostics",
+                            "strategy": strategy.__class__.__name__,
+                            "round": state.round,
+                            "diagnostics": diagnostics,
+                        },
+                    )
                 await ws.send(response.model_dump_json())
 
                 log_round(

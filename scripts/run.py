@@ -83,7 +83,9 @@ def main() -> None:
     console.print(f"Endpoint: [dim]{ws_url}[/dim]")
     console.print()
 
-    result = asyncio.run(play(token=token, strategy=strategy, ws_url=ws_url))
+    result = asyncio.run(
+        play(token=token, strategy=strategy, ws_url=ws_url, level=args.level)
+    )
     sys.exit(0 if result.score > 0 else 1)
 
 

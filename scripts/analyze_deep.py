@@ -10,15 +10,18 @@ def analyze(path: Path) -> None:
 
     states: list[dict] = []
     responses: list[dict] = []
+    diagnostics_by_round: dict[int, dict] = {}
 
     for line in lines:
         obj = json.loads(line)
         if obj.get("type") == "game_state":
             states.append(obj)
+        elif obj.get("type") == "strategy_diagnostics":
+            rnd = obj.get("round")
+            if isinstance(rnd, int):
+                diagnostics_by_round[rnd] = obj
         elif "actions" in obj:
             responses.append(obj)
-
-    num_bots = len(states[0]["bots"])
 
     # Build per-round data: (round, bot_positions, bot_inventories, actions_sent, orders)
     print("=== Detailed Round-by-Round (stall-relevant rounds) ===\n")
@@ -85,6 +88,27 @@ def analyze(path: Path) -> None:
             if "item_id" in act:
                 extra = f" (item_id={act['item_id']})"
             print(f"  Bot {bid}: pos={pos} inv={inv} -> {act_str}{extra}")
+        diag_entry = diagnostics_by_round.get(state["round"])
+        if isinstance(diag_entry, dict):
+            diagnostics = diag_entry.get("diagnostics", {})
+            if isinstance(diagnostics, dict):
+                print(
+                    "  Diagnostics:"
+                    f" traffic_blocks={diagnostics.get('traffic_blocks', 0)}"
+                    f" timed_out={diagnostics.get('timed_out', False)}",
+                )
+                per_bot = diagnostics.get("per_bot", {})
+                if isinstance(per_bot, dict):
+                    for bid, payload in sorted(per_bot.items()):
+                        if not isinstance(payload, dict):
+                            continue
+                        print(
+                            f"    Bot {bid}: intent={payload.get('intent')} "
+                            f"blocked_ticks={payload.get('blocked_ticks')} "
+                            f"primary={payload.get('primary_action')} "
+                            f"final={payload.get('final_action')} "
+                            f"wait_reason={payload.get('wait_reason')}",
+                        )
         print()
 
 
