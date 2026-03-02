@@ -2,39 +2,51 @@
 
 ## Checkpoint
 
-Easy mode `memory_solo.py` has 2-trip lookahead, stale-shelf fix, and endgame heuristic. Score: 113 on today's map (baseline was 119 — regression from 2-trip changes). Offline optimizer is planned but not yet implemented.
+Offline optimizer and Easy replay strategy are implemented; `optimized_easy` now replays plan actions first and falls back to `memory_solo` heuristics when plan is exhausted or invalid.
 
 ## Latest Work
 
-- Added 2-trip lookahead (`_choose_best_two_trip_candidate`) for 4-item orders: evaluates trip1_cost + trip2_cost across all splits, picks minimum total. Tie-breaks by cheaper trip-1.
-- Fixed stale `_type_to_adjs` bug: now rebuilt from `state.items` each tick so route planner never targets depleted shelves. This was a latent bug exposed by different preview pickup patterns.
-- Added endgame heuristic: suppress preview items when ≤25 rounds remain — bot focuses on finishing active order only.
-- Stored `self._drop_off` position for trip-2 cost computation.
-- All 114 tests pass, ruff clean.
+- Added `scripts/optimize.py`:
+  - loads `data/{level}_{date}.json`
+  - builds `PassableGrid` from synthetic `GameState`
+  - computes exact known-order plan with route planning + cross-order inventory DP (inventory cap 3 respected)
+  - writes `data/{level}_{date}_plan.json`
+  - reports rounds vs baseline and vs current run order count
+- Added `optimized_easy` strategy: `src/grocerybot/strategies/optimized_easy.py`.
+  - replays plan actions in order, resolves `pick_up` from `item_type` to concrete `item_id`
+  - honors plan cap from `summary.optimal_rounds_for_current_run_orders` (e.g. 241)
+  - falls back to `memory_solo` for remaining rounds
+- Added desync hardening:
+  - skip benign no-op plan entries (`drop_off` on drop-off with empty inventory) instead of disabling plan immediately
+  - keep cursor-based replay rather than strict round-key lockstep
+- Fixed optimizer order-boundary model:
+  - zero-cost pre-consumption of carried matching items at drop-off when next order activates
+- Registered strategy in `src/grocerybot/strategies/__init__.py` as `optimized_easy`.
+- Added tests `tests/test_optimized_easy.py` (7 tests covering replay, fallback, invalid actions, skip behavior, round cap).
+- Validation:
+  - `python -m pytest` -> 121 passed
+  - `python -m ruff check ...` clean
+  - `python -m mypy src/grocerybot/strategies/optimized_easy.py scripts/optimize.py` clean
 
 ## Known Issues
 
-- Easy mode score is 113 vs baseline 119 (6-point regression). The 2-trip lookahead makes different trip-1 splits that may cascade into worse preview pipeline outcomes. Needs investigation or may be addressed by the offline optimizer approach.
-- The 2-trip code only helps when `len(needed_active) > space` (mainly 4-item orders with empty inventory).
+- Plan format is functional but not yet fully aligned with the original plan-doc schema (`pos`, compact `order_summary`, etc.).
+- Live run parity still needs confirmation after the latest cursor/skip desync fix.
+- `.claude/` and `optimal_solver/` exist untracked in repo and were intentionally not included in commit.
 
 ## Next Steps
 
-1. **Offline game optimizer** (`scripts/optimize.py`) — TOP PRIORITY. Full plan in `.claude/plans/whimsical-sparking-fountain.md`. Key points:
-   - Load daily snapshot (grid, items, orders) from `data/{level}_{date}.json`
-   - Simulate optimal bot actions for all known orders: enumerate trip splits for >3 item orders, use exact route planning (A*/BFS from grid.py)
-   - Output step-by-step action list + JSON plan file (`data/{level}_{date}_plan.json`)
-   - Show rounds saved vs current 300-tick run
-   - Purpose: bot replays optimal actions for known orders, then falls back to heuristics for unknown ones. Each run discovers more orders → feed back into optimizer.
-   - Items are endless (don't deplete between orders).
-
-2. **Replay strategy**: Build a strategy that reads the plan JSON and replays actions for known rounds, then delegates to `memory_solo` for remaining rounds.
-
-3. **Test "always full inventory" policy** — never drop off with <3 items.
-
-4. **Medium mode re-benchmark** with v2 traffic control.
+1. Run live Easy benchmark with `optimized_easy` and latest plan:
+   - regenerate plan: `python scripts/optimize.py --level easy --date 2026-03-02 --current-run <latest_replay.jsonl>`
+   - run bot: `python scripts/run.py --level easy --strategy optimized_easy`
+2. Compare replay vs plan for first 241 rounds and measure:
+   - first mismatch round (if any)
+   - score/orders by round 241 and round 300
+3. If mismatch remains, add trace logging in `optimized_easy` for plan cursor + skip decisions.
+4. Optional cleanup: align optimizer JSON/console output to the exact plan doc format.
 
 ## Restart Prompt
 
 ```text
-Read CONTEXT.md and SESSION_HANDOFF.md. Build the offline game optimizer (scripts/optimize.py). Full plan is in .claude/plans/whimsical-sparking-fountain.md. Load daily snapshot, simulate optimal actions for all known orders using exact route planning, output step-by-step action list and JSON plan. Show rounds saved vs current run. Items are endless. Bot spawn is at [10,8] for Easy.
+Read CONTEXT.md and SESSION_HANDOFF.md. Verify live Easy performance of optimized_easy using the latest optimizer plan. Regenerate plan, run optimized_easy, then compare replay-vs-plan up to capped plan rounds (currently 241). If mismatch occurs, instrument optimized_easy cursor/skip logic and fix desync.
 ```
