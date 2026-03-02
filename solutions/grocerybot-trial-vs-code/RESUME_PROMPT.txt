@@ -3,30 +3,35 @@ Read these files first:
 2) solutions/grocerybot-trial-vs-code/RUNBOOK.md
 3) solutions/grocerybot-trial-vs-code/logs/run_history.csv
 4) solutions/grocerybot-trial-vs-code/run_hard.py
-5) solutions/grocerybot-simulator/analyze.py
-6) solutions/grocerybot-simulator/validator.py
+5) solutions/grocerybot-trial-vs-code/run_expert.py
+6) solutions/grocerybot-simulator/analyze.py
+7) solutions/grocerybot-simulator/validator.py
 
 Primary objective:
-Improve Hard above benchmark 99 with one focused change.
+Maximize Hard + Expert points.
 
 Current context:
-- Top scores: Easy 137 (KO reference), Medium 118, Hard 99, Expert 71.
-- Hard code already includes Option A surplus preview pipeline and currently validates at 99.
-- Simulator analysis indicates main remaining Hard inefficiency is early spawn-stack waiting.
-- Hard late cutoff (>285) has lower impact than startup coordination in best runs.
+- Local top scores: Easy 137 (KO reference), Medium 118, Hard 99, Expert 71.
+- Leaderboard benchmark reference: Hard 243 + Expert 219 = 462.
+- Local Hard+Expert combined is 170; gap is 292.
+- Hard: keep Option A pipeline and focus on opening anti-stack throughput only.
+- Expert: prioritize traffic-first swarm coordination changes; routing-only tweaks have underperformed.
 
-STRICT HARD GATE RULE:
-- For each Hard change, do exactly one behavior change.
-- Run Hard once with fresh token.
-- If score > 99: keep and commit.
-- If score <= 99: revert that change and do not commit.
+STRICT GATE RULE:
+- For each experiment, do exactly one behavior change in one difficulty file.
+- Run once with fresh token on that difficulty.
+- Compare against local best for that difficulty (Hard 99, Expert 71).
+- If improved: keep and commit.
+- If not improved: revert and do not commit.
+- If run is timeout-heavy/noisy, rerun once before final keep/revert decision.
 
 Suggested next change:
-- Implement startup anti-stack fan-out for empty non-useful bots during opening rounds.
-- Do not modify websocket, logging, token handling, drop-off queue logic, or delivery allocation logic.
+- Expert first: one traffic coordination change (deconfliction/chokepoint/drop-off flow).
+- Hard second: one startup anti-stack throughput change.
+- Do not modify websocket/token/logging plumbing.
 
 Expected deliverables after run:
 1) Score and replay filename
 2) Keep/revert decision based on strict gate
 3) If kept: commit hash
-4) Short note on observed bottleneck deltas (wait/blocked/pickup failures)
+4) Short note on observed bottleneck deltas (wait/blocked/pickup failures/timeouts)
