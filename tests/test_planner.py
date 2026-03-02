@@ -123,9 +123,10 @@ class TestTaskAssigner:
         tasks = assigner.assign(custom, snap, planner)
         assert tasks[0].kind == "drop_off"
 
-    def test_full_inventory_without_active_match_goes_to_dropoff(
+    def test_full_inventory_without_any_match_gets_wait(
         self, medium_state: GameState,
     ) -> None:
+        """Full inventory with no items matching active or preview -> wait."""
         tracker = OrderTracker()
         planner = LocalTripPlanner(medium_state, PassableGrid(medium_state))
         assigner = TaskAssigner()
@@ -158,7 +159,48 @@ class TestTaskAssigner:
         snap = tracker.snapshot(custom)
         assert snap is not None
         tasks = assigner.assign(custom, snap, planner)
-        assert tasks[0].kind == "drop_off"
+        assert tasks[0].kind == "wait"
+
+    def test_full_inventory_with_only_preview_match_gets_wait(
+        self, medium_state: GameState,
+    ) -> None:
+        """Full inventory with only preview-matching items -> wait.
+
+        Server only accepts drop_off for active order items.
+        """
+        tracker = OrderTracker()
+        planner = LocalTripPlanner(medium_state, PassableGrid(medium_state))
+        assigner = TaskAssigner()
+
+        custom = medium_state.model_copy(
+            update={
+                "orders": [
+                    Order(
+                        id="a0",
+                        items_required=["milk"],
+                        items_delivered=[],
+                        complete=False,
+                        status="active",
+                    ),
+                    Order(
+                        id="p0",
+                        items_required=["butter"],
+                        items_delivered=[],
+                        complete=False,
+                        status="preview",
+                    ),
+                ],
+                "bots": [
+                    Bot(id=0, position=(3, 7), inventory=["bread", "eggs", "butter"]),
+                    Bot(id=1, position=(7, 3), inventory=[]),
+                    Bot(id=2, position=(11, 9), inventory=[]),
+                ],
+            },
+        )
+        snap = tracker.snapshot(custom)
+        assert snap is not None
+        tasks = assigner.assign(custom, snap, planner)
+        assert tasks[0].kind == "wait"
 
     def test_no_over_assignment_of_active_multiplicity(
         self, medium_state: GameState,
