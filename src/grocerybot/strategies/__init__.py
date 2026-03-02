@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from grocerybot.strategies.greedy import GreedyStrategy
 from grocerybot.strategies.logger import LoggerStrategy
 from grocerybot.strategies.memory_solo import MemorySoloStrategy
+from grocerybot.strategies.optimized_easy import OptimizedEasyStrategy
 from grocerybot.strategies.solo import SoloStrategy
 
 if TYPE_CHECKING:
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 STRATEGIES: dict[str, type[Strategy]] = {
     "greedy": GreedyStrategy,
     "logger": LoggerStrategy,
+    "optimized_easy": OptimizedEasyStrategy,
     "solo": SoloStrategy,
     "memory_solo": MemorySoloStrategy,
 }
@@ -29,4 +31,6 @@ def get_strategy(name: str, level: str | None = None) -> Strategy:
         raise ValueError(msg)
     if name == "memory_solo" and level:
         return MemorySoloStrategy(level=level)
+    if name == "optimized_easy" and level:
+        return OptimizedEasyStrategy(level=level)
     return cls()
