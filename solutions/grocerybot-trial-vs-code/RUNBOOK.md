@@ -4,11 +4,15 @@
 
 Each difficulty has its own fully independent bot file. You can tune one without affecting the others.
 
+## Active Window
+- Focus now: `Hard` challenge in a fresh tuning window.
+- Keep `run_medium.py` frozen at the current 118-capable build while tuning Hard.
+
 ### 1. Get a fresh token
 Go to `app.ainm.no/challenge` -> select difficulty -> click **Play**.
 
 ### 2. Save token to `.env`
-```
+```dotenv
 GROCERY_BOT_TOKEN_EASY=<token>
 GROCERY_BOT_TOKEN_MEDIUM=<token>
 GROCERY_BOT_TOKEN_HARD=<token>
@@ -17,16 +21,16 @@ GROCERY_BOT_TOKEN_EXPERT=<token>
 
 ### 3. Run the matching script
 ```powershell
-# Easy (best this session: 110)
+# Easy (best: 110)
 & ".venv\Scripts\python.exe" run_easy.py
 
-# Medium (best this session: 116)
+# Medium (best: 118)
 & ".venv\Scripts\python.exe" run_medium.py
 
-# Hard (best this session: 71)
+# Hard (best: 99)
 & ".venv\Scripts\python.exe" run_hard.py
 
-# Expert (best this session: 60)
+# Expert (best: 71)
 & ".venv\Scripts\python.exe" run_expert.py
 
 # Generic fallback (uses GROCERY_BOT_TOKEN directly)
@@ -60,24 +64,32 @@ Each `run_*.py` is a complete self-contained copy of bot logic.
 5. Planner exception fallback -> all-wait.
 6. Token expiry checked before connect.
 
-## Analysis One-Liner
+## Analysis One-Liners
 ```powershell
+# Last 10 runs across all difficulties
 Get-Content .\logs\run_history.csv | Select-Object -Last 10
+
+# Last 10 hard runs only
+Import-Csv .\logs\run_history.csv | Where-Object { $_.difficulty -eq 'hard' } | Select-Object -Last 10
 ```
 
-## Current Easy Notes
-- Best replay: `logs/game_20260301_211903.jsonl` (score 110).
-- Latest tuned replay: `logs/game_20260301_220218.jsonl` (score 109).
+## Current Medium Notes (Frozen)
+- Verified high runs on current medium build:
+  - `logs/game_20260302_105543.jsonl` (118)
+  - `logs/game_20260302_105659.jsonl` (118)
+  - `logs/game_20260302_110631.jsonl` (118)
+- Medium commits to keep:
+  - `d704c3d` (late-game preview pivot guard + earlier detour cutoff)
+  - `6b24f2c` (drop-off ring fallback staging)
+- Do not modify `run_medium.py` during Hard tuning unless explicitly switching focus.
 
-## Current Medium Notes
-- Best replay cluster: `logs/game_20260301_232655.jsonl`, `logs/game_20260301_232756.jsonl`, `logs/game_20260301_232841.jsonl`, `logs/game_20260301_235029.jsonl` (score 116).
-- Historical regression replay: `logs/game_20260301_222205.jsonl` (score 11).
-- Current `run_medium.py` baseline now includes:
-  - `random.seed(42)`
-  - `self._walls` caching
-  - single queue deliverer (`ranked[:1]`)
-  - early anti-stall nudge (`wait_streak >= 2`) plus low-score early-round nudge
-  - distance-aware late-game staging (`dist_to_drop + 2` vs `rounds_left`)
-  - round-dependent detour thresholds (`+8/+6/+3`)
-  - drop-off-aware item selection cost (`(dist_bot * 2) + dist_drop`)
-- Next action after resume: run a 10-15 run Medium batch and compare median/min vs baseline.
+## Current Hard Notes (Active)
+- Best hard replay: `logs/game_20260301_223438.jsonl` (99).
+- Near-best hard replay: `logs/game_20260301_225157.jsonl` (98).
+- Fresh-window baseline (2026-03-02):
+  - `logs/game_20260302_112639.jsonl` (20)
+  - `logs/game_20260302_112818.jsonl` (91)
+  - `logs/game_20260302_112945.jsonl` (20)
+  - Baseline summary: min=20, median=20, max=91
+- Hard has high variance and collapse risk, so test in 3-run batches and keep one-change increments.
+- Immediate next step: apply one low-risk stability change to `run_hard.py` and re-test in 3 runs.
