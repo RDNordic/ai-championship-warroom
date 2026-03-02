@@ -8,8 +8,10 @@ from grocerybot.strategies.greedy import GreedyStrategy
 from grocerybot.strategies.logger import LoggerStrategy
 from grocerybot.strategies.medium_v2 import MediumV2Strategy
 from grocerybot.strategies.medium_v3 import MediumV3Strategy
+from grocerybot.strategies.medium_v4 import MediumV4Strategy
 from grocerybot.strategies.memory_solo import MemorySoloStrategy
 from grocerybot.strategies.optimized_easy import OptimizedEasyStrategy
+from grocerybot.strategies.optimized_medium import OptimizedMediumStrategy
 from grocerybot.strategies.solo import SoloStrategy
 
 if TYPE_CHECKING:
@@ -19,10 +21,12 @@ STRATEGIES: dict[str, type[Strategy]] = {
     "greedy": GreedyStrategy,
     "logger": LoggerStrategy,
     "optimized_easy": OptimizedEasyStrategy,
+    "optimized_medium": OptimizedMediumStrategy,
     "solo": SoloStrategy,
     "memory_solo": MemorySoloStrategy,
     "medium_v2": MediumV2Strategy,
     "medium_v3": MediumV3Strategy,
+    "medium_v4": MediumV4Strategy,
 }
 
 
@@ -37,4 +41,8 @@ def get_strategy(name: str, level: str | None = None) -> Strategy:
         return MemorySoloStrategy(level=level)
     if name == "optimized_easy" and level:
         return OptimizedEasyStrategy(level=level)
+    if name == "optimized_medium" and level:
+        return OptimizedMediumStrategy(level=level)
+    if name == "medium_v3" and level:
+        return MediumV3Strategy(level=level)
     return cls()
