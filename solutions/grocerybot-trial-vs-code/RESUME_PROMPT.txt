@@ -1,11 +1,14 @@
 Read these files first:
-1) solutions/grocerybot-trial-vs-code/SESSION_HANDOFF.md
-2) solutions/grocerybot-trial-vs-code/RUNBOOK.md
-3) solutions/grocerybot-trial-vs-code/logs/run_history.csv
-4) solutions/grocerybot-trial-vs-code/run_hard.py
-5) solutions/grocerybot-trial-vs-code/run_expert.py
-6) solutions/grocerybot-simulator/analyze.py
-7) solutions/grocerybot-simulator/validator.py
+1) solutions/grocerybot-trial-vs-code/CLAUDE.md
+2) solutions/grocerybot-trial-vs-code/SESSION_HANDOFF.md
+3) solutions/grocerybot-trial-vs-code/RUNBOOK.md
+
+Only load these if needed for a specific experiment:
+4) solutions/grocerybot-trial-vs-code/logs/run_history.csv
+5) solutions/grocerybot-trial-vs-code/run_hard.py
+6) solutions/grocerybot-trial-vs-code/run_expert.py
+7) solutions/grocerybot-simulator/analyze.py
+8) solutions/grocerybot-simulator/validator.py
 
 Primary objective:
 Maximize Hard + Expert points.
