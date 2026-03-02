@@ -923,6 +923,15 @@ class TrialBot:
     ) -> Optional[dict]:
         goals = self._adjacent_walkable(drop_off, state, occupied_now, pos)
         if not goals:
+            goals = self._near_dropoff_goals(
+                drop_off=drop_off,
+                state=state,
+                occupied_now=occupied_now,
+                self_pos=pos,
+                radius_min=2,
+                radius_max=3,
+            )
+        if not goals:
             return None
         return self._move_toward(
             bot_id=bot_id,
@@ -933,6 +942,31 @@ class TrialBot:
             reserved_next=reserved_next,
             allow_occupied_goals=False,
         )
+
+    def _near_dropoff_goals(
+        self,
+        drop_off: tuple[int, int],
+        state: dict,
+        occupied_now: set[tuple[int, int]],
+        self_pos: tuple[int, int],
+        radius_min: int = 2,
+        radius_max: int = 3,
+    ) -> set[tuple[int, int]]:
+        width = state["grid"]["width"]
+        height = state["grid"]["height"]
+        blocked = occupied_now - {self_pos}
+        cx, cy = drop_off
+        goals: set[tuple[int, int]] = set()
+        for x in range(max(0, cx - radius_max), min(width, cx + radius_max + 1)):
+            for y in range(max(0, cy - radius_max), min(height, cy + radius_max + 1)):
+                cell = (x, y)
+                d = abs(x - cx) + abs(y - cy)
+                if d < radius_min or d > radius_max:
+                    continue
+                if cell in self._walls or cell in self.shelves or cell in blocked:
+                    continue
+                goals.add(cell)
+        return goals
 
     def _stage_toward_aisle_center(
         self,
