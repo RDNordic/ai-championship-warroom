@@ -246,10 +246,18 @@ class TrialBot:
         preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, bots)
         preview_duty_cap = min(max(0, len(bots) - 1), 3)
 
-        # Pre-pick preview items once active needs are already in-flight/carried.
-        if sum(needed.values()) == 0:
-            if sum(preview_needed.values()) > 0:
-                needed = preview_needed
+        # Pre-pick preview once active demand is covered by carried items, but
+        # avoid late-game over-pivoting away from active order completion.
+        active_remaining_raw = sum(active_needed_raw.values())
+        active_remaining_needed = sum(needed.values())
+        preview_remaining = sum(preview_needed.values())
+        current_round = int(state.get("round", -1))
+        if (
+            active_remaining_needed == 0
+            and preview_remaining > 0
+            and (active_remaining_raw == 0 or current_round < 200)
+        ):
+            needed = preview_needed
 
         drop_off = tuple(state["drop_off"])
         dropoff_queue_ids = self._select_dropoff_queue_leader(bots, drop_off, delivery_alloc)
@@ -621,7 +629,7 @@ class TrialBot:
             return pick
 
         if useful_inventory:
-            if round_number <= 250 and len(inventory) < 3:
+            if round_number < 220 and len(inventory) < 3:
                 detour = self._delivery_detour_action(
                     bot_id=bot_id,
                     pos=pos,
