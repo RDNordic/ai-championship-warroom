@@ -19,10 +19,11 @@ console = Console()
 class ReplayWriter:
     """Appends JSON objects to a .jsonl replay file, one per line."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(self, path: Path | None = None, level: str | None = None) -> None:
         if path is None:
             ts = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
-            path = Path(f"game_{ts}.jsonl")
+            level_part = (level or "unknown").lower()
+            path = Path(f"game_{level_part}_{ts}.jsonl")
         self.path = path
         self._file = open(path, "a", encoding="utf-8")  # noqa: SIM115
 

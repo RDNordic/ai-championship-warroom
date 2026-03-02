@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from grocerybot.models import BotAction, GameOver, GameState
@@ -27,3 +27,16 @@ class Strategy(ABC):
 
     def on_game_over(self, result: GameOver) -> None:
         """Called once after game_over. Override to persist state."""
+
+    def replay_diagnostics(
+        self,
+        state: GameState,
+        actions: list[BotAction],
+        timed_out: bool,
+    ) -> dict[str, Any] | None:
+        """Optional per-round diagnostics persisted to replay logs.
+
+        Return a JSON-serializable dictionary to be written as
+        ``{"type":"strategy_diagnostics", ...}`` in replay logs.
+        """
+        return None

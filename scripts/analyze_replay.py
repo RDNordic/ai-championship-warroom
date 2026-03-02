@@ -11,6 +11,7 @@ def analyze(path: Path) -> None:
 
     states: list[dict] = []
     responses: list[dict] = []
+    strategy_diags: dict[int, dict] = {}
     game_over: dict | None = None
 
     for line in lines:
@@ -19,6 +20,10 @@ def analyze(path: Path) -> None:
             states.append(obj)
         elif obj.get("type") == "game_over":
             game_over = obj
+        elif obj.get("type") == "strategy_diagnostics":
+            rnd = obj.get("round")
+            if isinstance(rnd, int):
+                strategy_diags[rnd] = obj
         elif "actions" in obj:
             responses.append(obj)
 
@@ -40,7 +45,6 @@ def analyze(path: Path) -> None:
     bot_actions: dict[int, Counter] = {i: Counter() for i in range(num_bots)}
     bot_positions: dict[int, list[tuple[int, int]]] = {i: [] for i in range(num_bots)}
     bot_stuck_streaks: dict[int, list[int]] = {i: [] for i in range(num_bots)}
-    bot_current_streak: dict[int, int] = {i: 0 for i in range(num_bots)}
 
     # Track positions from states
     for state in states:
@@ -175,6 +179,95 @@ def analyze(path: Path) -> None:
         ))
         pct = carrying / len(states) * 100
         print(f"  Bot {bid}: carrying items {carrying}/{len(states)} rounds ({pct:.0f}%)")
+
+    if strategy_diags:
+        print("\n--- Strategy Diagnostics (if recorded) ---")
+        strategies = Counter(
+            str(entry.get("strategy", "unknown"))
+            for entry in strategy_diags.values()
+        )
+        print(
+            "  Diagnostics entries: "
+            f"{len(strategy_diags)} (strategies={dict(strategies)})",
+        )
+
+        wait_reasons: dict[int, Counter] = {i: Counter() for i in range(num_bots)}
+        blocked_ticks: dict[int, list[int]] = {i: [] for i in range(num_bots)}
+        timed_out_rounds = 0
+        traffic_block_rounds = 0
+        traffic_block_total = 0
+        hotspots: list[tuple[int, int]] = []
+
+        for rnd, entry in sorted(strategy_diags.items()):
+            diag = entry.get("diagnostics", {})
+            if not isinstance(diag, dict):
+                continue
+            if bool(diag.get("timed_out")):
+                timed_out_rounds += 1
+
+            traffic_blocks = diag.get("traffic_blocks", 0)
+            if isinstance(traffic_blocks, int):
+                traffic_block_total += traffic_blocks
+                if traffic_blocks > 0:
+                    traffic_block_rounds += 1
+                    hotspots.append((rnd, traffic_blocks))
+
+            per_bot = diag.get("per_bot", {})
+            if not isinstance(per_bot, dict):
+                continue
+            for bid_raw, payload in per_bot.items():
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    bid = int(bid_raw)
+                except (TypeError, ValueError):
+                    continue
+                if bid not in wait_reasons:
+                    wait_reasons[bid] = Counter()
+                    blocked_ticks[bid] = []
+
+                reason = payload.get("wait_reason")
+                if isinstance(reason, str):
+                    wait_reasons[bid][reason] += 1
+
+                ticks = payload.get("blocked_ticks")
+                if isinstance(ticks, int):
+                    blocked_ticks[bid].append(ticks)
+
+        print(
+            f"  Timed-out rounds: {timed_out_rounds}"
+            f" | rounds with traffic blocks: {traffic_block_rounds}"
+            f" | total traffic blocks: {traffic_block_total}",
+        )
+
+        print("\n  Per-bot wait reasons:")
+        for bid in sorted(wait_reasons):
+            reasons = wait_reasons[bid]
+            if not reasons:
+                print(f"    Bot {bid}: none")
+                continue
+            top = ", ".join(
+                f"{reason}={count}" for reason, count in reasons.most_common(5)
+            )
+            print(f"    Bot {bid}: {top}")
+
+        print("\n  Per-bot blocked-ticks summary:")
+        for bid in sorted(blocked_ticks):
+            ticks = blocked_ticks[bid]
+            if not ticks:
+                print(f"    Bot {bid}: no samples")
+                continue
+            avg_ticks = sum(ticks) / len(ticks)
+            print(
+                f"    Bot {bid}: avg={avg_ticks:.2f}, max={max(ticks)}, "
+                f">=3 ticks={sum(1 for t in ticks if t >= 3)}",
+            )
+
+        if hotspots:
+            hotspots.sort(key=lambda x: (-x[1], x[0]))
+            print("\n  Traffic block hotspots (top 10):")
+            for rnd, count in hotspots[:10]:
+                print(f"    Round {rnd}: traffic_blocks={count}")
 
 
 if __name__ == "__main__":

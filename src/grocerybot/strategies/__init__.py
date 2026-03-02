@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 from grocerybot.strategies.greedy import GreedyStrategy
 from grocerybot.strategies.logger import LoggerStrategy
+from grocerybot.strategies.medium_v2 import MediumV2Strategy
+from grocerybot.strategies.medium_v3 import MediumV3Strategy
 from grocerybot.strategies.memory_solo import MemorySoloStrategy
 from grocerybot.strategies.optimized_easy import OptimizedEasyStrategy
 from grocerybot.strategies.solo import SoloStrategy
@@ -19,6 +21,8 @@ STRATEGIES: dict[str, type[Strategy]] = {
     "optimized_easy": OptimizedEasyStrategy,
     "solo": SoloStrategy,
     "memory_solo": MemorySoloStrategy,
+    "medium_v2": MediumV2Strategy,
+    "medium_v3": MediumV3Strategy,
 }
 
 
