@@ -2,38 +2,39 @@
 
 ## Checkpoint
 
-M3 v2 traffic control is complete (persistent intents, parking, delivery right-of-way). Easy mode optimization was explored but no net changes to memory_solo.py — baseline score is map-dependent (~119-128).
+Easy mode `memory_solo.py` has 2-trip lookahead, stale-shelf fix, and endgame heuristic. Score: 113 on today's map (baseline was 119 — regression from 2-trip changes). Offline optimizer is planned but not yet implemented.
 
 ## Latest Work
 
-- Implemented v2 persistent intents in `greedy.py`: pick/deliver/park/idle intents survive across ticks
-- Added `BotIntent`, `IntentManager`, `ParkingManager` to `planner.py`
-- `TaskAssigner.assign()` now accepts `claimed` parameter; full-inventory bots only get `drop_off` when items match ACTIVE order
-- `CollisionResolver.resolve()` accepts `priority_bots` for delivery right-of-way
-- Fixed blocker detection: non-delivery bots always vacate the drop-off cell (`dist_to_drop == 0`)
-- Added anti-stall nudge: stuck bots step to free neighbor after 3 blocked ticks
-- Updated `test_planner.py` with new tests for active-only drop-off and blocker behavior
-- Added `scripts/analyze_replay.py` and `scripts/analyze_deep.py` for replay analysis
-- Easy mode analysis: memory_solo.py pipeline already works well (88% full-inventory drop-offs, auto-delivery on order transitions). Score variance is map-dependent.
-- All 114 tests pass, ruff clean
+- Added 2-trip lookahead (`_choose_best_two_trip_candidate`) for 4-item orders: evaluates trip1_cost + trip2_cost across all splits, picks minimum total. Tie-breaks by cheaper trip-1.
+- Fixed stale `_type_to_adjs` bug: now rebuilt from `state.items` each tick so route planner never targets depleted shelves. This was a latent bug exposed by different preview pickup patterns.
+- Added endgame heuristic: suppress preview items when ≤25 rounds remain — bot focuses on finishing active order only.
+- Stored `self._drop_off` position for trip-2 cost computation.
+- All 114 tests pass, ruff clean.
 
 ## Known Issues
 
-- Easy mode score varies by day (map changes at midnight UTC). No code changes improved score on today's map.
-- Medium mode not re-benchmarked after v2 changes in this session.
+- Easy mode score is 113 vs baseline 119 (6-point regression). The 2-trip lookahead makes different trip-1 splits that may cascade into worse preview pipeline outcomes. Needs investigation or may be addressed by the offline optimizer approach.
+- The 2-trip code only helps when `len(needed_active) > space` (mainly 4-item orders with empty inventory).
 
 ## Next Steps
 
-1. **Easy mode: multi-trip lookahead planning** — Plan 2 trips together for 4-item orders (which require 2 pickup trips). After completing trip 1 and dropping off, recalculate trip 2 using newly available info (completed order may reveal new preview order). Key insight: order completion changes available information, so the second trip should be planned AFTER the first drop-off, not before.
+1. **Offline game optimizer** (`scripts/optimize.py`) — TOP PRIORITY. Full plan in `.claude/plans/whimsical-sparking-fountain.md`. Key points:
+   - Load daily snapshot (grid, items, orders) from `data/{level}_{date}.json`
+   - Simulate optimal bot actions for all known orders: enumerate trip splits for >3 item orders, use exact route planning (A*/BFS from grid.py)
+   - Output step-by-step action list + JSON plan file (`data/{level}_{date}_plan.json`)
+   - Show rounds saved vs current 300-tick run
+   - Purpose: bot replays optimal actions for known orders, then falls back to heuristics for unknown ones. Each run discovers more orders → feed back into optimizer.
+   - Items are endless (don't deplete between orders).
 
-2. **Easy mode: test "always full inventory" policy** — Currently the bot sometimes drops off with <3 items (12% of drop-offs). Test requiring exactly 3 items before drop-off. Tradeoff: extra detour distance for the 3rd item vs saving a future round-trip. On the 12×10 Easy grid, average item distance is ~5-6 steps, so grabbing one extra item costs ~10 steps but saves ~16 steps (a full future trip). Worth testing.
+2. **Replay strategy**: Build a strategy that reads the plan JSON and replays actions for known rounds, then delegates to `memory_solo` for remaining rounds.
 
-3. **Easy mode: preview item selection quality** — When filling inventory with preview items, choose items that are closest to the drop-off path (minimize detour) rather than cheapest absolute distance. The current `PREVIEW_DETOUR_BUDGET=2` is conservative but safe.
+3. **Test "always full inventory" policy** — never drop off with <3 items.
 
-4. **Medium mode: re-benchmark** with v2 traffic control and measure improvement over v1 score of 19.
+4. **Medium mode re-benchmark** with v2 traffic control.
 
 ## Restart Prompt
 
 ```text
-Read CONTEXT.md and SESSION_HANDOFF.md. Easy mode optimization is next. Start with multi-trip lookahead planning in memory_solo.py: for 4-item orders, plan both pickup trips together to minimize total rounds. Key mechanic: after trip 1 drop-off completes an order, a new preview order appears — so trip 2 should be recalculated post-drop-off. Also test "always fill to 3 items before drop-off" policy. Current Easy baseline is ~119-128 depending on map.
+Read CONTEXT.md and SESSION_HANDOFF.md. Build the offline game optimizer (scripts/optimize.py). Full plan is in .claude/plans/whimsical-sparking-fountain.md. Load daily snapshot, simulate optimal actions for all known orders using exact route planning, output step-by-step action list and JSON plan. Show rounds saved vs current run. Items are endless. Bot spawn is at [10,8] for Easy.
 ```

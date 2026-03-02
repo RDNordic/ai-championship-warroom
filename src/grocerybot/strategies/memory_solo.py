@@ -115,6 +115,7 @@ class MemorySoloStrategy(Strategy):
     def __init__(self, level: str = "easy") -> None:
         self._level = level
         self._grid: PassableGrid | None = None
+        self._drop_off: Position = (0, 0)
         self._dropoff_dist: dict[Position, int] = {}
         self._type_to_adjs: dict[str, list[Position]] = {}
 
@@ -127,6 +128,7 @@ class MemorySoloStrategy(Strategy):
 
     def on_game_start(self, state: GameState) -> None:
         self._grid = PassableGrid(state)
+        self._drop_off = state.drop_off
         self._dropoff_dist = bfs_distance_map(state.drop_off, self._grid)
         self._type_to_adjs = self._build_type_to_adjs(state, self._grid)
 
@@ -153,6 +155,7 @@ class MemorySoloStrategy(Strategy):
         assert grid is not None
 
         self._accumulate_orders(state)
+        self._type_to_adjs = self._build_type_to_adjs(state, grid)
 
         bot = state.bots[0]
         pos = bot.position
@@ -163,10 +166,14 @@ class MemorySoloStrategy(Strategy):
             return [WaitAction(bot=bot.id)]
 
         needed_active = _remaining_needed(active, inventory)
+        rounds_left = state.max_rounds - state.round
         preview = _get_preview_order(state)
-        needed_preview = _remaining_needed(preview, inventory) if preview else []
-        if not needed_preview and self._has_memory:
-            needed_preview = self._get_next_order_items(active, inventory)
+        if rounds_left > 25:
+            needed_preview = _remaining_needed(preview, inventory) if preview else []
+            if not needed_preview and self._has_memory:
+                needed_preview = self._get_next_order_items(active, inventory)
+        else:
+            needed_preview = []
 
         # Inventory hard-cap always forces delivery.
         if len(inventory) >= 3:
@@ -280,6 +287,14 @@ class MemorySoloStrategy(Strategy):
             return ()
 
         if needed_active:
+            if len(needed_active) > space:
+                return self._choose_best_two_trip_candidate(
+                    pos=pos,
+                    candidates=candidates,
+                    needed_active=needed_active,
+                    needed_preview=needed_preview,
+                    grid=grid,
+                )
             return self._choose_best_active_candidate(
                 pos=pos,
                 candidates=candidates,
@@ -373,6 +388,52 @@ class MemorySoloStrategy(Strategy):
                 best_key = key
                 best = cand
 
+        return best
+
+    def _choose_best_two_trip_candidate(
+        self,
+        pos: Position,
+        candidates: set[tuple[str, ...]],
+        needed_active: list[str],
+        needed_preview: list[str],
+        grid: PassableGrid,
+    ) -> tuple[str, ...]:
+        """Choose trip-1 items by minimizing total cost across 2 trips."""
+        drop_off = self._drop_off
+        best: tuple[str, ...] = ()
+        best_total = INF
+        best_trip1 = INF
+
+        for cand in sorted(candidates):
+            trip1_cost, _, _ = self._best_route_for_pickups(pos, cand, grid)
+            if trip1_cost >= INF:
+                continue
+
+            _, remaining_active, _ = _consume_needed(needed_active, cand)
+            if not remaining_active:
+                continue
+
+            remaining_tuple = tuple(sorted(remaining_active))
+            best_trip2, _, _ = self._best_route_for_pickups(
+                drop_off, remaining_tuple, grid,
+            )
+            if best_trip2 >= INF:
+                continue
+
+            total = trip1_cost + best_trip2
+            if total < best_total or (
+                total == best_total and trip1_cost < best_trip1
+            ):
+                best_total = total
+                best_trip1 = trip1_cost
+                best = cand
+
+        if not best:
+            return self._choose_best_active_candidate(
+                pos=pos, candidates=candidates,
+                needed_active=needed_active,
+                needed_preview=needed_preview, grid=grid,
+            )
         return best
 
     def _choose_best_preview_candidate(
