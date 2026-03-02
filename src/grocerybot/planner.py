@@ -5,11 +5,12 @@ Includes:
 - LocalTripPlanner: exact short-horizon pickup trip planning
 - TaskAssigner: greedy sequential assignment in bot-id order
 - CollisionResolver: single-step collision safety in bot-id order
+- BotIntent / IntentManager: persistent per-bot intents (v2 traffic control)
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from itertools import combinations
 from typing import Literal
@@ -33,9 +34,11 @@ from grocerybot.models import (
 
 Position = tuple[int, int]
 TaskKind = Literal["pick", "drop_off", "wait"]
+IntentKind = Literal["pick", "deliver", "park", "idle"]
 
 INF = 999_999
 PREVIEW_DETOUR_BUDGET = 2
+BLOCKED_REROUTE_THRESHOLD = 3
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,114 @@ class AssignedTask:
     bot_id: int
     kind: TaskKind
     pickups: tuple[str, ...] = ()
+
+
+@dataclass
+class BotIntent:
+    """Persistent intent for a bot — survives across ticks until invalidated."""
+
+    kind: IntentKind
+    target: Position | None = None
+    pickups: tuple[str, ...] = ()
+    order_id: str = ""
+    blocked_ticks: int = field(default=0, compare=False)
+
+    def is_pick(self) -> bool:
+        return self.kind == "pick"
+
+    def is_deliver(self) -> bool:
+        return self.kind == "deliver"
+
+    def is_park(self) -> bool:
+        return self.kind == "park"
+
+
+class IntentManager:
+    """Track and invalidate persistent bot intents."""
+
+    def __init__(self) -> None:
+        self._intents: dict[int, BotIntent] = {}
+
+    def get(self, bot_id: int) -> BotIntent | None:
+        return self._intents.get(bot_id)
+
+    def set(self, bot_id: int, intent: BotIntent) -> None:
+        self._intents[bot_id] = intent
+
+    def clear(self, bot_id: int) -> None:
+        self._intents.pop(bot_id, None)
+
+    def bump_blocked(self, bot_id: int) -> int:
+        intent = self._intents.get(bot_id)
+        if intent is not None:
+            intent.blocked_ticks += 1
+            return intent.blocked_ticks
+        return 0
+
+    def reset_blocked(self, bot_id: int) -> None:
+        intent = self._intents.get(bot_id)
+        if intent is not None:
+            intent.blocked_ticks = 0
+
+    def should_invalidate(
+        self,
+        bot_id: int,
+        state: GameState,
+        snapshot: OrderSnapshot | None,
+    ) -> bool:
+        """Check if the current intent should be dropped and replanned."""
+        intent = self._intents.get(bot_id)
+        if intent is None:
+            return True
+
+        # Order changed → replan
+        if snapshot is None:
+            return intent.kind != "idle"
+        if intent.order_id and intent.order_id != snapshot.active_order_id:
+            return True
+
+        bot = next((b for b in state.bots if b.id == bot_id), None)
+        if bot is None:
+            return True
+
+        # Pick intent: all pickups collected → done
+        if intent.is_pick():
+            remaining = list(intent.pickups)
+            for item in bot.inventory:
+                if item in remaining:
+                    remaining.remove(item)
+            if not remaining:
+                return True
+            # Items no longer exist on map → replan
+            available_types = {i.type for i in state.items}
+            if any(r not in available_types for r in remaining):
+                return True
+
+        # Deliver intent: arrived at drop-off → done
+        if intent.is_deliver():
+            if bot.position == state.drop_off:
+                return True
+            # No matching items for active order → stop delivering
+            if not any(item in snapshot.active_needed for item in bot.inventory):
+                return True
+            # Empty inventory → nothing to deliver
+            if not bot.inventory:
+                return True
+
+        # Park intent: arrived → stay, BUT replan if there's work to do
+        if intent.is_park() and intent.target == bot.position:
+            has_space = len(bot.inventory) < 3
+            has_work = bool(snapshot.active_needed or snapshot.preview_needed)
+            return has_space and has_work
+
+        # Blocked too long → reroute
+        if intent.blocked_ticks >= BLOCKED_REROUTE_THRESHOLD:
+            return True
+
+        return False
+
+    def all_intents(self) -> dict[int, BotIntent]:
+        return dict(self._intents)
 
 
 def _get_order_by_status(state: GameState, status: str) -> Order | None:
@@ -346,7 +457,7 @@ class LocalTripPlanner:
                 if item_id is not None:
                     return PickUpAction(bot=bot_id, action="pick_up", item_id=item_id)
                 continue
-            path = astar(pos, tgt, self._grid, blocked=blocked)
+            path = astar(pos, tgt, self._grid, blocked=blocked - {tgt})
             if path and len(path) > 1:
                 return MoveAction(
                     bot=bot_id, action=direction_for_move(pos, path[1]),
@@ -361,7 +472,8 @@ class LocalTripPlanner:
     ) -> BotAction:
         if pos == self._drop_off:
             return DropOffAction(bot=bot_id, action="drop_off")
-        path = astar(pos, self._drop_off, self._grid, blocked=blocked)
+        # Never block the goal itself — resolver handles contention
+        path = astar(pos, self._drop_off, self._grid, blocked=blocked - {self._drop_off})
         if path and len(path) > 1:
             return MoveAction(bot=bot_id, action=direction_for_move(pos, path[1]))
         return WaitAction(bot=bot_id)
@@ -384,6 +496,49 @@ class LocalTripPlanner:
         return self._dist_cache[goal].get(start, INF)
 
 
+class ParkingManager:
+    """Precompute parking cells near drop-off for idle bots.
+
+    Two tiers:
+    - near (BFS 2-4): for bots with inventory space, ready for next task
+    - far (BFS 5+): for bots with full stale inventory blocking corridors
+    """
+
+    def __init__(self, drop_off: Position, grid: PassableGrid) -> None:
+        self._drop_off = drop_off
+        dist_map = bfs_distance_map(drop_off, grid)
+        near = [
+            (d, pos) for pos, d in dist_map.items()
+            if 2 <= d <= 4 and pos != drop_off
+        ]
+        far = [
+            (d, pos) for pos, d in dist_map.items()
+            if d >= 5 and pos != drop_off
+        ]
+        near.sort()
+        far.sort()
+        self._near_cells = [pos for _, pos in near[:10]]
+        self._far_cells = [pos for _, pos in far[:10]]
+
+    def best_park(
+        self,
+        pos: Position,
+        occupied: frozenset[Position],
+        far: bool = False,
+    ) -> Position | None:
+        cells = self._far_cells if far else self._near_cells
+        best: Position | None = None
+        best_dist = INF
+        for cell in cells:
+            if cell in occupied:
+                continue
+            d = abs(cell[0] - pos[0]) + abs(cell[1] - pos[1])
+            if d < best_dist:
+                best_dist = d
+                best = cell
+        return best
+
+
 class TaskAssigner:
     """Two-phase assignment: delivery-first, then pickups."""
 
@@ -392,9 +547,15 @@ class TaskAssigner:
         state: GameState,
         snapshot: OrderSnapshot,
         planner: LocalTripPlanner,
+        claimed: list[str] | None = None,
     ) -> dict[int, AssignedTask]:
         tasks: dict[int, AssignedTask] = {}
         remaining_active = list(snapshot.active_needed)
+        # Subtract items already claimed by persistent intents
+        if claimed:
+            for item in claimed:
+                if item in remaining_active:
+                    remaining_active.remove(item)
         bots = sorted(state.bots, key=lambda b: b.id)
 
         # Phase A: bots carrying active items → drop_off
@@ -412,7 +573,15 @@ class TaskAssigner:
             if bot.id in tasks:
                 continue
             if len(bot.inventory) >= 3:
-                tasks[bot.id] = AssignedTask(bot.id, "drop_off")
+                # Only drop_off if at least one item matches the ACTIVE order
+                # (server ignores drop_off for non-active items)
+                has_active_match = any(
+                    item in remaining_active for item in bot.inventory
+                )
+                if has_active_match:
+                    tasks[bot.id] = AssignedTask(bot.id, "drop_off")
+                else:
+                    tasks[bot.id] = AssignedTask(bot.id, "wait")
                 continue
             if remaining_active:
                 picks = planner.plan_trip(
@@ -478,6 +647,7 @@ class CollisionResolver:
         self,
         state: GameState,
         proposed: dict[int, BotAction],
+        priority_bots: set[int] | None = None,
     ) -> list[BotAction]:
         bots = sorted(state.bots, key=lambda b: b.id)
         bot_ids = [b.id for b in bots]
@@ -490,7 +660,18 @@ class CollisionResolver:
         # Fair tie-break among equal-throughput candidates.
         rotation = state.round % max(len(bot_ids), 1)
         priority = bot_ids[rotation:] + bot_ids[:rotation]
-        weight = {bot_id: len(priority) - idx for idx, bot_id in enumerate(priority)}
+        base_weight = {
+            bot_id: len(priority) - idx
+            for idx, bot_id in enumerate(priority)
+        }
+        # Delivery bots get bonus weight for right-of-way
+        priority_bonus = len(bot_ids) + 1
+        weight = {
+            bot_id: base_weight[bot_id] + (
+                priority_bonus if priority_bots and bot_id in priority_bots else 0
+            )
+            for bot_id in bot_ids
+        }
 
         best_actions: dict[int, BotAction] | None = None
         best_key: tuple[int, int] | None = None

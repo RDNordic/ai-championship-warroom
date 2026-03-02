@@ -2,48 +2,38 @@
 
 ## Checkpoint
 
-M3 traffic-control v1 is implemented and validated; Medium score improved from 2 to 19 (300 rounds, 9 items, 2 orders), but throughput is still below target.
+M3 v2 traffic control is complete (persistent intents, parking, delivery right-of-way). Easy mode optimization was explored but no net changes to memory_solo.py — baseline score is map-dependent (~119-128).
 
 ## Latest Work
 
-- Implemented stronger traffic resolution in `planner.py` `CollisionResolver`:
-  - best-effort subset selection of proposed moves
-  - exact server-style simulation for occupancy blocking
-  - rotating per-round fairness tie-break (not always bot-id first)
-- Removed drop-off pathing exception (`go_drop_off` now respects blocked cells).
-- Refactored `greedy.py` to remove one-tick `claimed_cells` starvation behavior:
-  - generate per-bot desired actions
-  - resolve contention in resolver
-  - add simple anti-stall nudge when blocked for several rounds
-- Added resolver tests for:
-  - following into vacated cells
-  - spawn not being exempt after round 0
-  - round-rotating tie-break behavior
-- Quality gates currently pass:
-  - `python -m pytest` (113 passed)
-  - `python -m ruff check` clean
-  - `python -m mypy src/grocerybot/planner.py src/grocerybot/strategies/greedy.py` clean
-- Latest observed Medium run: Score 19, Items 9, Orders 2.
+- Implemented v2 persistent intents in `greedy.py`: pick/deliver/park/idle intents survive across ticks
+- Added `BotIntent`, `IntentManager`, `ParkingManager` to `planner.py`
+- `TaskAssigner.assign()` now accepts `claimed` parameter; full-inventory bots only get `drop_off` when items match ACTIVE order
+- `CollisionResolver.resolve()` accepts `priority_bots` for delivery right-of-way
+- Fixed blocker detection: non-delivery bots always vacate the drop-off cell (`dist_to_drop == 0`)
+- Added anti-stall nudge: stuck bots step to free neighbor after 3 blocked ticks
+- Updated `test_planner.py` with new tests for active-only drop-off and blocker behavior
+- Added `scripts/analyze_replay.py` and `scripts/analyze_deep.py` for replay analysis
+- Easy mode analysis: memory_solo.py pipeline already works well (88% full-inventory drop-offs, auto-delivery on order transitions). Score variance is map-dependent.
+- All 114 tests pass, ruff clean
 
 ## Known Issues
 
-- Medium still underperforms expected multi-bot throughput.
-- No persistent bot intents; bots can still thrash/replan each tick.
-- Drop-off area control is still reactive and can waste rounds.
+- Easy mode score varies by day (map changes at midnight UTC). No code changes improved score on today's map.
+- Medium mode not re-benchmarked after v2 changes in this session.
 
 ## Next Steps
 
-1. Implement v2 persistent intents per bot (`pick`, `deliver`, `park`) and only replan on invalidation/arrival/order change.
-2. Add blocked-counter recovery policy:
-   - if blocked N ticks, reroute or step aside deterministically.
-3. Add explicit drop-off parking/staging cells and grant delivery-intent bots right-of-way in contention.
-4. Replay-analysis pass on latest Medium game to measure:
-   - wait ratio per bot
-   - longest blocked streak
-   - action-to-state success rate (attempted move vs actual move).
+1. **Easy mode: multi-trip lookahead planning** — Plan 2 trips together for 4-item orders (which require 2 pickup trips). After completing trip 1 and dropping off, recalculate trip 2 using newly available info (completed order may reveal new preview order). Key insight: order completion changes available information, so the second trip should be planned AFTER the first drop-off, not before.
+
+2. **Easy mode: test "always full inventory" policy** — Currently the bot sometimes drops off with <3 items (12% of drop-offs). Test requiring exactly 3 items before drop-off. Tradeoff: extra detour distance for the 3rd item vs saving a future round-trip. On the 12×10 Easy grid, average item distance is ~5-6 steps, so grabbing one extra item costs ~10 steps but saves ~16 steps (a full future trip). Worth testing.
+
+3. **Easy mode: preview item selection quality** — When filling inventory with preview items, choose items that are closest to the drop-off path (minimize detour) rather than cheapest absolute distance. The current `PREVIEW_DETOUR_BUDGET=2` is conservative but safe.
+
+4. **Medium mode: re-benchmark** with v2 traffic control and measure improvement over v1 score of 19.
 
 ## Restart Prompt
 
 ```text
-Read CONTEXT.md and SESSION_HANDOFF.md. M3 v1 traffic resolver is in and Medium is now 19, but still low. Implement v2 control: persistent intents, blocked-counter recovery, and explicit drop-off parking/right-of-way. Then rerun Medium and compare bot wait/utilization metrics against prior replay.
+Read CONTEXT.md and SESSION_HANDOFF.md. Easy mode optimization is next. Start with multi-trip lookahead planning in memory_solo.py: for 4-item orders, plan both pickup trips together to minimize total rounds. Key mechanic: after trip 1 drop-off completes an order, a new preview order appears — so trip 2 should be recalculated post-drop-off. Also test "always fill to 3 items before drop-off" policy. Current Easy baseline is ~119-128 depending on map.
 ```
