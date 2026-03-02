@@ -1,89 +1,91 @@
-﻿# SESSION_HANDOFF.md
+# SESSION_HANDOFF.md
 
 Date: 2026-03-02 (UTC)
 
 ## Current Objective
-Push Easy above the current best of 119 using one-change incremental experiments.
+Increase Hard above benchmark 99 with one-change experiments and strict keep/revert gate.
 
-## Current Best Scores (from `logs/run_history.csv`)
-- Easy: 119 (`20260302_125953`)
-- Medium: 118 (`20260302_105543`)
-- Hard: 99 (`20260301_223438`)
-- Expert: 71 (`20260301_224548`)
-- Current total best: 407
+## Current Top Scores
+- Easy: 137 (KO log reference, external)
+- Medium: 118
+- Hard: 99
+- Expert: 71
+- Total best: 425
 
 ## What Changed This Session
-### Easy (`run_easy.py`)
-- Accepted (kept in working tree):
-  1. Preserved active-order needed counts separately as `active_needed`.
-  2. In solo `useful_inventory` branch, collection logic now uses active-order-only demand (`collect_needed = Counter(active_needed)`) instead of mixed preview demand.
-- Tested and rejected (reverted):
-  1. Disabling `_pick_if_adjacent(...)` while carrying useful inventory.
-  2. Blocking global preview-switch while any active delivery cargo remained.
+### Hard (`run_hard.py`)
+- Implemented Option A: surplus bot preview pipeline.
+- Behavior: when active needs are already covered by carried + assigned capacity, surplus bots are assigned preview items with full priority.
+- Kept drop-off queue and delivery allocation logic unchanged.
+- Validation run result with this code:
+  - `logs/game_20260302_142137.jsonl` -> score 99 (matches benchmark).
 
-### Easy Runs in This Window
-- `20260302_125953`: 119 (`logs/game_20260302_125953.jsonl`) <- current best
-- `20260302_130323`: 93 (`logs/game_20260302_130323.jsonl`) [reverted tweak]
-- `20260302_130504`: 95 (`logs/game_20260302_130504.jsonl`) [reverted tweak]
+### Simulator Analysis (Hard + Expert)
+Analyzed replays with `solutions/grocerybot-simulator` tooling and custom metrics.
 
-## Proven Findings
-- Current Easy best for today/map window is 119 with 14 completed orders.
-- The active-order-only collection change in the solo `useful_inventory` branch is compatible with a high run.
-- Adjacent-pick suppression and broad preview-switch blocking both caused regressions on this seed.
+Key findings:
+1. Hard best runs are clean on low-level execution:
+   - blocked moves near 0%
+   - failed pickups near 0%
+2. Hard bottleneck is mainly coordination/throughput in opening phase:
+   - repeated early waits from stacked spawn positions while active work is still feasible.
+3. Hard late cutoff (`round > 285`) has limited upside in best runs.
+4. Expert has larger late-cutoff penalty and larger early stack-wait issue.
 
 ## Current Code State
-### Easy (Active)
-`run_easy.py` includes the active-order-only collection patch and excludes the two reverted regressions.
+### Hard (Active)
+`run_hard.py` includes Option A surplus preview pipeline (`preview_priority_bots` path).
 
 ### Medium (Frozen)
-`run_medium.py` remains frozen at the 118-capable build (`d704c3d` + `6b24f2c`).
+`run_medium.py` unchanged at 118-capable state.
 
-### Hard (Paused)
-`run_hard.py` unchanged in this session.
+### Easy / Expert
+No new code changes in this handoff step.
 
-## Recommended Next Task (Highest Priority)
-1. Set fresh token: `GROCERY_BOT_TOKEN_EASY`.
-2. Apply one new Easy tweak only (single behavior change).
-3. Run 2-3 Easy games:
-   - `& ".venv\Scripts\python.exe" run_easy.py`
-4. Keep/revert based on comparison to baseline 119 and collapse risk.
+## Hard Rule: Commit/Revert Gate
+For each Hard experiment:
+1. Make one focused change only.
+2. Run one Hard game with fresh token.
+3. Compare to benchmark 99.
+4. If score `> 99`: keep and commit.
+5. If score `<= 99`: revert the change; do not commit.
+
+## Recommended Next Task
+1. Apply one low-risk Hard startup anti-stack fan-out change.
+2. Run Hard once.
+3. Use strict gate above.
+4. If kept, run 2 additional confirmations.
 
 ## Exact Artifact References
-- Easy bot code:
-  - `solutions/grocerybot-trial-vs-code/run_easy.py`
-- Medium frozen bot code:
-  - `solutions/grocerybot-trial-vs-code/run_medium.py`
-- Runbook:
-  - `solutions/grocerybot-trial-vs-code/RUNBOOK.md`
-- Session handoff:
-  - `solutions/grocerybot-trial-vs-code/SESSION_HANDOFF.md`
-- Run history:
-  - `solutions/grocerybot-trial-vs-code/logs/run_history.csv`
-- Key Easy replays:
-  - `solutions/grocerybot-trial-vs-code/logs/game_20260302_125953.jsonl` (119)
-  - `solutions/grocerybot-trial-vs-code/logs/game_20260302_130323.jsonl` (93)
-  - `solutions/grocerybot-trial-vs-code/logs/game_20260302_130504.jsonl` (95)
+- Hard bot: `solutions/grocerybot-trial-vs-code/run_hard.py`
+- Runbook: `solutions/grocerybot-trial-vs-code/RUNBOOK.md`
+- Handoff: `solutions/grocerybot-trial-vs-code/SESSION_HANDOFF.md`
+- Resume prompt: `solutions/grocerybot-trial-vs-code/RESUME_PROMPT.txt`
+- Run history: `solutions/grocerybot-trial-vs-code/logs/run_history.csv`
+- Hard replays:
+  - `solutions/grocerybot-trial-vs-code/logs/game_hard_99_20260301_223438.jsonl` (99)
+  - `solutions/grocerybot-trial-vs-code/logs/game_20260302_142137.jsonl` (99)
+- Expert replay reference:
+  - `solutions/grocerybot-trial-vs-code/logs/game_expert_71_20260301_224548.jsonl` (71)
 
 ## Repro Commands
 From `solutions/grocerybot-trial-vs-code`:
-- Easy validation run:
-  - `& ".venv\Scripts\python.exe" run_easy.py`
-- Medium frozen reference:
-  - `& ".venv\Scripts\python.exe" run_medium.py`
+- Hard run:
+  - `& ".venv\Scripts\python.exe" run_hard.py`
 
-## Token Setup
-- Easy: `GROCERY_BOT_TOKEN_EASY=<fresh_token>`
-- Medium (only if re-validating): `GROCERY_BOT_TOKEN_MEDIUM=<fresh_token>`
+From repo root:
+- Replay validator:
+  - `solutions\grocerybot-trial-vs-code\.venv\Scripts\python.exe solutions\grocerybot-simulator\validator.py <replay.jsonl>`
 
 ## Handoff Contract
 - Current objective:
-  - Improve Easy beyond 119 with controlled one-change experiments.
-- Exact artifact reference:
-  - Working file: `solutions/grocerybot-trial-vs-code/run_easy.py`
-  - Frozen reference: `solutions/grocerybot-trial-vs-code/run_medium.py`
+  - Push Hard above 99 using strict one-change gating.
+- Exact artifact:
+  - Working file: `solutions/grocerybot-trial-vs-code/run_hard.py`
 - What is proven:
-  - Easy has reached 119 in this window and the retained patch is non-regressive at peak.
+  - Current Hard code can reproduce 99.
+  - Simulator confirms main issue is throughput/coordination, not basic action validity.
 - What is assumed:
-  - Additional targeted routing changes can recover wasted rounds without introducing collapse.
+  - Startup anti-stack behavior can recover early wasted rounds and lift score above 99.
 - Next highest-priority task:
-  - Implement one new low-risk Easy tweak, then run a short 2-3 run gate against 119.
+  - Implement startup anti-stack fan-out and run one gated Hard validation.

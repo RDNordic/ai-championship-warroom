@@ -8,20 +8,20 @@
     "expert": 71,
     "easy": 119
   },
-  "run_count": 84,
+  "run_count": 93,
   "latest_run": {
-    "run_id": "20260302_130504",
-    "started_utc": "2026-03-02T13:05:04.125421+00:00",
-    "duration_s": 23.846,
-    "difficulty": "easy",
-    "map_id": "c89da2ec-3ca7-40c9-a3b1-8036fca3d0b7",
-    "map_seed": 7001,
+    "run_id": "20260302_154705",
+    "started_utc": "2026-03-02T15:47:05.333415+00:00",
+    "duration_s": 16.759,
+    "difficulty": "expert",
+    "map_id": "c7c7f564-2496-4ab1-9179-7532979adcb4",
+    "map_seed": 7004,
     "team_id": "ed319d9d-1b43-4e46-8b3d-f9bbf1c0d98b",
-    "score": 95,
+    "score": 54,
     "rounds_used": 300,
-    "items_delivered": 40,
-    "orders_completed": 11,
-    "replay_file": "game_20260302_130504.jsonl",
-    "action_counts_json": "{\"drop_off\": 19, \"move_down\": 35, \"move_left\": 85, \"move_right\": 80, \"move_up\": 36, \"pick_up\": 40, \"wait\": 5}"
+    "items_delivered": 29,
+    "orders_completed": 5,
+    "replay_file": "game_20260302_154705.jsonl",
+    "action_counts_json": "{\"drop_off\": 17, \"move_down\": 443, \"move_left\": 555, \"move_right\": 387, \"move_up\": 490, \"pick_up\": 31, \"wait\": 1077}"
   }
 }
