@@ -8,11 +8,11 @@
     "expert": 71,
     "easy": 110
   },
-  "run_count": 58,
+  "run_count": 60,
   "latest_run": {
-    "run_id": "20260301_232841",
-    "started_utc": "2026-03-01T23:28:41.746585+00:00",
-    "duration_s": 16.134,
+    "run_id": "20260301_235029",
+    "started_utc": "2026-03-01T23:50:29.403071+00:00",
+    "duration_s": 16.419,
     "difficulty": "medium",
     "map_id": "3c523f5e-160b-452c-9ffc-171ef1e845f5",
     "map_seed": 7002,
@@ -21,7 +21,7 @@
     "rounds_used": 300,
     "items_delivered": 51,
     "orders_completed": 13,
-    "replay_file": "game_20260301_232841.jsonl",
+    "replay_file": "game_20260301_235029.jsonl",
     "action_counts_json": "{\"drop_off\": 27, \"move_down\": 212, \"move_left\": 195, \"move_right\": 162, \"move_up\": 215, \"pick_up\": 54, \"wait\": 35}"
   }
 }
