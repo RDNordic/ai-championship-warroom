@@ -1,31 +1,32 @@
-Read:
-1) SESSION_HANDOFF.md
-2) RUNBOOK.md
-3) logs/run_history.csv
-4) latest replay in logs/game_*.jsonl
-5) run_bot.py (focus on _select_dropoff_queue_leader, _decide_one, _build_greedy_assignments)
-6) past-championships-data/Grocery-bot-Game-AI-documentation-2026.txt (game API reference)
+Read these files first:
+1) solutions/grocerybot-trial-vs-code/SESSION_HANDOFF.md
+2) solutions/grocerybot-trial-vs-code/RUNBOOK.md
+3) solutions/grocerybot-trial-vs-code/logs/run_history.csv
+4) solutions/grocerybot-trial-vs-code/run_hard.py
+5) solutions/grocerybot-simulator/analyze.py
+6) solutions/grocerybot-simulator/validator.py
 
-Objective:
-Score Expert (10 bots, 28x18) for the first time — the only remaining map.
+Primary objective:
+Improve Hard above benchmark 99 with one focused change.
 
-Context:
-- Easy: 128. Medium: 99. Hard: 71 (deterministic). All confirmed.
-- Leaderboard = sum of best score across all 4 difficulty maps. Current total: 298 (rank 40).
-- Bot scales from 1-5 bots without code changes. Expert (10 bots) is untested.
-- Key Expert risks: drop-off congestion with 10 bots, BFS timing on 28x18 grid.
-- Game is deterministic per day (same seed = same result).
-- Rate limits: 60s cooldown, 40/hour, 300/day per team.
+Current context:
+- Top scores: Easy 137 (KO reference), Medium 118, Hard 99, Expert 71.
+- Hard code already includes Option A surplus preview pipeline and currently validates at 99.
+- Simulator analysis indicates main remaining Hard inefficiency is early spawn-stack waiting.
+- Hard late cutoff (>285) has lower impact than startup coordination in best runs.
 
-Immediate steps:
-1. Get Expert token, run bot. Record score and action counts.
-2. If score is reasonable (>50), move to Easy next.
-3. If score is low, analyze replay: check drop_off count, wait count, pickup waste.
-4. If drop-off bottleneck confirmed, consider increasing queue size from 2 to 3.
-5. After Expert + Easy, run Medium once to confirm stability (optional, deterministic).
+STRICT HARD GATE RULE:
+- For each Hard change, do exactly one behavior change.
+- Run Hard once with fresh token.
+- If score > 99: keep and commit.
+- If score <= 99: revert that change and do not commit.
 
-Deliverables after each run:
-- Score + action counts summary
-- Known bottleneck (if any)
-- Whether code changes are needed before next run
-- Updated SESSION_HANDOFF.md
+Suggested next change:
+- Implement startup anti-stack fan-out for empty non-useful bots during opening rounds.
+- Do not modify websocket, logging, token handling, drop-off queue logic, or delivery allocation logic.
+
+Expected deliverables after run:
+1) Score and replay filename
+2) Keep/revert decision based on strict gate
+3) If kept: commit hash
+4) Short note on observed bottleneck deltas (wait/blocked/pickup failures)

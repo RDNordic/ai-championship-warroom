@@ -88,3 +88,12 @@ Target: Beat Medium score **19**
 - 20260302_125953 | diff=easy | score=119 | items=49 | orders=14 | medium_best=118 | replay=game_20260302_125953.jsonl
 - 20260302_130323 | diff=easy | score=93 | items=38 | orders=11 | medium_best=118 | replay=game_20260302_130323.jsonl
 - 20260302_130504 | diff=easy | score=95 | items=40 | orders=11 | medium_best=118 | replay=game_20260302_130504.jsonl
+- 20260302_142137 | diff=hard | score=99 | items=44 | orders=11 | medium_best=118 | replay=game_20260302_142137.jsonl
+- 20260302_143913 | diff=hard | score=44 | items=19 | orders=5 | medium_best=118 | replay=game_20260302_143913.jsonl
+- 20260302_150107 | diff=hard | score=99 | items=44 | orders=11 | medium_best=118 | replay=game_20260302_150107.jsonl
+- 20260302_150459 | diff=hard | score=99 | items=44 | orders=11 | medium_best=118 | replay=game_20260302_150459.jsonl
+- 20260302_150912 | diff=hard | score=27 | items=12 | orders=3 | medium_best=118 | replay=game_20260302_150912.jsonl
+- 20260302_151248 | diff=expert | score=34 | items=19 | orders=3 | medium_best=118 | replay=game_20260302_151248.jsonl
+- 20260302_153845 | diff=expert | score=24 | items=14 | orders=2 | medium_best=118 | replay=game_20260302_153845.jsonl
+- 20260302_154055 | diff=expert | score=34 | items=19 | orders=3 | medium_best=118 | replay=game_20260302_154055.jsonl
+- 20260302_154705 | diff=expert | score=54 | items=29 | orders=5 | medium_best=118 | replay=game_20260302_154705.jsonl
