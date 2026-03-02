@@ -1,0 +1,209 @@
+"""Tests for optimized_medium_v4 strategy: checkpointed plan replay + fallback."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+import pytest
+
+from grocerybot.models import Bot, GameOver, GameState, WaitAction
+from grocerybot.strategies.base import Strategy
+from grocerybot.strategies.optimized_medium_v4 import OptimizedMediumV4Strategy
+
+
+@pytest.fixture()
+def medium_state_data() -> dict[str, Any]:
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "spec"
+        / "examples"
+        / "medium"
+        / "game_state.json"
+    )
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+@pytest.fixture()
+def medium_state(medium_state_data: dict[str, Any]) -> GameState:
+    return GameState.model_validate(medium_state_data)
+
+
+class _FakeFallback(Strategy):
+    def __init__(self) -> None:
+        self.started = False
+        self.decide_calls = 0
+        self.game_over_called = False
+
+    def on_game_start(self, state: GameState) -> None:
+        self.started = True
+
+    def decide(self, state: GameState) -> list[WaitAction]:
+        self.decide_calls += 1
+        return [WaitAction(bot=b.id) for b in state.bots]
+
+    def on_game_over(self, result: GameOver) -> None:
+        self.game_over_called = True
+
+
+def _active_needed(state: GameState) -> list[str]:
+    active = next(order for order in state.orders if order.status == "active")
+    needed = list(active.items_required)
+    for delivered in active.items_delivered:
+        if delivered in needed:
+            needed.remove(delivered)
+    return sorted(needed)
+
+
+def _write_plan(path: Path, state: GameState, actions: list[dict[str, object]]) -> None:
+    checkpoint = {
+        "round": state.round,
+        "active_order_id": next(order for order in state.orders if order.status == "active").id,
+        "active_needed": _active_needed(state),
+        "orders_completed": 0,
+        "score": state.score,
+        "bots": [
+            {
+                "id": bot.id,
+                "position": [bot.position[0], bot.position[1]],
+                "inventory": sorted(bot.inventory),
+            }
+            for bot in state.bots
+        ],
+    }
+    payload = {
+        "meta": {"level": "medium", "date": "2026-03-02"},
+        "summary": {"optimal_rounds": state.round + 1},
+        "checkpoints": [checkpoint],
+        "actions": actions,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _temp_plan_path() -> Path:
+    return Path.cwd() / f"_tmp_medium_plan_v4_{uuid4().hex}.json"
+
+
+class TestOptimizedMediumV4Strategy:
+    def test_replays_checkpointed_actions(
+        self,
+        medium_state: GameState,
+    ) -> None:
+        plan_path = _temp_plan_path()
+        try:
+            _write_plan(
+                plan_path,
+                medium_state,
+                [
+                    {"round": medium_state.round, "bot": 0, "action": "wait"},
+                    {"round": medium_state.round, "bot": 1, "action": "wait"},
+                    {"round": medium_state.round, "bot": 2, "action": "wait"},
+                ],
+            )
+            fallback = _FakeFallback()
+            strategy = OptimizedMediumV4Strategy(plan_path=plan_path, fallback=fallback)
+            strategy.on_game_start(medium_state)
+
+            actions = strategy.decide(medium_state)
+            assert len(actions) == 3
+            assert all(isinstance(a, WaitAction) for a in actions)
+            assert fallback.decide_calls == 1
+        finally:
+            plan_path.unlink(missing_ok=True)
+
+    def test_falls_back_on_checkpoint_mismatch(
+        self,
+        medium_state: GameState,
+    ) -> None:
+        plan_path = _temp_plan_path()
+        try:
+            _write_plan(
+                plan_path,
+                medium_state,
+                [
+                    {"round": medium_state.round, "bot": 0, "action": "wait"},
+                    {"round": medium_state.round, "bot": 1, "action": "wait"},
+                    {"round": medium_state.round, "bot": 2, "action": "wait"},
+                ],
+            )
+            mismatch = medium_state.model_copy(
+                update={
+                    "bots": [
+                        Bot(id=0, position=(4, 7), inventory=["milk"]),
+                        medium_state.bots[1],
+                        medium_state.bots[2],
+                    ],
+                },
+            )
+            fallback = _FakeFallback()
+            strategy = OptimizedMediumV4Strategy(plan_path=plan_path, fallback=fallback)
+            strategy.on_game_start(medium_state)
+
+            actions = strategy.decide(mismatch)
+            assert len(actions) == 3
+            assert fallback.decide_calls == 1
+            assert all(isinstance(a, WaitAction) for a in actions)
+        finally:
+            plan_path.unlink(missing_ok=True)
+
+    def test_falls_back_after_plan_round_limit(
+        self,
+        medium_state: GameState,
+    ) -> None:
+        plan_path = _temp_plan_path()
+        try:
+            _write_plan(
+                plan_path,
+                medium_state,
+                [
+                    {"round": medium_state.round, "bot": 0, "action": "wait"},
+                    {"round": medium_state.round, "bot": 1, "action": "wait"},
+                    {"round": medium_state.round, "bot": 2, "action": "wait"},
+                ],
+            )
+            fallback = _FakeFallback()
+            strategy = OptimizedMediumV4Strategy(plan_path=plan_path, fallback=fallback)
+            strategy.on_game_start(medium_state)
+
+            strategy.decide(medium_state)
+            next_state = medium_state.model_copy(update={"round": medium_state.round + 1})
+            actions = strategy.decide(next_state)
+            assert len(actions) == 3
+            assert fallback.decide_calls == 2
+            assert all(isinstance(a, WaitAction) for a in actions)
+        finally:
+            plan_path.unlink(missing_ok=True)
+
+    def test_delegates_game_over_to_fallback(
+        self,
+        medium_state: GameState,
+    ) -> None:
+        plan_path = _temp_plan_path()
+        try:
+            _write_plan(
+                plan_path,
+                medium_state,
+                [
+                    {"round": medium_state.round, "bot": 0, "action": "wait"},
+                    {"round": medium_state.round, "bot": 1, "action": "wait"},
+                    {"round": medium_state.round, "bot": 2, "action": "wait"},
+                ],
+            )
+            fallback = _FakeFallback()
+            strategy = OptimizedMediumV4Strategy(plan_path=plan_path, fallback=fallback)
+            strategy.on_game_start(medium_state)
+            strategy.on_game_over(
+                GameOver(
+                    type="game_over",
+                    score=0,
+                    rounds_used=300,
+                    items_delivered=0,
+                    orders_completed=0,
+                ),
+            )
+            assert fallback.game_over_called
+        finally:
+            plan_path.unlink(missing_ok=True)
