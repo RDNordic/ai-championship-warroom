@@ -70,12 +70,14 @@ Get-Content .\logs\run_history.csv | Select-Object -Last 10
 - Latest tuned replay: `logs/game_20260301_220218.jsonl` (score 109).
 
 ## Current Medium Notes
-- Best replay: `logs/game_20260301_221741.jsonl` (score 116).
-- Regression replay from experimental 3-item lookahead: `logs/game_20260301_222205.jsonl` (score 11).
-- Current `run_medium.py` has step-6 lookahead rolled back. It keeps:
+- Best replay cluster: `logs/game_20260301_232655.jsonl`, `logs/game_20260301_232756.jsonl`, `logs/game_20260301_232841.jsonl`, `logs/game_20260301_235029.jsonl` (score 116).
+- Historical regression replay: `logs/game_20260301_222205.jsonl` (score 11).
+- Current `run_medium.py` baseline now includes:
   - `random.seed(42)`
   - `self._walls` caching
   - single queue deliverer (`ranked[:1]`)
-  - late-game cutoff `> 285`
-  - widened detour (`direct + 8`, Manhattan `<= 12`)
-- Next action after resume: run one fresh medium game and confirm rollback performance.
+  - early anti-stall nudge (`wait_streak >= 2`) plus low-score early-round nudge
+  - distance-aware late-game staging (`dist_to_drop + 2` vs `rounds_left`)
+  - round-dependent detour thresholds (`+8/+6/+3`)
+  - drop-off-aware item selection cost (`(dist_bot * 2) + dist_drop`)
+- Next action after resume: run a 10-15 run Medium batch and compare median/min vs baseline.
