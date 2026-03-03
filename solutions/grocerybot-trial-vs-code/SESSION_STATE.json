@@ -1,0 +1,65 @@
+{
+  "objective": "Maximize Hard+Expert points with stable incremental evaluation",
+  "benchmark": {
+    "hard": 243,
+    "expert": 219,
+    "combined": 462
+  },
+  "historical_best": {
+    "hard": 99,
+    "expert": 71,
+    "combined": 170
+  },
+  "current_clean_baseline": {
+    "date_utc": "2026-03-03",
+    "expert": {
+      "map_seed": "7004",
+      "method": "3-run median, discard timeout_rounds > 5",
+      "run_ids": [
+        "20260303_232503",
+        "20260303_232642",
+        "20260303_232807"
+      ],
+      "scores": [
+        3,
+        3,
+        12
+      ],
+      "clean_median": 3
+    }
+  },
+  "gates": {
+    "mode": "lightweight_3run_median",
+    "runs_per_trial": 3,
+    "clean_timeout_max": 5,
+    "min_clean_runs": 2,
+    "extra_runs_if_inconclusive": 1,
+    "keep_if_clean_median_improves": true,
+    "revert_if_not_improved": true,
+    "one_change_per_trial": true
+  },
+  "active_trial": {
+    "difficulty": "expert",
+    "file": "run_expert.py",
+    "change": "Prompt 5 pick-fail cooldown port from hard",
+    "status": "in_progress",
+    "completed_run_ids": [
+      "20260303_233101",
+      "20260303_233230"
+    ],
+    "pending_runs": 1
+  },
+  "next_focus": {
+    "primary": "expert_traffic_coordination",
+    "secondary": "hard_opening_throughput"
+  },
+  "diagnostics": {
+    "track_all_bot_wait_clusters": true,
+    "latest_expert_wait_cluster_rounds": "271-299"
+  },
+  "do_not_touch": [
+    "websocket plumbing",
+    "token handling",
+    "logging plumbing"
+  ]
+}
