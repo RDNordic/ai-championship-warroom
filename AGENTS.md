@@ -111,6 +111,25 @@ Every handoff must include:
 2. Reproducibility over one-off wins.
 3. Compliance blockers override speed.
 
+## Competition Eval Protocol (Hard + Expert)
+- Evaluation mode: lightweight `3-run clean-median gate`.
+- One behavior change per trial in one file (`run_hard.py` or `run_expert.py`).
+- For each trial:
+  - Run 3 games on the target difficulty.
+  - Validate each replay with `validator.py`.
+  - Mark a run noisy if `TIMEOUT ROUNDS > 5`; exclude noisy runs from scoring.
+  - Compare median score of clean runs to the current clean baseline median for that difficulty.
+- Keep/revert rule:
+  - Keep if clean-median improves baseline.
+  - Revert if not improved.
+  - If fewer than 2 clean runs remain, run one extra; if still inconclusive, revert by default.
+- Always record in handoff:
+  - run_ids tested,
+  - clean/noisy counts,
+  - clean scores,
+  - clean median,
+  - keep/revert decision.
+
 ## Repository Automation Agent
 
 ### Codex (AI coding agent)

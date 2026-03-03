@@ -1,51 +1,36 @@
 # CLAUDE.md
 
-Purpose: Fast session bootstrap with minimal context usage.
+Purpose: minimal startup context.
 
-## Start Here (Read In This Order)
-1. `CLAUDE.md` (this file)
-2. `SESSION_HANDOFF.md` (for latest proven state)
-3. `RUNBOOK.md` (only when running games / checking process details)
+## Read Order
+1. `SESSION_STATE.json` (single-source current state)
+2. `CLAUDE.md` (rules)
+3. `SESSION_HANDOFF.md` only if details are needed
+4. `RUNBOOK.md` only when running commands
 
-Do not read large logs or replay files until a concrete experiment is chosen.
+## Core Rules
+- One behavior change per trial in one file (`run_hard.py` or `run_expert.py`).
+- Hard/Expert gate is a lightweight 3-run batch, not single-run:
+  - Run 3 games on the same difficulty.
+  - Validate each replay with `validator.py`.
+  - Discard runs with `TIMEOUT ROUNDS > 5`.
+  - Compare median score of remaining clean runs against the current clean baseline median.
+- If clean median improves baseline: keep change and update baseline in state/handoff.
+- If clean median does not improve baseline: revert change.
+- If fewer than 2 clean runs are available: run one extra; if still inconclusive, revert by default.
+- Historical best (`Expert 71`) is a milestone, not the day-to-day trial gate.
 
-## Current Mission
-- Primary focus: maximize `Hard + Expert` points.
-- Benchmark reference: `Hard 243` + `Expert 219` = `462`.
-- Current local best: `Hard 99`, `Expert 71` (combined `170`).
+## Focus
+- Primary: Expert traffic coordination
+- Secondary: Hard opening throughput
 
-## Working Rules
-- One behavior change per experiment.
-- Change only one target file: `run_hard.py` or `run_expert.py`.
-- Run exactly once with fresh token.
-- Compare against local best for that difficulty:
-  - Hard gate: improve beyond `99`
-  - Expert gate: improve beyond `71`
-- If not improved: revert immediately.
-- If run is timeout-heavy/noisy: classify as noisy and rerun once before keep/revert.
+## Diagnostics
+- After each 3-run batch, compute rounds where all 10 bots issued `wait`.
+- Use wait-cluster location to choose next trial focus:
+  - mostly late rounds -> endgame policy,
+  - mid rounds -> congestion/deadlock handling,
+  - early rounds -> assignment/opening throughput.
 
-## Strategy Notes
-- Hard bottleneck: early opening coordination (spawn-stack / throughput), not basic validity.
-- Expert bottleneck: 10-bot traffic coordination and deconfliction, not pickup legality.
-- Favor traffic-first Expert changes over generic routing tweaks.
-
-## Operational Guardrails
-- Do not modify websocket/token/logging plumbing.
-- Do not commit `.env` or `__pycache__`.
-- Keep `run_medium.py` frozen (118 baseline) unless explicitly requested.
-- Keep Easy unchanged unless explicitly requested.
-
-## Repro Commands
-From `solutions/grocerybot-trial-vs-code`:
-
-```powershell
-& ".venv\Scripts\python.exe" run_hard.py
-& ".venv\Scripts\python.exe" run_expert.py
-```
-
-Validator from repo root:
-
-```powershell
-solutions\grocerybot-trial-vs-code\.venv\Scripts\python.exe solutions\grocerybot-simulator\validator.py <replay.jsonl>
-```
-
+## Guardrails
+- Do not touch websocket/token/logging plumbing
+- Do not commit `.env` or `__pycache__`
