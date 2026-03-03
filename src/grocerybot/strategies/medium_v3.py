@@ -12,8 +12,16 @@ from __future__ import annotations
 from collections import Counter
 from typing import TYPE_CHECKING, Any
 
+from grocerybot.daily_memory import (
+    DailySnapshot,
+    OrderRecord,
+    build_snapshot_from_state,
+    load_snapshot,
+    merge_orders,
+    save_snapshot,
+)
 from grocerybot.grid import PassableGrid, astar, direction_for_move
-from grocerybot.models import BotAction, MoveAction, WaitAction
+from grocerybot.models import BotAction, GameOver, MoveAction, WaitAction
 from grocerybot.planner import (
     BotIntent,
     IntentManager,
@@ -62,7 +70,8 @@ def _manhattan(a: Position, b: Position) -> int:
 class MediumV3Strategy(Strategy):
     """Medium strategy with greedy allocation and reservation traffic control."""
 
-    def __init__(self) -> None:
+    def __init__(self, level: str = "medium") -> None:
+        self._level = level
         self._grid: PassableGrid | None = None
         self._planner: LocalTripPlanner | None = None
         self._parking: ParkingManager | None = None
@@ -74,6 +83,8 @@ class MediumV3Strategy(Strategy):
         self._last_blocked_moves = 0
         self._last_greedy_assignments = 0
         self._last_wait_overrides: dict[int, str] = {}
+        self._snap: DailySnapshot | None = None
+        self._seen_orders: list[OrderRecord] = []
 
     def on_game_start(self, state: GameState) -> None:
         self._grid = PassableGrid(state)
@@ -86,11 +97,25 @@ class MediumV3Strategy(Strategy):
         self._last_greedy_assignments = 0
         self._last_wait_overrides = {}
 
+        snap = load_snapshot(self._level)
+        if snap is not None:
+            self._snap = snap
+        else:
+            self._snap = build_snapshot_from_state(state, self._level)
+        self._accumulate_orders(state)
+
+    def on_game_over(self, result: GameOver) -> None:
+        if self._snap is not None:
+            updated = merge_orders(self._snap, self._seen_orders)
+            save_snapshot(updated)
+
     def decide(self, state: GameState) -> list[BotAction]:
         planner = self._planner
         grid = self._grid
         parking = self._parking
         assert planner is not None and grid is not None and parking is not None
+
+        self._accumulate_orders(state)
 
         bots = sorted(state.bots, key=lambda b: b.id)
         snapshot = self._tracker.snapshot(state)
@@ -886,3 +911,14 @@ class MediumV3Strategy(Strategy):
         if goal is None:
             return 0
         return _manhattan(goal, pos)
+
+    def _accumulate_orders(self, state: GameState) -> None:
+        existing_ids = {o.id for o in self._seen_orders}
+        for order in state.orders:
+            if order.id not in existing_ids:
+                self._seen_orders.append(
+                    OrderRecord(
+                        id=order.id,
+                        items_required=list(order.items_required),
+                    ),
+                )
