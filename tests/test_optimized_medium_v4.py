@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 
-from grocerybot.models import Bot, GameOver, GameState, WaitAction
+from grocerybot.models import Bot, GameOver, GameState, MoveAction, WaitAction
 from grocerybot.strategies.base import Strategy
 from grocerybot.strategies.optimized_medium_v4 import OptimizedMediumV4Strategy
 
@@ -58,9 +58,9 @@ def _active_needed(state: GameState) -> list[str]:
     return sorted(needed)
 
 
-def _write_plan(path: Path, state: GameState, actions: list[dict[str, object]]) -> None:
-    checkpoint = {
-        "round": state.round,
+def _checkpoint_for_state(state: GameState, round_no: int | None = None) -> dict[str, object]:
+    return {
+        "round": state.round if round_no is None else round_no,
         "active_order_id": next(order for order in state.orders if order.status == "active").id,
         "active_needed": _active_needed(state),
         "orders_completed": 0,
@@ -74,6 +74,10 @@ def _write_plan(path: Path, state: GameState, actions: list[dict[str, object]]) 
             for bot in state.bots
         ],
     }
+
+
+def _write_plan(path: Path, state: GameState, actions: list[dict[str, object]]) -> None:
+    checkpoint = _checkpoint_for_state(state, round_no=state.round)
     payload = {
         "meta": {"level": "medium", "date": "2026-03-02"},
         "summary": {"optimal_rounds": state.round + 1},
@@ -110,7 +114,7 @@ class TestOptimizedMediumV4Strategy:
             actions = strategy.decide(medium_state)
             assert len(actions) == 3
             assert all(isinstance(a, WaitAction) for a in actions)
-            assert fallback.decide_calls == 1
+            assert fallback.decide_calls == 0
         finally:
             plan_path.unlink(missing_ok=True)
 
@@ -169,10 +173,16 @@ class TestOptimizedMediumV4Strategy:
             strategy.on_game_start(medium_state)
 
             strategy.decide(medium_state)
-            next_state = medium_state.model_copy(update={"round": medium_state.round + 1})
+            next_state = medium_state.model_copy(
+                update={
+                    "round": medium_state.round
+                    + OptimizedMediumV4Strategy.RESYNC_BACK_WINDOW
+                    + 2,
+                },
+            )
             actions = strategy.decide(next_state)
             assert len(actions) == 3
-            assert fallback.decide_calls == 2
+            assert fallback.decide_calls == 1
             assert all(isinstance(a, WaitAction) for a in actions)
         finally:
             plan_path.unlink(missing_ok=True)
@@ -205,5 +215,60 @@ class TestOptimizedMediumV4Strategy:
                 ),
             )
             assert fallback.game_over_called
+        finally:
+            plan_path.unlink(missing_ok=True)
+
+    def test_resyncs_after_one_tick_drift(
+        self,
+        medium_state: GameState,
+    ) -> None:
+        plan_path = _temp_plan_path()
+        try:
+            rnd = medium_state.round
+            moved_state = medium_state.model_copy(
+                update={
+                    "round": rnd + 1,
+                    "bots": [
+                        Bot(
+                            id=0,
+                            position=(
+                                medium_state.bots[0].position[0] - 1,
+                                medium_state.bots[0].position[1],
+                            ),
+                            inventory=list(medium_state.bots[0].inventory),
+                        ),
+                        medium_state.bots[1],
+                        medium_state.bots[2],
+                    ],
+                },
+            )
+            payload = {
+                "meta": {"level": "medium", "date": "2026-03-02"},
+                "summary": {"optimal_rounds": rnd + 2},
+                "checkpoints": [
+                    _checkpoint_for_state(medium_state, round_no=rnd),
+                    _checkpoint_for_state(moved_state, round_no=rnd + 1),
+                ],
+                "actions": [
+                    {"round": rnd, "bot": 0, "action": "move_left"},
+                    {"round": rnd, "bot": 1, "action": "wait"},
+                    {"round": rnd, "bot": 2, "action": "wait"},
+                    {"round": rnd + 1, "bot": 0, "action": "wait"},
+                    {"round": rnd + 1, "bot": 1, "action": "wait"},
+                    {"round": rnd + 1, "bot": 2, "action": "wait"},
+                ],
+            }
+            plan_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            # Simulate one-tick lag: round advanced, but bot0 did not move yet.
+            drifted = medium_state.model_copy(update={"round": rnd + 1})
+            fallback = _FakeFallback()
+            strategy = OptimizedMediumV4Strategy(plan_path=plan_path, fallback=fallback)
+            strategy.on_game_start(medium_state)
+
+            actions = strategy.decide(drifted)
+            assert len(actions) == 3
+            assert isinstance(actions[0], MoveAction)
+            assert actions[0].action == "move_left"
         finally:
             plan_path.unlink(missing_ok=True)

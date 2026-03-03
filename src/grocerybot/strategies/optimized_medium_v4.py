@@ -40,6 +40,8 @@ class OptimizedMediumV4Strategy(Strategy):
     """Replay robust offline plan prefix for medium, then use medium_v4."""
 
     MAX_CONSECUTIVE_SKIPS = 6
+    RESYNC_BACK_WINDOW = 5
+    RESYNC_FORWARD_WINDOW = 1
 
     def __init__(
         self,
@@ -56,6 +58,7 @@ class OptimizedMediumV4Strategy(Strategy):
         self._max_round_exclusive = 0
         self._plan_enabled = False
         self._bot_skips: list[int] = [0] * NUM_BOTS
+        self._plan_round_offset = 0
 
     def on_game_start(self, state: GameState) -> None:
         self._grid = PassableGrid(state)
@@ -66,19 +69,18 @@ class OptimizedMediumV4Strategy(Strategy):
         self._fallback.on_game_over(result)
 
     def decide(self, state: GameState) -> list[BotAction]:
-        fallback_actions = self._fallback.decide(state)
         if not self._plan_enabled:
-            return fallback_actions
-        if state.round >= self._max_round_exclusive:
-            self._plan_enabled = False
-            return fallback_actions
+            return self._fallback.decide(state)
 
-        checkpoint = self._checkpoints_by_round.get(state.round)
-        planned_round = self._actions_by_round.get(state.round)
-        if planned_round is None:
+        plan_round = self._select_plan_round(state)
+        if plan_round is None:
             self._plan_enabled = False
-            return fallback_actions
-        checkpoint_ok = checkpoint is not None and self._checkpoint_matches(state, checkpoint)
+            return self._fallback.decide(state)
+        if plan_round >= self._max_round_exclusive:
+            self._plan_enabled = False
+            return self._fallback.decide(state)
+
+        planned_round = self._actions_by_round.get(plan_round, {})
 
         actions: list[BotAction] = []
         for bot in sorted(state.bots, key=lambda b: b.id):
@@ -97,13 +99,8 @@ class OptimizedMediumV4Strategy(Strategy):
 
         if any(skips >= self.MAX_CONSECUTIVE_SKIPS for skips in self._bot_skips):
             self._plan_enabled = False
-            return fallback_actions
+            return self._fallback.decide(state)
 
-        # Treat checkpoint mismatch as advisory; only disable when we are both
-        # mismatched and making no useful progress (all waits).
-        if not checkpoint_ok and all(a.action == "wait" for a in actions):
-            self._plan_enabled = False
-            return fallback_actions
         return actions
 
     def _resolve_plan_path(self) -> Path:
@@ -126,6 +123,7 @@ class OptimizedMediumV4Strategy(Strategy):
         self._actions_by_round = {}
         self._checkpoints_by_round = {}
         self._max_round_exclusive = 0
+        self._plan_round_offset = 0
         if not plan_path.exists():
             return
         raw = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -169,7 +167,28 @@ class OptimizedMediumV4Strategy(Strategy):
         self._checkpoints_by_round = checkpoints_by_round
         self._max_round_exclusive = max_round_exclusive
         self._bot_skips = [0] * NUM_BOTS
+        self._plan_round_offset = 0
         self._plan_enabled = True
+
+    def _select_plan_round(self, state: GameState) -> int | None:
+        target = state.round + self._plan_round_offset
+        max_span = max(self.RESYNC_BACK_WINDOW, self.RESYNC_FORWARD_WINDOW)
+        offsets: list[int] = [0]
+        for step in range(1, max_span + 1):
+            if step <= self.RESYNC_BACK_WINDOW:
+                offsets.append(-step)
+            if step <= self.RESYNC_FORWARD_WINDOW:
+                offsets.append(step)
+
+        for delta in offsets:
+            plan_round = target + delta
+            checkpoint = self._checkpoints_by_round.get(plan_round)
+            if checkpoint is None:
+                continue
+            if self._checkpoint_matches(state, checkpoint):
+                self._plan_round_offset = plan_round - state.round
+                return plan_round
+        return None
 
     def _checkpoint_matches(
         self,
