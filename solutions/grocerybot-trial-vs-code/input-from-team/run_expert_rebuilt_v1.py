@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 import websockets
 
 random.seed(42)
+# Expert variant: de-jam + anti-hoarding + late-game recovery tweaks
 
 load_dotenv()
 raw = (os.getenv("GROCERY_BOT_TOKEN_EXPERT") or "").strip()
@@ -223,6 +224,7 @@ class TrialBot:
         self.last_pick_item: dict[int, str] = {}
         self.pick_fail_streak: dict[str, int] = {}
         self.pick_block_until_round: dict[str, int] = {}
+        self.stuck_streak: dict[int, int] = {}
 
     def decide(self, state: dict) -> list[dict]:
         for item in state["items"]:
@@ -232,6 +234,7 @@ class TrialBot:
         round_number = int(state.get("round", -1))
         bots = sorted(state["bots"], key=lambda b: b["id"])
         self._update_pick_retry_state(bots, round_number)
+        self._update_stuck_state(bots)
         self._update_wait_state(bots)
         items_by_id = {item["id"]: item for item in state["items"]}
         occupied_now = {tuple(b["position"]) for b in bots}
@@ -247,9 +250,17 @@ class TrialBot:
         preview_item_ids = self._preview_item_ids(state["items"], preview_needed)
         preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, bots)
         preview_duty_cap = min(max(0, len(bots) - 1), 6)
+        # Expert anti-hoarding: throttle and then freeze preview collection late game.
+        if round_number >= 260:
+            preview_needed = Counter()
+            preview_item_ids = set()
+            preview_duty_bots = set()
+            preview_duty_cap = 0
+        elif round_number >= 220:
+            preview_duty_cap = min(preview_duty_cap, 3)
 
         # Pre-pick preview items once active needs are already in-flight/carried.
-        if sum(needed.values()) == 0:
+        if round_number < 260 and sum(needed.values()) == 0:
             if sum(preview_needed.values()) > 0:
                 needed = preview_needed
 
@@ -367,22 +378,55 @@ class TrialBot:
                 self.last_observed_pos.pop(bot_id, None)
                 self.last_action.pop(bot_id, None)
 
+    def _update_stuck_state(self, bots: list[dict]) -> None:
+        active_ids = {b["id"] for b in bots}
+        moveish_actions = {"move_up", "move_down", "move_left", "move_right", "wait"}
+        for bot in bots:
+            bot_id = bot["id"]
+            pos = tuple(bot["position"])
+            prev_pos = self.last_observed_pos.get(bot_id)
+            prev_action = self.last_action.get(bot_id)
+            if prev_pos == pos and prev_action in moveish_actions:
+                self.stuck_streak[bot_id] = self.stuck_streak.get(bot_id, 0) + 1
+            else:
+                self.stuck_streak[bot_id] = 0
+
+        for bot_id in list(self.stuck_streak.keys()):
+            if bot_id not in active_ids:
+                self.stuck_streak.pop(bot_id, None)
+
     def _dropoff_clearance_bots(
         self, bots: list[dict], drop_off: tuple[int, int], delivery_alloc: dict[int, Counter]
     ) -> set[int]:
-        waiting_deliveries = any(
-            tuple(b["position"]) != drop_off
+        deliverers_waiting = [
+            b
+            for b in bots
+            if tuple(b["position"]) != drop_off
             and self._delivery_count(delivery_alloc.get(b["id"], Counter())) > 0
-            for b in bots
-        )
-        if not waiting_deliveries:
+        ]
+        if not deliverers_waiting:
             return set()
-        return {
-            b["id"]
-            for b in bots
-            if tuple(b["position"]) == drop_off
-            and self._delivery_count(delivery_alloc.get(b["id"], Counter())) == 0
-        }
+
+        near_pressure = any(
+            self._manhattan(tuple(b["position"]), drop_off) <= 3
+            for b in deliverers_waiting
+        )
+
+        clear_ids: set[int] = set()
+        for b in bots:
+            bot_id = b["id"]
+            if self._delivery_count(delivery_alloc.get(bot_id, Counter())) > 0:
+                continue
+            pos = tuple(b["position"])
+            d = self._manhattan(pos, drop_off)
+            if pos == drop_off:
+                clear_ids.add(bot_id)
+                continue
+            # Also clear adjacent blockers if a delivery wave is converging and this bot is idle/stuck.
+            if near_pressure and d == 1:
+                if len(b["inventory"]) == 0 or self.stuck_streak.get(bot_id, 0) >= 1:
+                    clear_ids.add(bot_id)
+        return clear_ids
 
     def _select_dropoff_queue_leader(
         self, bots: list[dict], drop_off: tuple[int, int], delivery_alloc: dict[int, Counter]
@@ -611,6 +655,10 @@ class TrialBot:
         useful_inventory = self._delivery_count(useful_delivery) > 0
         has_non_useful_inventory = bool(inventory) and not useful_inventory
 
+        if self.stuck_streak.get(bot_id, 0) >= 2:
+            # Break lock-in loops caused by congestion or stale targets.
+            self.bot_targets.pop(bot_id, None)
+
         if useful_inventory and pos == drop_off:
             if self.last_drop_round.get(bot_id) == round_number - 1:
                 return self._wait_or_nudge(
@@ -637,13 +685,19 @@ class TrialBot:
                 allow_occupied_goals=False,
             )
 
-        if round_number > 290 and not useful_inventory:
-            self.bot_targets.pop(bot_id, None)
-            return {"bot": bot_id, "action": "wait"}
-
         if has_non_useful_inventory and len(inventory) >= 3:
-            # Carrying a full preview/non-useful bag: stage next to drop-off for fast flip.
+            # Carrying a full preview/non-useful bag: stage near drop-off early, decongest late.
             self.bot_targets.pop(bot_id, None)
+            if round_number >= 275 and self._manhattan(pos, drop_off) <= 1:
+                spread = self._stage_toward_aisle_center(
+                    bot_id=bot_id,
+                    pos=pos,
+                    state=state,
+                    occupied_now=occupied_now,
+                    reserved_next=reserved_next,
+                )
+                if spread is not None:
+                    return spread
             staging_goals = self._adjacent_walkable(drop_off, state, occupied_now, pos)
             if staging_goals:
                 return self._move_toward(
@@ -664,10 +718,11 @@ class TrialBot:
             )
 
         if has_non_useful_inventory and len(inventory) < 3:
-            # Continue building preview inventory instead of idling.
-            preview_duty_allowed = (bot_id in preview_duty_bots) or (
+            # Continue building preview inventory instead of idling, but stop hoarding late game.
+            preview_enabled = round_number < 260 and sum(preview_needed.values()) > 0 and preview_duty_cap > 0
+            preview_duty_allowed = preview_enabled and ((bot_id in preview_duty_bots) or (
                 len(preview_duty_bots) < preview_duty_cap
-            )
+            ))
             if preview_duty_allowed:
                 preview_pick = self._pick_if_adjacent(bot, state, preview_needed, reserved_items, round_number)
                 if preview_pick is not None:
@@ -840,6 +895,9 @@ class TrialBot:
         assigned_item_id: Optional[str],
         round_number: int = -1,
     ) -> Optional[dict]:
+        if self.stuck_streak.get(bot_id, 0) >= 2:
+            self.bot_targets.pop(bot_id, None)
+
         if assigned_item_id:
             assigned = items_by_id.get(assigned_item_id)
             if (
@@ -1070,7 +1128,7 @@ class TrialBot:
         occupied_now: set[tuple[int, int]],
         reserved_next: set[tuple[int, int]],
     ) -> dict:
-        if self.wait_streak.get(bot_id, 0) >= 1:
+        if max(self.wait_streak.get(bot_id, 0), self.stuck_streak.get(bot_id, 0)) >= 1:
             nudge = self._random_nudge(bot_id, pos, state, occupied_now, reserved_next)
             if nudge is not None:
                 return nudge
@@ -1168,6 +1226,10 @@ class TrialBot:
                 blocked=near_blocked,
             )
         if step is None:
+            if self.stuck_streak.get(bot_id, 0) >= 1:
+                nudge = self._random_nudge(bot_id, start, state, occupied_now, reserved_next)
+                if nudge is not None:
+                    return nudge
             return {"bot": bot_id, "action": "wait"}
         action = self._action_from_step(start, step)
         reserved_next.add(step)

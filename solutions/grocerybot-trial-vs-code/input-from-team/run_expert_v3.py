@@ -5,6 +5,7 @@ import json
 import os
 import random
 import time
+import heapq
 from collections import Counter, deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -219,6 +220,9 @@ class TrialBot:
         self.wait_streak: dict[int, int] = {}
         self.last_observed_pos: dict[int, tuple[int, int]] = {}
         self.last_action: dict[int, str] = {}
+        # Space-time cooperative pathfinding state (reset each round)
+        self._st_reserved: set[tuple[int, int, int]] = set()  # (x, y, t)
+        self._st_window: int = 8  # planning horizon in steps
         self.last_inventory_size: dict[int, int] = {}
         self.last_pick_item: dict[int, str] = {}
         self.pick_fail_streak: dict[str, int] = {}
@@ -237,6 +241,11 @@ class TrialBot:
         occupied_now = {tuple(b["position"]) for b in bots}
         reserved_next: set[tuple[int, int]] = set()
         reserved_items: set[str] = set()
+
+        # Reset space-time reservation table for this round.
+        # Don't seed t=0 globally -- let each bot's planned path
+        # (or stationary reservation) populate the table as we go.
+        self._st_reserved.clear()
 
         active_order = self._get_order_by_status(state, "active")
         active_needed_raw = self._required_minus_delivered(active_order)
@@ -297,6 +306,12 @@ class TrialBot:
             )
             actions_by_id[bot["id"]] = action
             self.last_action[bot["id"]] = action["action"]
+            # Ensure non-movement actions reserve space-time position
+            act_name = action["action"]
+            bpos = tuple(bot["position"])
+            if act_name in ("pick_up", "drop_off", "wait"):
+                for t in range(self._st_window + 1):
+                    self._st_reserved.add((bpos[0], bpos[1], t))
             if action["action"] == "pick_up":
                 item_id = action.get("item_id")
                 if isinstance(item_id, str) and item_id:
@@ -1074,6 +1089,9 @@ class TrialBot:
             nudge = self._random_nudge(bot_id, pos, state, occupied_now, reserved_next)
             if nudge is not None:
                 return nudge
+        # Reserve waiting position in space-time
+        for t in range(self._st_window + 1):
+            self._st_reserved.add((pos[0], pos[1], t))
         return {"bot": bot_id, "action": "wait"}
 
     def _random_nudge(
@@ -1102,6 +1120,10 @@ class TrialBot:
 
         step = random.choice(options)
         reserved_next.add(step)
+        # Register nudge in space-time
+        self._st_reserved.add((step[0], step[1], 1))
+        for t in range(2, self._st_window + 1):
+            self._st_reserved.add((step[0], step[1], t))
         return {"bot": bot_id, "action": self._action_from_step(pos, step)}
 
     @staticmethod
@@ -1136,6 +1158,27 @@ class TrialBot:
         allow_occupied_goals: bool,
         relax_reservation_if_blocked: bool = False,
     ) -> dict:
+        # Try space-time A* first (cooperative pathfinding)
+        path = self._astar_spacetime(
+            start=start,
+            goals=goals,
+            state=state,
+            bot_id=bot_id,
+        )
+        if path and len(path) >= 2:
+            step = path[1]  # first move
+            # Reserve the full planned path in the space-time table
+            for t, (px, py) in enumerate(path):
+                self._st_reserved.add((px, py, t))
+            # Also hold final position for remaining window to prevent
+            # later bots from planning through our destination.
+            final = path[-1]
+            for t in range(len(path), self._st_window + 1):
+                self._st_reserved.add((final[0], final[1], t))
+            reserved_next.add(step)
+            return {"bot": bot_id, "action": self._action_from_step(start, step)}
+
+        # Fallback: original BFS with progressive relaxation
         blocked = (occupied_now - {start}) | reserved_next
         if allow_occupied_goals:
             blocked = blocked - goals
@@ -1156,8 +1199,6 @@ class TrialBot:
                 blocked=relaxed_blocked,
             )
         if step is None and relax_reservation_if_blocked:
-            # Final fallback: only block immediately adjacent bots so BFS
-            # can find longer detours around nearby blockers.
             adjacent = {(start[0]+dx, start[1]+dy)
                         for dx, dy in [(0,1),(0,-1),(1,0),(-1,0)]}
             near_blocked = (occupied_now - {start}) & adjacent
@@ -1168,10 +1209,118 @@ class TrialBot:
                 blocked=near_blocked,
             )
         if step is None:
+            # Reserve waiting position in space-time
+            for t in range(self._st_window + 1):
+                self._st_reserved.add((start[0], start[1], t))
             return {"bot": bot_id, "action": "wait"}
-        action = self._action_from_step(start, step)
         reserved_next.add(step)
-        return {"bot": bot_id, "action": action}
+        # Reserve fallback step in space-time too
+        self._st_reserved.add((start[0], start[1], 0))
+        self._st_reserved.add((step[0], step[1], 1))
+        for t in range(2, self._st_window + 1):
+            self._st_reserved.add((step[0], step[1], t))
+        return {"bot": bot_id, "action": self._action_from_step(start, step)}
+
+    def _astar_spacetime(
+        self,
+        start: tuple[int, int],
+        goals: set[tuple[int, int]],
+        state: dict,
+        bot_id: int,
+    ) -> Optional[list[tuple[int, int]]]:
+        """A* through (x, y, t) space using the shared reservation table.
+
+        Returns a list of positions [start, step1, step2, ...] up to
+        _st_window steps, or None if no conflict-free path exists.
+        """
+        if not goals:
+            return None
+        if start in goals:
+            return None  # already there, caller handles pick_up/drop_off
+
+        width = state["grid"]["width"]
+        height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
+        window = self._st_window
+
+        def h(pos: tuple[int, int]) -> int:
+            return min(self._manhattan(pos, g) for g in goals)
+
+        def passable_static(p: tuple[int, int]) -> bool:
+            x, y = p
+            if not (0 <= x < width and 0 <= y < height):
+                return False
+            if p in walls or p in self.shelves:
+                return False
+            return True
+
+        # State: (f_score, tie-break counter, x, y, t)
+        counter = 0
+        start_h = h(start)
+        # open set: (f, counter, x, y, t, g_cost)
+        open_heap: list[tuple[int, int, int, int, int, int]] = [
+            (start_h, counter, start[0], start[1], 0, 0)
+        ]
+        # came_from: (x, y, t) -> (px, py, pt) or None
+        came_from: dict[tuple[int, int, int], Optional[tuple[int, int, int]]] = {
+            (start[0], start[1], 0): None
+        }
+        best_g: dict[tuple[int, int, int], int] = {(start[0], start[1], 0): 0}
+
+        while open_heap:
+            f, _, cx, cy, ct, g = heapq.heappop(open_heap)
+
+            if (cx, cy) in goals:
+                # Reconstruct path
+                path: list[tuple[int, int]] = []
+                node: Optional[tuple[int, int, int]] = (cx, cy, ct)
+                while node is not None:
+                    path.append((node[0], node[1]))
+                    node = came_from[node]
+                path.reverse()
+                return path
+
+            if ct >= window:
+                continue  # don't expand beyond planning horizon
+
+            if g > best_g.get((cx, cy, ct), 10**9):
+                continue  # stale entry
+
+            nt = ct + 1
+            # Neighbours: 4 cardinal moves + wait in place
+            moves = [
+                (cx + 1, cy), (cx - 1, cy),
+                (cx, cy + 1), (cx, cy - 1),
+                (cx, cy),  # wait
+            ]
+            for (nx, ny) in moves:
+                if (nx, ny) != (cx, cy) and not passable_static((nx, ny)):
+                    continue
+                # Check space-time reservation at destination
+                if (nx, ny, nt) in self._st_reserved:
+                    continue
+                # Check swap conflict: another bot moving FROM (nx,ny,ct)
+                # TO (cx,cy,nt) would be a head-on swap.
+                # We approximate: block if (nx,ny,ct) is reserved AND
+                # (cx,cy,nt) could be where that bot goes.
+                # Simpler: just check edge swap - if (nx,ny) is occupied
+                # at t and our current cell is reserved at t+1 by same source
+                # This is hard to track precisely, so we use a simpler check:
+                # block if the destination cell at current time is reserved
+                # AND our current cell at next time is reserved (swap conflict)
+                if (nx, ny, ct) in self._st_reserved and (cx, cy, nt) in self._st_reserved:
+                    continue  # likely swap conflict
+
+                ng = g + 1
+                nstate = (nx, ny, nt)
+                if ng < best_g.get(nstate, 10**9):
+                    best_g[nstate] = ng
+                    nf = ng + h((nx, ny))
+                    counter += 1
+                    heapq.heappush(open_heap, (nf, counter, nx, ny, nt, ng))
+                    came_from[nstate] = (cx, cy, ct)
+
+        return None  # no path found within window
 
     def _bfs_first_step(
         self,

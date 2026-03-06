@@ -1,0 +1,17 @@
+# Secrets
+**/.env
+**/.env.*
+
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+
+# Local virtual environments
+.venv/
+venv/
+
+# Generated run artifacts (grocery bot project)
+solutions/grocerybot-trial-vs-code/logs/
+solutions/grocerybot-trial-vs-code/input-from-team/logs/
+solutions/grocerybot-trial-vs-code/input-from-team/__pycache__/
+solutions/grocerybot-simulator/__pycache__/
