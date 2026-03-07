@@ -235,8 +235,16 @@ class TrialBot:
         bots = sorted(state["bots"], key=lambda b: b["id"])
         drop_off = tuple(state["drop_off"])
 
-        # Pick workers: the N bots closest to the drop-off point
-        ranked = sorted(bots, key=lambda b: (self._manhattan(tuple(b["position"]), drop_off), b["id"]))
+        # Pick workers: minimize avg round-trip (avg dist to shelves + dist to drop-off)
+        def _worker_cost(b):
+            bp = tuple(b["position"])
+            d_drop = self._manhattan(bp, drop_off)
+            if self.shelves:
+                d_shelves = sum(self._manhattan(bp, s) for s in self.shelves) / len(self.shelves)
+            else:
+                d_shelves = 0
+            return (d_shelves + d_drop, b["id"])
+        ranked = sorted(bots, key=_worker_cost)
         self.worker_ids = {b["id"] for b in ranked[:self.NUM_WORKERS]}
 
         # Find parking spots for non-workers: walkable cells far from drop-off and shelves
