@@ -258,15 +258,19 @@ class TrialBot:
                 if cell not in walls and cell not in self.shelves:
                     walkable.add(cell)
 
-        # Score parking spots: prefer cells far from drop-off and far from shelves (less likely to block)
+        # Score parking spots: prefer dead-ends/corners (fewer walkable neighbors) far from drop-off
         bot_positions = {tuple(b["position"]) for b in bots}
         used_parking: set[tuple[int, int]] = set()
         non_workers = [b for b in bots if b["id"] not in self.worker_ids]
 
-        # Sort parking candidates by distance from drop-off descending (park far away)
+        def _walkable_neighbor_count(cell):
+            return sum(1 for n in self._neighbors(cell) if n in walkable)
+
+        # Primary sort: fewer walkable neighbors first (corners/dead-ends)
+        # Secondary sort: farther from drop-off (stay out of the way)
         parking_candidates = sorted(
             walkable - {drop_off},
-            key=lambda c: (-self._manhattan(c, drop_off), c),
+            key=lambda c: (_walkable_neighbor_count(c), -self._manhattan(c, drop_off), c),
         )
 
         for bot in non_workers:
