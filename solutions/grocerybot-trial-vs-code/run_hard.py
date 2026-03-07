@@ -210,7 +210,7 @@ def token_is_expired(claims: dict) -> tuple[bool, Optional[datetime]]:
 
 
 class TrialBot:
-    NUM_WORKERS = 2  # Only this many bots do actual work
+    NUM_WORKERS = 3  # Only this many bots do actual work
 
     def __init__(self) -> None:
         self.shelves: set[tuple[int, int]] = set()
