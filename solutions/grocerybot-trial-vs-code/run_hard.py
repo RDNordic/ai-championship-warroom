@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 from dotenv import load_dotenv
 import websockets
 
+random.seed(42)
 
 load_dotenv()
 raw = (os.getenv("GROCERY_BOT_TOKEN_HARD") or "").strip()
@@ -989,7 +990,7 @@ class TrialBot:
                 continue
             if needed[item["type"]] <= 0:
                 continue
-            dist = self._manhattan(pos, tuple(item["position"]))
+            dist = self._bfs_dist_to_adjacent(pos, tuple(item["position"]))
             if dist < best_dist:
                 best_dist = dist
                 best_item = item
@@ -1282,6 +1283,39 @@ class TrialBot:
         if parent is None:
             return None
         return cur
+
+    def _bfs_dist_to_adjacent(
+        self, start: tuple[int, int], item_pos: tuple[int, int]
+    ) -> int:
+        """BFS distance from start to nearest walkable cell adjacent to item_pos."""
+        goals = set(self._neighbors(item_pos))
+        if start in goals:
+            return 0
+        if not goals:
+            return 10**9
+        # Use cached grid info from staging if available; fall back to manhattan.
+        key = self._staging_cache_key
+        if key is None:
+            return self._manhattan(start, item_pos)
+        width, height, walls_tuple, _ = key
+        walls = set(walls_tuple)
+        q: deque[tuple[tuple[int, int], int]] = deque([(start, 0)])
+        visited: set[tuple[int, int]] = {start}
+        while q:
+            cur, dist = q.popleft()
+            for nxt in self._neighbors(cur):
+                if nxt in visited:
+                    continue
+                x, y = nxt
+                if not (0 <= x < width and 0 <= y < height):
+                    continue
+                if nxt in walls or nxt in self.shelves:
+                    continue
+                if nxt in goals:
+                    return dist + 1
+                visited.add(nxt)
+                q.append((nxt, dist + 1))
+        return 10**9
 
     def _adjacent_walkable(
         self,
