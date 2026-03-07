@@ -210,6 +210,8 @@ def token_is_expired(claims: dict) -> tuple[bool, Optional[datetime]]:
 
 
 class TrialBot:
+    NUM_WORKERS = 2  # Only this many bots do actual work
+
     def __init__(self) -> None:
         self.shelves: set[tuple[int, int]] = set()
         self.bot_targets: dict[int, str] = {}
@@ -223,6 +225,59 @@ class TrialBot:
         self.last_pick_item: dict[int, str] = {}
         self.pick_fail_streak: dict[str, int] = {}
         self.pick_block_until_round: dict[str, int] = {}
+        # Specialist strategy state
+        self.worker_ids: Optional[set[int]] = None
+        self.parking_assignments: dict[int, tuple[int, int]] = {}  # bot_id -> parking cell
+        self.parked: set[int] = set()  # bots that have reached their parking spot
+
+    def _init_specialists(self, state: dict) -> None:
+        """First-round setup: pick workers closest to drop-off, assign parking to the rest."""
+        bots = sorted(state["bots"], key=lambda b: b["id"])
+        drop_off = tuple(state["drop_off"])
+
+        # Pick workers: the N bots closest to the drop-off point
+        ranked = sorted(bots, key=lambda b: (self._manhattan(tuple(b["position"]), drop_off), b["id"]))
+        self.worker_ids = {b["id"] for b in ranked[:self.NUM_WORKERS]}
+
+        # Find parking spots for non-workers: walkable cells far from drop-off and shelves
+        width = state["grid"]["width"]
+        height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
+        walkable = set()
+        for x in range(width):
+            for y in range(height):
+                cell = (x, y)
+                if cell not in walls and cell not in self.shelves:
+                    walkable.add(cell)
+
+        # Score parking spots: prefer cells far from drop-off and far from shelves (less likely to block)
+        bot_positions = {tuple(b["position"]) for b in bots}
+        used_parking: set[tuple[int, int]] = set()
+        non_workers = [b for b in bots if b["id"] not in self.worker_ids]
+
+        # Sort parking candidates by distance from drop-off descending (park far away)
+        parking_candidates = sorted(
+            walkable - {drop_off},
+            key=lambda c: (-self._manhattan(c, drop_off), c),
+        )
+
+        for bot in non_workers:
+            pos = tuple(bot["position"])
+            # Find nearest available parking spot (from the far-away candidates)
+            best = None
+            best_dist = 10**9
+            for cell in parking_candidates:
+                if cell in used_parking:
+                    continue
+                d = self._manhattan(pos, cell)
+                if d < best_dist:
+                    best_dist = d
+                    best = cell
+                    if d <= 2:  # Good enough, don't search further
+                        break
+            if best is not None:
+                self.parking_assignments[bot["id"]] = best
+                used_parking.add(best)
 
     def decide(self, state: dict) -> list[dict]:
         for item in state["items"]:
@@ -231,6 +286,11 @@ class TrialBot:
 
         round_number = int(state.get("round", -1))
         bots = sorted(state["bots"], key=lambda b: b["id"])
+
+        # First-round specialist initialization
+        if self.worker_ids is None:
+            self._init_specialists(state)
+
         self._update_pick_retry_state(bots, round_number)
         self._update_wait_state(bots)
         items_by_id = {item["id"]: item for item in state["items"]}
@@ -238,29 +298,59 @@ class TrialBot:
         reserved_next: set[tuple[int, int]] = set()
         reserved_items: set[str] = set()
 
+        # Separate workers from parked bots
+        worker_bots = [b for b in bots if b["id"] in self.worker_ids]
+        parked_bots = [b for b in bots if b["id"] not in self.worker_ids]
+
+        # --- Handle parked bots first: move to parking or wait ---
+        actions: list[dict] = []
+        for bot in parked_bots:
+            bot_id = bot["id"]
+            pos = tuple(bot["position"])
+            target = self.parking_assignments.get(bot_id)
+
+            if target is None or pos == target:
+                self.parked.add(bot_id)
+                actions.append({"bot": bot_id, "action": "wait"})
+                reserved_next.add(pos)
+            else:
+                # Move toward parking spot
+                action = self._move_toward(
+                    bot_id=bot_id,
+                    start=pos,
+                    goals={target},
+                    state=state,
+                    occupied_now=occupied_now,
+                    reserved_next=reserved_next,
+                    allow_occupied_goals=True,
+                    relax_reservation_if_blocked=True,
+                )
+                actions.append(action)
+            self.last_action[bot_id] = actions[-1]["action"]
+
+        # --- Handle workers with existing logic ---
         active_order = self._get_order_by_status(state, "active")
         active_needed_raw = self._required_minus_delivered(active_order)
-        delivery_alloc, _ = self._allocate_delivery_slots(bots, active_needed_raw)
-        needed = self._needed_counts_for_order(active_order, bots)
+        delivery_alloc, _ = self._allocate_delivery_slots(worker_bots, active_needed_raw)
+        needed = self._needed_counts_for_order(active_order, worker_bots)
         preview_order = self._get_order_by_status(state, "preview")
-        preview_needed = self._needed_counts_for_order(preview_order, bots)
+        preview_needed = self._needed_counts_for_order(preview_order, worker_bots)
         preview_item_ids = self._preview_item_ids(state["items"], preview_needed)
-        preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, bots)
-        preview_duty_cap = min(max(0, len(bots) - 1), 3)
+        preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, worker_bots)
+        preview_duty_cap = min(max(0, len(worker_bots) - 1), 3)
 
-        # Pre-pick preview items once active needs are already in-flight/carried.
         if sum(needed.values()) == 0:
             if sum(preview_needed.values()) > 0:
                 needed = preview_needed
 
         drop_off = tuple(state["drop_off"])
-        dropoff_queue_ids = self._select_dropoff_queue_leader(bots, drop_off, delivery_alloc)
+        dropoff_queue_ids = self._select_dropoff_queue_leader(worker_bots, drop_off, delivery_alloc)
         dropoff_queue_leader = self._select_dropoff_queue_primary(
-            dropoff_queue_ids, bots, drop_off
+            dropoff_queue_ids, worker_bots, drop_off
         )
-        clear_dropoff_ids = self._dropoff_clearance_bots(bots, drop_off, delivery_alloc)
+        clear_dropoff_ids = self._dropoff_clearance_bots(worker_bots, drop_off, delivery_alloc)
         assignments = self._build_greedy_assignments(
-            bots=bots,
+            bots=worker_bots,
             items=state["items"],
             needed=needed,
             clear_dropoff_ids=clear_dropoff_ids,
@@ -269,8 +359,6 @@ class TrialBot:
         )
         preview_priority_bots: set[int] = set()
         if sum(preview_needed.values()) > 0:
-            # Option A: when active order is fully covered by currently carried
-            # + assigned items, send surplus bots to preview with full priority.
             coverage = Counter()
             for alloc in delivery_alloc.values():
                 coverage.update(alloc)
@@ -285,7 +373,7 @@ class TrialBot:
             if active_fully_covered:
                 surplus_bots = [
                     b
-                    for b in bots
+                    for b in worker_bots
                     if b["id"] not in assignments
                     and b["id"] not in clear_dropoff_ids
                     and self._delivery_count(delivery_alloc.get(b["id"], Counter())) == 0
@@ -302,9 +390,8 @@ class TrialBot:
                 assignments.update(preview_assignments)
                 preview_priority_bots = set(preview_assignments.keys())
                 preview_duty_bots.update(preview_priority_bots)
-        actions: list[dict] = []
 
-        for bot in bots:
+        for bot in worker_bots:
             action = self._decide_one(
                 bot=bot,
                 round_number=round_number,
