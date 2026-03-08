@@ -17,9 +17,9 @@ import websockets
 random.seed(42)
 
 load_dotenv()
-raw = (os.getenv("GROCERY_BOT_TOKEN_EXPERT") or "").strip()
+raw = (os.getenv("GROCERY_BOT_TOKEN_NIGHTMARE") or "").strip()
 if not raw:
-    raise SystemExit("Missing GROCERY_BOT_TOKEN_EXPERT in .env")
+    raise SystemExit("Missing GROCERY_BOT_TOKEN_NIGHTMARE in .env")
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -199,6 +199,58 @@ class RunLogger:
 WS_URL, TOKEN = resolve_connection(raw)
 TOKEN_CLAIMS = decode_token_claims(TOKEN)
 VALID_ACTIONS = {"move_up", "move_down", "move_left", "move_right", "pick_up", "drop_off", "wait"}
+NIGHTMARE_EXPECTED_WIDTH = 30
+NIGHTMARE_EXPECTED_HEIGHT = 18
+NIGHTMARE_EXPECTED_ROUNDS = 500
+NIGHTMARE_EXPECTED_BOTS = 20
+NIGHTMARE_ACTIVE_BOT_LIMIT = 5
+NIGHTMARE_EXPECTED_DROP_ZONES = 3
+
+
+def nightmare_shape_summary(state: dict) -> dict[str, int]:
+    grid = state.get("grid") or {}
+    width = int(grid.get("width", -1))
+    height = int(grid.get("height", -1))
+    max_rounds = int(state.get("max_rounds", -1))
+    bots = len(state.get("bots") or [])
+    drop_off_zones = state.get("drop_off_zones")
+    if isinstance(drop_off_zones, list):
+        drop_zone_count = len(drop_off_zones)
+    elif state.get("drop_off") is not None:
+        drop_zone_count = 1
+    else:
+        drop_zone_count = 0
+
+    return {
+        "width": width,
+        "height": height,
+        "max_rounds": max_rounds,
+        "bots": bots,
+        "drop_zones": drop_zone_count,
+    }
+
+
+def print_nightmare_shape_check(state: dict) -> None:
+    observed = nightmare_shape_summary(state)
+    print(f"Nightmare map check: {observed}", flush=True)
+    expected = {
+        "width": NIGHTMARE_EXPECTED_WIDTH,
+        "height": NIGHTMARE_EXPECTED_HEIGHT,
+        "max_rounds": NIGHTMARE_EXPECTED_ROUNDS,
+        "bots": NIGHTMARE_EXPECTED_BOTS,
+        "drop_zones": NIGHTMARE_EXPECTED_DROP_ZONES,
+    }
+    mismatches = [
+        f"{key}={observed[key]} (expected {expected[key]})"
+        for key in expected
+        if observed[key] != expected[key]
+    ]
+    if mismatches:
+        print(
+            "WARNING: received map does not match documented nightmare shape: "
+            + ", ".join(mismatches),
+            flush=True,
+        )
 
 
 def token_is_expired(claims: dict) -> tuple[bool, Optional[datetime]]:
@@ -223,14 +275,21 @@ class TrialBot:
         self.last_pick_item: dict[int, str] = {}
         self.pick_fail_streak: dict[str, int] = {}
         self.pick_block_until_round: dict[str, int] = {}
+        self._parking_spots: list[tuple[int, int]] = []
+        self._parking_assignments: dict[int, tuple[int, int]] = {}
+        self._parking_cache_key: Optional[tuple] = None
 
     def decide(self, state: dict) -> list[dict]:
         for item in state["items"]:
             self.shelves.add(tuple(item["position"]))
         self._refresh_staging_candidates(state)
+        self._refresh_parking_spots(state)
 
         round_number = int(state.get("round", -1))
         bots = sorted(state["bots"], key=lambda b: b["id"])
+        controlled_bots = bots[: min(NIGHTMARE_ACTIVE_BOT_LIMIT, len(bots))]
+        controlled_bot_ids = {bot["id"] for bot in controlled_bots}
+        idle_bots = [b for b in bots if b["id"] not in controlled_bot_ids]
         self._update_pick_retry_state(bots, round_number)
         self._update_wait_state(bots)
         items_by_id = {item["id"]: item for item in state["items"]}
@@ -240,13 +299,13 @@ class TrialBot:
 
         active_order = self._get_order_by_status(state, "active")
         active_needed_raw = self._required_minus_delivered(active_order)
-        delivery_alloc, _ = self._allocate_delivery_slots(bots, active_needed_raw)
-        needed = self._needed_counts_for_order(active_order, bots)
+        delivery_alloc, _ = self._allocate_delivery_slots(controlled_bots, active_needed_raw)
+        needed = self._needed_counts_for_order(active_order, controlled_bots)
         preview_order = self._get_order_by_status(state, "preview")
-        preview_needed = self._needed_counts_for_order(preview_order, bots)
+        preview_needed = self._needed_counts_for_order(preview_order, controlled_bots)
         preview_item_ids = self._preview_item_ids(state["items"], preview_needed)
-        preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, bots)
-        preview_duty_cap = min(max(0, len(bots) - 2), 3)
+        preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, controlled_bots)
+        preview_duty_cap = min(max(0, len(controlled_bots) - 1), 6)
 
         # Pre-pick preview items once active needs are already in-flight/carried.
         if sum(needed.values()) == 0:
@@ -254,13 +313,26 @@ class TrialBot:
                 needed = preview_needed
 
         drop_off = tuple(state["drop_off"])
-        dropoff_queue_ids = self._select_dropoff_queue_leader(bots, drop_off, delivery_alloc)
-        dropoff_queue_leader = self._select_dropoff_queue_primary(
-            dropoff_queue_ids, bots, drop_off
+        drop_zones = self._drop_zones(state)
+        delivery_zone_by_bot = self._assign_delivery_zones(
+            bots=controlled_bots,
+            delivery_alloc=delivery_alloc,
+            drop_zones=drop_zones,
         )
-        clear_dropoff_ids = self._dropoff_clearance_bots(bots, drop_off, delivery_alloc)
+        clear_dropoff_ids = self._dropoff_clearance_bots_multi(
+            bots=controlled_bots,
+            drop_zones=drop_zones,
+            delivery_alloc=delivery_alloc,
+            delivery_zone_by_bot=delivery_zone_by_bot,
+        )
+        zone_primary_by_zone = self._select_dropoff_zone_primaries(
+            bots=controlled_bots,
+            drop_zones=drop_zones,
+            delivery_alloc=delivery_alloc,
+            delivery_zone_by_bot=delivery_zone_by_bot,
+        )
         assignments = self._build_greedy_assignments(
-            bots=bots,
+            bots=controlled_bots,
             items=state["items"],
             needed=needed,
             clear_dropoff_ids=clear_dropoff_ids,
@@ -270,9 +342,13 @@ class TrialBot:
         actions_by_id: dict[int, dict] = {}
 
         # Process delivery bots first so they claim path cells via reserved_next,
-        # then idle bots route around them.
-        delivery_bots = [b for b in bots if sum(delivery_alloc.get(b["id"], Counter()).values()) > 0]
-        non_delivery_bots = [b for b in bots if sum(delivery_alloc.get(b["id"], Counter()).values()) == 0]
+        # then idle/parking bots route around them.
+        delivery_bots = [
+            b for b in controlled_bots if sum(delivery_alloc.get(b["id"], Counter()).values()) > 0
+        ]
+        non_delivery_bots = [
+            b for b in controlled_bots if sum(delivery_alloc.get(b["id"], Counter()).values()) == 0
+        ]
 
         for bot in delivery_bots + non_delivery_bots:
             action = self._decide_one(
@@ -280,7 +356,8 @@ class TrialBot:
                 round_number=round_number,
                 state=state,
                 needed=needed,
-                drop_off=drop_off,
+                target_drop_off=delivery_zone_by_bot.get(bot["id"], drop_off),
+                drop_zones=drop_zones,
                 occupied_now=occupied_now,
                 reserved_items=reserved_items,
                 reserved_next=reserved_next,
@@ -292,8 +369,7 @@ class TrialBot:
                 preview_item_ids=preview_item_ids,
                 preview_duty_bots=preview_duty_bots,
                 preview_duty_cap=preview_duty_cap,
-                dropoff_queue_ids=dropoff_queue_ids,
-                dropoff_queue_leader=dropoff_queue_leader,
+                zone_primary_by_zone=zone_primary_by_zone,
             )
             actions_by_id[bot["id"]] = action
             self.last_action[bot["id"]] = action["action"]
@@ -305,7 +381,110 @@ class TrialBot:
                     self.last_pick_item.pop(bot["id"], None)
             else:
                 self.last_pick_item.pop(bot["id"], None)
+
+        # Park idle bots AFTER active bots so they don't steal moves
+        self._assign_parking(idle_bots, occupied_now)
+        for bot in idle_bots:
+            bot_id = bot["id"]
+            action = self._park_idle_bot(
+                bot=bot,
+                state=state,
+                occupied_now=occupied_now,
+                reserved_next=reserved_next,
+            )
+            actions_by_id[bot_id] = action
+            self.last_action[bot_id] = action["action"]
+            self.last_pick_item.pop(bot_id, None)
+
         return [actions_by_id[b["id"]] for b in bots]
+
+    def _refresh_parking_spots(self, state: dict) -> None:
+        width = state["grid"]["width"]
+        height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
+        key = (width, height, tuple(sorted(walls)), tuple(sorted(self.shelves)))
+        if key == self._parking_cache_key:
+            return
+        self._parking_cache_key = key
+
+        drop_zones = set()
+        for z in state.get("drop_off_zones", []):
+            drop_zones.add((int(z[0]), int(z[1])))
+        if state.get("drop_off"):
+            drop_zones.add((int(state["drop_off"][0]), int(state["drop_off"][1])))
+
+        # Score cells: prefer dead-ends (1 neighbor) and corners, far from drop zones
+        scored: list[tuple[float, tuple[int, int]]] = []
+        for x in range(width):
+            for y in range(height):
+                cell = (x, y)
+                if cell in walls or cell in self.shelves or cell in drop_zones:
+                    continue
+                walkable_neighbors = 0
+                for nx, ny in [(x+1,y),(x-1,y),(x,y+1),(x,y-1)]:
+                    if 0 <= nx < width and 0 <= ny < height:
+                        if (nx, ny) not in walls and (nx, ny) not in self.shelves:
+                            walkable_neighbors += 1
+                # Dead-ends (1 neighbor) are best, then 2-neighbor corridors
+                # Add distance from nearest drop zone as tiebreaker (farther = better)
+                min_drop_dist = min(
+                    (abs(x - dz[0]) + abs(y - dz[1]) for dz in drop_zones), default=0
+                )
+                # Lower score = better parking spot
+                score = walkable_neighbors * 100 - min_drop_dist
+                scored.append((score, cell))
+        scored.sort(key=lambda t: (t[0], t[1][0], t[1][1]))
+        self._parking_spots = [cell for _, cell in scored]
+
+    def _assign_parking(
+        self, idle_bots: list[dict], occupied_now: set[tuple[int, int]]
+    ) -> None:
+        # Only reassign if we haven't assigned yet or a bot reached its spot
+        if self._parking_assignments and all(
+            tuple(b["position"]) == self._parking_assignments.get(b["id"], tuple(b["position"]))
+            for b in idle_bots
+        ):
+            return
+        used: set[tuple[int, int]] = set(self._parking_assignments.values())
+        for bot in idle_bots:
+            bot_id = bot["id"]
+            pos = tuple(bot["position"])
+            # Keep existing assignment if bot hasn't reached it yet
+            if bot_id in self._parking_assignments:
+                target = self._parking_assignments[bot_id]
+                if pos != target:
+                    used.add(target)
+                    continue
+            # Assign nearest available parking spot
+            for spot in self._parking_spots:
+                if spot in used and spot != pos:
+                    continue
+                self._parking_assignments[bot_id] = spot
+                used.add(spot)
+                break
+
+    def _park_idle_bot(
+        self,
+        bot: dict,
+        state: dict,
+        occupied_now: set[tuple[int, int]],
+        reserved_next: set[tuple[int, int]],
+    ) -> dict:
+        bot_id = bot["id"]
+        pos = tuple(bot["position"])
+        target = self._parking_assignments.get(bot_id)
+        if target is None or pos == target:
+            return {"bot": bot_id, "action": "wait"}
+        return self._move_toward(
+            bot_id=bot_id,
+            start=pos,
+            goals={target},
+            state=state,
+            occupied_now=occupied_now,
+            reserved_next=reserved_next,
+            allow_occupied_goals=False,
+            relax_reservation_if_blocked=True,
+        )
 
     def _update_pick_retry_state(self, bots: list[dict], round_number: int) -> None:
         active_ids = {b["id"] for b in bots}
@@ -367,63 +546,164 @@ class TrialBot:
                 self.last_observed_pos.pop(bot_id, None)
                 self.last_action.pop(bot_id, None)
 
-    def _dropoff_clearance_bots(
-        self, bots: list[dict], drop_off: tuple[int, int], delivery_alloc: dict[int, Counter]
-    ) -> set[int]:
-        waiting_deliveries = any(
-            tuple(b["position"]) != drop_off
-            and self._delivery_count(delivery_alloc.get(b["id"], Counter())) > 0
-            for b in bots
-        )
-        if not waiting_deliveries:
-            return set()
-        return {
-            b["id"]
-            for b in bots
-            if tuple(b["position"]) == drop_off
-            and self._delivery_count(delivery_alloc.get(b["id"], Counter())) == 0
-        }
+    def _drop_zones(self, state: dict) -> list[tuple[int, int]]:
+        zones: list[tuple[int, int]] = []
+        raw_zones = state.get("drop_off_zones")
+        if isinstance(raw_zones, list):
+            for zone in raw_zones:
+                if isinstance(zone, (list, tuple)) and len(zone) == 2:
+                    zones.append((int(zone[0]), int(zone[1])))
+        if not zones and state.get("drop_off") is not None:
+            drop_off = state["drop_off"]
+            if isinstance(drop_off, (list, tuple)) and len(drop_off) == 2:
+                zones.append((int(drop_off[0]), int(drop_off[1])))
 
-    def _select_dropoff_queue_leader(
-        self, bots: list[dict], drop_off: tuple[int, int], delivery_alloc: dict[int, Counter]
-    ) -> set[int]:
+        seen: set[tuple[int, int]] = set()
+        unique: list[tuple[int, int]] = []
+        for zone in zones:
+            if zone in seen:
+                continue
+            seen.add(zone)
+            unique.append(zone)
+        return unique
+
+    def _nearest_drop_zone(
+        self,
+        pos: tuple[int, int],
+        drop_zones: list[tuple[int, int]],
+        fallback: tuple[int, int],
+    ) -> tuple[int, int]:
+        if not drop_zones:
+            return fallback
+        return min(
+            drop_zones,
+            key=lambda zone: (
+                self._manhattan(pos, zone),
+                zone[0],
+                zone[1],
+            ),
+        )
+
+    def _assign_delivery_zones(
+        self,
+        bots: list[dict],
+        delivery_alloc: dict[int, Counter],
+        drop_zones: list[tuple[int, int]],
+    ) -> dict[int, tuple[int, int]]:
+        if not drop_zones:
+            return {}
+
         deliverers = [
             b
             for b in bots
             if self._delivery_count(delivery_alloc.get(b["id"], Counter())) > 0
         ]
         if not deliverers:
-            return set()
+            return {}
 
-        ranked = sorted(
+        assignments: dict[int, tuple[int, int]] = {}
+        zone_load: Counter = Counter()
+
+        ranked_deliverers = sorted(
             deliverers,
             key=lambda b: (
-                0 if tuple(b["position"]) == drop_off else 1,
-                self._manhattan(tuple(b["position"]), drop_off),
+                min(self._manhattan(tuple(b["position"]), zone) for zone in drop_zones),
+                -self._delivery_count(delivery_alloc.get(b["id"], Counter())),
                 b["id"],
             ),
         )
-        return {b["id"] for b in ranked[:2]}
 
-    def _select_dropoff_queue_primary(
-        self, queue_ids: set[int], bots: list[dict], drop_off: tuple[int, int]
-    ) -> Optional[int]:
-        if not queue_ids:
-            return None
-        candidates = [b for b in bots if b["id"] in queue_ids]
-        if not candidates:
-            return None
-        on_dropoff = [b for b in candidates if tuple(b["position"]) == drop_off]
-        if on_dropoff:
-            return min(b["id"] for b in on_dropoff)
-        leader = min(
-            candidates,
-            key=lambda b: (
-                self._manhattan(tuple(b["position"]), drop_off),
-                b["id"],
-            ),
-        )
-        return leader["id"]
+        for bot in ranked_deliverers:
+            bot_id = bot["id"]
+            pos = tuple(bot["position"])
+            if pos in drop_zones:
+                chosen_zone = pos
+            else:
+                chosen_zone = min(
+                    drop_zones,
+                    key=lambda zone: (
+                        self._manhattan(pos, zone) + (zone_load[zone] * 4),
+                        zone_load[zone],
+                        zone[0],
+                        zone[1],
+                    ),
+                )
+            assignments[bot_id] = chosen_zone
+            zone_load[chosen_zone] += 1
+        return assignments
+
+    def _dropoff_clearance_bots_multi(
+        self,
+        bots: list[dict],
+        drop_zones: list[tuple[int, int]],
+        delivery_alloc: dict[int, Counter],
+        delivery_zone_by_bot: dict[int, tuple[int, int]],
+    ) -> set[int]:
+        if not drop_zones:
+            return set()
+
+        zone_waiting: Counter = Counter()
+        for bot in bots:
+            bot_id = bot["id"]
+            if self._delivery_count(delivery_alloc.get(bot_id, Counter())) <= 0:
+                continue
+            target_zone = delivery_zone_by_bot.get(bot_id)
+            if target_zone is None:
+                continue
+            if tuple(bot["position"]) != target_zone:
+                zone_waiting[target_zone] += 1
+
+        if not zone_waiting:
+            return set()
+
+        zone_set = set(drop_zones)
+        clear_ids: set[int] = set()
+        for bot in bots:
+            bot_id = bot["id"]
+            pos = tuple(bot["position"])
+            if pos not in zone_set:
+                continue
+            if zone_waiting.get(pos, 0) <= 0:
+                continue
+            if self._delivery_count(delivery_alloc.get(bot_id, Counter())) == 0:
+                clear_ids.add(bot_id)
+        return clear_ids
+
+    def _select_dropoff_zone_primaries(
+        self,
+        bots: list[dict],
+        drop_zones: list[tuple[int, int]],
+        delivery_alloc: dict[int, Counter],
+        delivery_zone_by_bot: dict[int, tuple[int, int]],
+    ) -> dict[tuple[int, int], int]:
+        primaries: dict[tuple[int, int], int] = {}
+        if not drop_zones:
+            return primaries
+
+        for zone in drop_zones:
+            candidates = [
+                b
+                for b in bots
+                if self._delivery_count(delivery_alloc.get(b["id"], Counter())) > 0
+                and delivery_zone_by_bot.get(b["id"]) == zone
+            ]
+            if not candidates:
+                continue
+
+            on_zone = [b for b in candidates if tuple(b["position"]) == zone]
+            if on_zone:
+                primaries[zone] = min(b["id"] for b in on_zone)
+                continue
+
+            leader = min(
+                candidates,
+                key=lambda b: (
+                    self._manhattan(tuple(b["position"]), zone),
+                    b["id"],
+                ),
+            )
+            primaries[zone] = leader["id"]
+        return primaries
 
     def _get_order_by_status(self, state: dict, status: str) -> Optional[dict]:
         return next((o for o in state["orders"] if o.get("status") == status), None)
@@ -590,7 +870,8 @@ class TrialBot:
         round_number: int,
         state: dict,
         needed: Counter,
-        drop_off: tuple[int, int],
+        target_drop_off: tuple[int, int],
+        drop_zones: list[tuple[int, int]],
         occupied_now: set[tuple[int, int]],
         reserved_items: set[str],
         reserved_next: set[tuple[int, int]],
@@ -602,16 +883,20 @@ class TrialBot:
         preview_item_ids: set[str],
         preview_duty_bots: set[int],
         preview_duty_cap: int,
-        dropoff_queue_ids: set[int],
-        dropoff_queue_leader: Optional[int],
+        zone_primary_by_zone: dict[tuple[int, int], int],
     ) -> dict:
         bot_id = bot["id"]
         pos = tuple(bot["position"])
         inventory = bot["inventory"]
         useful_inventory = self._delivery_count(useful_delivery) > 0
         has_non_useful_inventory = bool(inventory) and not useful_inventory
+        drop_zone_set = set(drop_zones)
+        nearest_drop_off = self._nearest_drop_zone(pos, drop_zones, target_drop_off)
+        max_rounds = int(state.get("max_rounds", 300))
+        late_unstick_round = max(0, max_rounds - 60)
+        hard_wait_round = max(0, max_rounds - 15)
 
-        if useful_inventory and pos == drop_off:
+        if useful_inventory and (pos == target_drop_off or pos in drop_zone_set):
             if self.last_drop_round.get(bot_id) == round_number - 1:
                 return self._wait_or_nudge(
                     bot_id=bot_id,
@@ -626,7 +911,8 @@ class TrialBot:
 
         # If this bot is idling on drop-off while others need to deliver, clear the cell.
         if bot_id in clear_dropoff_ids:
-            evac_goals = self._neighbors(drop_off)
+            evac_origin = pos if pos in drop_zone_set else target_drop_off
+            evac_goals = self._neighbors(evac_origin)
             return self._move_toward(
                 bot_id=bot_id,
                 start=pos,
@@ -637,23 +923,42 @@ class TrialBot:
                 allow_occupied_goals=False,
             )
 
-        if round_number > 290 and not useful_inventory:
+        if round_number >= hard_wait_round and not useful_inventory:
             self.bot_targets.pop(bot_id, None)
-            return {"bot": bot_id, "action": "wait"}
-
-        if has_non_useful_inventory and len(inventory) >= 3:
-            # Keep preview bags out of the immediate drop-off ring so delivery bots can cycle.
-            self.bot_targets.pop(bot_id, None)
-            holding = self._stage_in_dropoff_holding_pattern(
+            return self._wait_or_nudge(
                 bot_id=bot_id,
                 pos=pos,
-                drop_off=drop_off,
                 state=state,
                 occupied_now=occupied_now,
                 reserved_next=reserved_next,
             )
-            if holding is not None:
-                return holding
+
+        if round_number >= late_unstick_round and not useful_inventory and self.wait_streak.get(bot_id, 0) >= 2:
+            self.bot_targets.pop(bot_id, None)
+            staging = self._stage_toward_aisle_center(
+                bot_id=bot_id,
+                pos=pos,
+                state=state,
+                occupied_now=occupied_now,
+                reserved_next=reserved_next,
+            )
+            if staging is not None:
+                return staging
+
+        if has_non_useful_inventory and len(inventory) >= 3:
+            # Carrying a full preview/non-useful bag: stage next to drop-off for fast flip.
+            self.bot_targets.pop(bot_id, None)
+            staging_goals = self._adjacent_walkable(nearest_drop_off, state, occupied_now, pos)
+            if staging_goals:
+                return self._move_toward(
+                    bot_id=bot_id,
+                    start=pos,
+                    goals=staging_goals,
+                    state=state,
+                    occupied_now=occupied_now,
+                    reserved_next=reserved_next,
+                    allow_occupied_goals=False,
+                )
             return self._wait_or_nudge(
                 bot_id=bot_id,
                 pos=pos,
@@ -663,7 +968,21 @@ class TrialBot:
             )
 
         if has_non_useful_inventory and len(inventory) < 3:
-            # Continue building preview inventory instead of idling.
+            # Stage near nearest drop-off so we're ready for the next order
+            # and not blocking delivery corridors.
+            self.bot_targets.pop(bot_id, None)
+            staging_goals = self._adjacent_walkable(nearest_drop_off, state, occupied_now, pos)
+            if staging_goals and self._manhattan(pos, nearest_drop_off) > 2:
+                return self._move_toward(
+                    bot_id=bot_id,
+                    start=pos,
+                    goals=staging_goals,
+                    state=state,
+                    occupied_now=occupied_now,
+                    reserved_next=reserved_next,
+                    allow_occupied_goals=False,
+                )
+            # Already near drop-off or no staging available — try picking more preview items
             preview_duty_allowed = (bot_id in preview_duty_bots) or (
                 len(preview_duty_bots) < preview_duty_cap
             )
@@ -672,36 +991,6 @@ class TrialBot:
                 if preview_pick is not None:
                     preview_duty_bots.add(bot_id)
                     return preview_pick
-
-                preview_target = self._locked_or_best_item(
-                    bot_id=bot_id,
-                    pos=pos,
-                    state=state,
-                    needed=preview_needed,
-                    reserved_items=reserved_items,
-                    items_by_id=items_by_id,
-                    assigned_item_id=None,
-                    round_number=round_number,
-                )
-                if preview_target is not None:
-                    reserved_items.add(preview_target["id"])
-                    item_type = preview_target["type"]
-                    if preview_needed[item_type] > 0:
-                        preview_needed[item_type] -= 1
-                    if preview_target["id"] in preview_item_ids:
-                        preview_duty_bots.add(bot_id)
-                    item_pos = tuple(preview_target["position"])
-                    goals = self._adjacent_walkable(item_pos, state, occupied_now, pos)
-                    if goals:
-                        return self._move_toward(
-                            bot_id=bot_id,
-                            start=pos,
-                            goals=goals,
-                            state=state,
-                            occupied_now=occupied_now,
-                            reserved_next=reserved_next,
-                            allow_occupied_goals=False,
-                        )
 
         pick = self._pick_if_adjacent(bot, state, needed, reserved_items, round_number)
         if pick is not None:
@@ -714,7 +1003,7 @@ class TrialBot:
                     pos=pos,
                     state=state,
                     needed=needed,
-                    drop_off=drop_off,
+                    drop_off=target_drop_off,
                     occupied_now=occupied_now,
                     reserved_items=reserved_items,
                     reserved_next=reserved_next,
@@ -724,44 +1013,23 @@ class TrialBot:
                 if detour is not None:
                     return detour
 
-            # Two-bot delivery pipeline:
-            # - queue leader paths to drop_off
-            # - runner-up (second in queue) stages adjacent
-            # - others hold outside the immediate drop-off ring
-            if bot_id in dropoff_queue_ids and bot_id != dropoff_queue_leader:
+            zone_primary = zone_primary_by_zone.get(target_drop_off)
+            if zone_primary is not None and zone_primary != bot_id and self._manhattan(pos, target_drop_off) <= 2:
                 staged = self._stage_near_dropoff(
                     bot_id=bot_id,
                     pos=pos,
-                    drop_off=drop_off,
+                    drop_off=target_drop_off,
                     state=state,
                     occupied_now=occupied_now,
                     reserved_next=reserved_next,
                 )
                 if staged is not None:
                     return staged
-            if dropoff_queue_ids and bot_id not in dropoff_queue_ids:
-                holding = self._stage_in_dropoff_holding_pattern(
-                    bot_id=bot_id,
-                    pos=pos,
-                    drop_off=drop_off,
-                    state=state,
-                    occupied_now=occupied_now,
-                    reserved_next=reserved_next,
-                )
-                if holding is not None:
-                    return holding
-                return self._wait_or_nudge(
-                    bot_id=bot_id,
-                    pos=pos,
-                    state=state,
-                    occupied_now=occupied_now,
-                    reserved_next=reserved_next,
-                )
             self.bot_targets.pop(bot_id, None)
             action = self._move_toward(
                 bot_id=bot_id,
                 start=pos,
-                goals={drop_off},
+                goals={target_drop_off},
                 state=state,
                 occupied_now=occupied_now,
                 reserved_next=reserved_next,
@@ -792,7 +1060,7 @@ class TrialBot:
         )
         if target_item is None:
             self.bot_targets.pop(bot_id, None)
-            staging = self._stage_toward_perimeter(
+            staging = self._stage_toward_aisle_center(
                 bot_id=bot_id,
                 pos=pos,
                 state=state,
@@ -1025,105 +1293,6 @@ class TrialBot:
             bot_id=bot_id,
             start=pos,
             goals=goals,
-            state=state,
-            occupied_now=occupied_now,
-            reserved_next=reserved_next,
-            allow_occupied_goals=False,
-        )
-
-    def _stage_in_dropoff_holding_pattern(
-        self,
-        bot_id: int,
-        pos: tuple[int, int],
-        drop_off: tuple[int, int],
-        state: dict,
-        occupied_now: set[tuple[int, int]],
-        reserved_next: set[tuple[int, int]],
-    ) -> Optional[dict]:
-        width = state["grid"]["width"]
-        height = state["grid"]["height"]
-        walls = {tuple(w) for w in state["grid"]["walls"]}
-        blocked = (occupied_now - {pos}) | reserved_next
-
-        candidates: list[tuple[tuple[int, int, int], tuple[int, int]]] = []
-        for x in range(width):
-            for y in range(height):
-                cell = (x, y)
-                if cell == pos:
-                    continue
-                if cell in walls or cell in self.shelves or cell in blocked:
-                    continue
-                dist_to_drop = self._manhattan(cell, drop_off)
-                if not (3 <= dist_to_drop <= 6):
-                    continue
-                score = (
-                    dist_to_drop,
-                    self._manhattan(pos, cell),
-                    (x * 31 + y * 17 + bot_id) % 7,
-                )
-                candidates.append((score, cell))
-
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda t: t[0])
-        best_goal = candidates[0][1]
-        return self._move_toward(
-            bot_id=bot_id,
-            start=pos,
-            goals={best_goal},
-            state=state,
-            occupied_now=occupied_now,
-            reserved_next=reserved_next,
-            allow_occupied_goals=False,
-        )
-
-    def _stage_toward_perimeter(
-        self,
-        bot_id: int,
-        pos: tuple[int, int],
-        state: dict,
-        occupied_now: set[tuple[int, int]],
-        reserved_next: set[tuple[int, int]],
-    ) -> Optional[dict]:
-        width = state["grid"]["width"]
-        height = state["grid"]["height"]
-        walls = {tuple(w) for w in state["grid"]["walls"]}
-        drop_off = tuple(state["drop_off"])
-        blocked = (occupied_now - {pos}) | reserved_next
-
-        best_goal: Optional[tuple[int, int]] = None
-        best_score: Optional[tuple[int, int, int, int]] = None
-        for max_edge_dist in (1, 2, 3):
-            for x in range(width):
-                for y in range(height):
-                    cell = (x, y)
-                    if cell == pos:
-                        continue
-                    if cell in walls or cell in self.shelves or cell in blocked:
-                        continue
-                    edge_dist = min(x, y, width - 1 - x, height - 1 - y)
-                    if edge_dist > max_edge_dist:
-                        continue
-                    score = (
-                        edge_dist,
-                        -self._manhattan(cell, drop_off),
-                        self._manhattan(pos, cell),
-                        (x * 31 + y * 17 + bot_id) % 7,
-                    )
-                    if best_score is None or score < best_score:
-                        best_score = score
-                        best_goal = cell
-            if best_goal is not None:
-                break
-
-        if best_goal is None:
-            return None
-
-        return self._move_toward(
-            bot_id=bot_id,
-            start=pos,
-            goals={best_goal},
             state=state,
             occupied_now=occupied_now,
             reserved_next=reserved_next,
@@ -1415,6 +1584,7 @@ def sanitize_actions(state: dict, actions: list[dict]) -> list[dict]:
 async def main():
     bot = TrialBot()
     logger = RunLogger(TOKEN_CLAIMS)
+    shape_checked = False
     expired, exp_dt = token_is_expired(TOKEN_CLAIMS)
     if expired:
         raise SystemExit(
@@ -1439,6 +1609,9 @@ async def main():
                         },
                     )
                     return
+                if not shape_checked and msg.get("type") == "game_state":
+                    print_nightmare_shape_check(msg)
+                    shape_checked = True
                 if "round" in msg and msg["round"] % 25 == 0:
                     print(f"Round {msg['round']} | score={msg.get('score', 0)}", flush=True)
                 logger.log_state(msg)
