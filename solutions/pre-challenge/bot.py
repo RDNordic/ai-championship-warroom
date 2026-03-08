@@ -590,21 +590,27 @@ class GroceryBot:
 
             # Queue pipeline
             if bot_id in queue_ids and bot_id != queue_primary:
-                staged = self._stage_near_dropoff(
-                    bot_id, pos, drop_off, grid, occupied_now, reserved_next,
-                )
-                if staged is not None:
-                    return staged
-            if queue_ids and bot_id not in queue_ids:
-                staged = self._staging_action(
-                    bot_id, pos, drop_off, grid, occupied_now, reserved_next,
-                )
-                if staged is not None:
-                    return staged
-                return self.collision.wait_or_nudge(
-                    bot_id, pos, grid, occupied_now, reserved_next,
-                    self.wait_streak.get(bot_id, 0),
-                )
+                # If close, stage adjacent to dropoff for instant step-in
+                # If far, head straight to dropoff (primary will be done by arrival)
+                if manhattan(pos, drop_off) <= 5:
+                    staged = self._stage_near_dropoff(
+                        bot_id, pos, drop_off, grid, occupied_now, reserved_next,
+                    )
+                    if staged is not None:
+                        return staged
+                # Fall through to "Head to dropoff" below
+            elif queue_ids and bot_id not in queue_ids:
+                if manhattan(pos, drop_off) <= 5:
+                    staged = self._staging_action(
+                        bot_id, pos, drop_off, grid, occupied_now, reserved_next,
+                    )
+                    if staged is not None:
+                        return staged
+                    return self.collision.wait_or_nudge(
+                        bot_id, pos, grid, occupied_now, reserved_next,
+                        self.wait_streak.get(bot_id, 0),
+                    )
+                # Fall through to "Head to dropoff" below
 
             # Head to dropoff
             self.bot_targets.pop(bot_id, None)
