@@ -11,8 +11,8 @@
     "wait_streak_nudge_threshold": 1
   },
   "coordination": {
-    "delivery_queue_leaders": 2,
-    "preview_duty_cap_offset": 2,
+    "delivery_queue_leaders": 3,
+    "preview_duty_cap_offset": 1,
     "pick_cooldown": {
       "max_cooldown": 18,
       "base_cooldown": 4,

@@ -52,7 +52,7 @@ class OrderManager:
 
     def preview_duty_cap(self, num_bots: int) -> int:
         """Max bots allowed to work on preview items."""
-        return min(max(0, num_bots - self._preview_duty_cap_offset), 3)
+        return max(0, num_bots - self._preview_duty_cap_offset)
 
     def select_target_item(
         self,
