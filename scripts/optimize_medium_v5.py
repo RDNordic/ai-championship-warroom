@@ -250,6 +250,33 @@ def _active_order_snapshot(active: SimOrder | None) -> tuple[str | None, list[st
     return active.id, sorted(_remaining_needed(active))
 
 
+def _apply_boundary_carryover(
+    active: SimOrder,
+    bots: list[SimBot],
+    drop_off: Position,
+) -> int:
+    """Consume newly-active order items from carried inventory in same tick."""
+    rem = Counter(_remaining_needed(active))
+    if not rem:
+        return 0
+    delivered = 0
+    for bot in sorted(bots, key=lambda b: b.id):
+        if bot.pos != drop_off or not bot.inventory:
+            continue
+        kept: list[str] = []
+        for item in bot.inventory:
+            if rem[item] > 0:
+                rem[item] -= 1
+                active.delivered.append(item)
+                delivered += 1
+            else:
+                kept.append(item)
+        bot.inventory = kept
+        if not any(rem.values()):
+            break
+    return delivered
+
+
 def _multi_source_dist(starts: set[Position], grid: PassableGrid) -> dict[Position, int]:
     dist: dict[Position, int] = {}
     queue: deque[Position] = deque()
@@ -479,7 +506,7 @@ def plan_medium_v5(
         )
 
     def handle_completion_chain(end_round_exclusive: int) -> None:
-        nonlocal active_idx, score, orders_completed
+        nonlocal active_idx, score, items_delivered, orders_completed
         while active_idx < len(orders):
             active = orders[active_idx]
             if _remaining_needed(active):
@@ -491,6 +518,14 @@ def plan_medium_v5(
             if active_idx >= len(orders):
                 return
             order_starts[active_idx] = end_round_exclusive
+            carry = _apply_boundary_carryover(
+                orders[active_idx],
+                bots,
+                snapshot.drop_off,
+            )
+            if carry:
+                score += carry
+                items_delivered += carry
 
     for round_no in range(round_cap):
         active = active_order()
@@ -563,13 +598,58 @@ def plan_medium_v5(
                 apply_drop(bot, active)
                 continue
 
+            # Keep drop-off traversable: if a bot is idling on drop-off while other
+            # bots are carrying active-order items, proactively step off.
+            if bot.pos == snapshot.drop_off and not has_drop_item:
+                waiting_deliverers = [
+                    other
+                    for other in bots
+                    if (
+                        other.id != bot.id
+                        and other.pos != snapshot.drop_off
+                        and any(current_active_need[it] > 0 for it in other.inventory)
+                    )
+                ]
+                if waiting_deliverers:
+                    free_neighbors = [
+                        nb
+                        for nb in grid.neighbors(bot.pos)
+                        if counts.get(nb, 0) <= 0 and nb != snapshot.drop_off
+                    ]
+                    if free_neighbors:
+                        nxt = max(
+                            free_neighbors,
+                            key=lambda nb: (
+                                min(
+                                    abs(nb[0] - other.pos[0]) + abs(nb[1] - other.pos[1])
+                                    for other in waiting_deliverers
+                                ),
+                                nb[0],
+                                nb[1],
+                            ),
+                        )
+                        counts[bot.pos] -= 1
+                        if counts[bot.pos] == 0:
+                            counts.pop(bot.pos, None)
+                        counts[nxt] = counts.get(nxt, 0) + 1
+                        prev = bot.pos
+                        bot.pos = nxt
+                        round_actions.append(
+                            {
+                                "round": round_no,
+                                "bot": bot.id,
+                                "action": direction_for_move(prev, nxt),
+                            },
+                        )
+                        continue
+
             target_type = targets.get(bot.id)
             if bot.id in forced_deliver and bot.inventory:
                 target_cell = snapshot.drop_off
                 blocked = {
                     pos
                     for pos, c in counts.items()
-                    if c > 0 and pos != bot.pos and pos != snapshot.drop_off
+                    if c > 0 and pos != bot.pos
                 }
                 path = astar(
                     bot.pos,
@@ -579,9 +659,7 @@ def plan_medium_v5(
                 )
                 if path and len(path) >= 2:
                     nxt = path[1]
-                    if grid.is_passable(nxt) and (
-                        counts.get(nxt, 0) <= 0 or nxt == snapshot.drop_off
-                    ):
+                    if grid.is_passable(nxt) and counts.get(nxt, 0) <= 0:
                         counts[bot.pos] -= 1
                         if counts[bot.pos] == 0:
                             counts.pop(bot.pos, None)
@@ -613,7 +691,7 @@ def plan_medium_v5(
                 blocked = {
                     pos
                     for pos, c in counts.items()
-                    if c > 0 and pos != bot.pos and pos != snapshot.drop_off
+                    if c > 0 and pos != bot.pos
                 }
                 _goal, path = _nearest_pick_cell(
                     start=bot.pos,
@@ -624,9 +702,7 @@ def plan_medium_v5(
                 )
                 if path and len(path) >= 2:
                     nxt = path[1]
-                    if grid.is_passable(nxt) and (
-                        counts.get(nxt, 0) <= 0 or nxt == snapshot.drop_off
-                    ):
+                    if grid.is_passable(nxt) and counts.get(nxt, 0) <= 0:
                         counts[bot.pos] -= 1
                         if counts[bot.pos] == 0:
                             counts.pop(bot.pos, None)

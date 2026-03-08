@@ -42,6 +42,8 @@ class OptimizedMediumV4Strategy(Strategy):
     MAX_CONSECUTIVE_SKIPS = 6
     RESYNC_BACK_WINDOW = 5
     RESYNC_FORWARD_WINDOW = 1
+    MAX_TRANSIENT_MISMATCH_STREAK = 2
+    MAX_HARD_DIVERGENCE_STREAK = 5
 
     def __init__(
         self,
@@ -59,6 +61,10 @@ class OptimizedMediumV4Strategy(Strategy):
         self._plan_enabled = False
         self._bot_skips: list[int] = [0] * NUM_BOTS
         self._plan_round_offset = 0
+        self._checkpoint_miss_streak = 0
+        self._transient_mismatches = 0
+        self._hard_divergences = 0
+        self._last_mismatch_kind: str | None = None
 
     def on_game_start(self, state: GameState) -> None:
         self._grid = PassableGrid(state)
@@ -74,8 +80,19 @@ class OptimizedMediumV4Strategy(Strategy):
 
         plan_round = self._select_plan_round(state)
         if plan_round is None:
-            self._plan_enabled = False
+            self._checkpoint_miss_streak += 1
+            if self._checkpoint_miss_streak <= self.MAX_TRANSIENT_MISMATCH_STREAK:
+                self._transient_mismatches += 1
+                self._last_mismatch_kind = "transient_mismatch"
+                return self._fallback.decide(state)
+
+            self._hard_divergences += 1
+            self._last_mismatch_kind = "hard_divergence"
+            if self._checkpoint_miss_streak >= self.MAX_HARD_DIVERGENCE_STREAK:
+                self._plan_enabled = False
             return self._fallback.decide(state)
+        self._checkpoint_miss_streak = 0
+        self._last_mismatch_kind = None
         if plan_round >= self._max_round_exclusive:
             self._plan_enabled = False
             return self._fallback.decide(state)
@@ -103,6 +120,23 @@ class OptimizedMediumV4Strategy(Strategy):
 
         return actions
 
+    def replay_diagnostics(
+        self,
+        state: GameState,
+        actions: list[BotAction],
+        timed_out: bool,
+    ) -> dict[str, object]:
+        return {
+            "plan_enabled": self._plan_enabled,
+            "plan_round_offset": self._plan_round_offset,
+            "checkpoint_miss_streak": self._checkpoint_miss_streak,
+            "transient_mismatches": self._transient_mismatches,
+            "hard_divergences": self._hard_divergences,
+            "last_mismatch_kind": self._last_mismatch_kind,
+            "bot_skips": list(self._bot_skips),
+            "timed_out": timed_out,
+        }
+
     def _resolve_plan_path(self) -> Path:
         if self._plan_path_override is not None:
             return self._plan_path_override
@@ -124,6 +158,10 @@ class OptimizedMediumV4Strategy(Strategy):
         self._checkpoints_by_round = {}
         self._max_round_exclusive = 0
         self._plan_round_offset = 0
+        self._checkpoint_miss_streak = 0
+        self._transient_mismatches = 0
+        self._hard_divergences = 0
+        self._last_mismatch_kind = None
         if not plan_path.exists():
             return
         raw = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -168,6 +206,10 @@ class OptimizedMediumV4Strategy(Strategy):
         self._max_round_exclusive = max_round_exclusive
         self._bot_skips = [0] * NUM_BOTS
         self._plan_round_offset = 0
+        self._checkpoint_miss_streak = 0
+        self._transient_mismatches = 0
+        self._hard_divergences = 0
+        self._last_mismatch_kind = None
         self._plan_enabled = True
 
     def _select_plan_round(self, state: GameState) -> int | None:
