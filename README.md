@@ -1,85 +1,136 @@
 # Grocery Bot
 
-Bot for the [NM i AI 2026](https://dev.ainm.no) Grocery Bot pre-competition challenge. Controls agents via WebSocket to navigate a grocery store, pick up items from shelves, and deliver orders.
+Bot for the [NM i AI 2026](https://dev.ainm.no) Grocery Bot challenge.
+
+This repository solves a real-time multi-agent planning problem:
+- parse full game state from WebSocket each round,
+- produce one valid action per bot within 2 seconds,
+- maximize delivered items and completed orders over 300 rounds.
+
+## Project Status (as of 2026-03-08)
+
+### What Has Been Solved
+
+- Protocol-safe client loop with strict timing budget (`1.8s` internal cutoff).
+- Typed protocol/model layer (`pydantic` models for game messages and actions).
+- Replay tooling (`.jsonl`) and analysis scripts for debugging and optimization loops.
+- Easy-mode strategy stack:
+  - `memory_solo`: strong heuristic baseline with per-day snapshot memory.
+  - `optimized_easy`: offline plan replay with runtime validation and fallback to `memory_solo`.
+- Medium-mode strategy stack:
+  - evolved from `greedy` -> `medium_v2/v3/v4` -> `optimized_medium_v4/v5`.
+  - offline planning (`scripts/optimize_medium_v4.py`, `scripts/optimize_medium_v5.py`) plus replay-time checkpoint validation.
+  - latest fixes include drop-off occupancy handling, order-boundary carryover handling, and transient-vs-hard mismatch handling.
+
+### What Is Still Not Done
+
+- Re-validate `optimized_medium_v5` on fresh live runs after the latest occupancy/carryover fixes (current handoff marks this as pending).
+- Improve medium consistency, not only peak score (reduce run-to-run variance and fallback collapses).
+- Hard/Expert strategy track is not currently the focus in this branch (current active optimization work is Easy/Medium).
+
+## Best Strategies So Far (Easy + Medium)
+
+| Difficulty | Best Current Choice | Best Observed Replay | Notes |
+|---|---|---|---|
+| Easy | `optimized_easy` | `142` in `game_easy_20260304_212146.jsonl` | Replay matched `data/easy_2026-03-04_plan.json` 300/300 rounds in local analysis. |
+| Medium (peak) | `optimized_medium_v5` | `106` in `game_medium_20260303_065132.jsonl` | Highest observed ceiling; replay includes `OptimizedMediumV5Strategy` diagnostics. |
+| Medium (most validated checkpoint) | `optimized_medium_v4` | `91` in `game_medium_20260302_214042.jsonl` | Explicitly validated in handoff with exact planned-prefix adherence before fallback. |
+
+Practical recommendation today:
+- Easy: run `optimized_easy`.
+- Medium: run `optimized_medium_v5` for ceiling, keep `optimized_medium_v4` as stable fallback while v5 post-fix validation is ongoing.
 
 ## Quick Start
 
 ```bash
-# 1. Install (Python 3.11+)
+# 1) Install (Python 3.11+)
 pip install -e ".[dev]"
 
-# 2. Get a token
-#    Sign in at dev.ainm.no → Challenge page → pick a map → click Play → copy the WebSocket URL
+# 2) Configure token(s)
+# .env is git-ignored. Never commit tokens.
+# You can set either:
+#   GROCERY_BOT_TOKEN=<jwt>
+# or per-level:
+#   GROCERY_BOT_TOKEN_EASY=<jwt>
+#   GROCERY_BOT_TOKEN_MEDIUM=<jwt>
 
-# 3. Configure
-cp .env.example .env
-# Paste your JWT token into .env
-
-# 4. Run
-python scripts/run.py --strategy logger        # smoke-test: connects, waits every round, logs state
-python scripts/run.py --strategy solo           # Easy: single-bot A* pathfinding
-python scripts/run.py --strategy greedy         # Medium: multi-bot greedy assignment
-python scripts/run.py --strategy coordinated    # Hard: reservation-table planning
-python scripts/run.py --strategy expert         # Expert: throughput-optimized
-```
-
-## Token Safety
-
-Tokens are short-lived JWTs. Store them in `.env` (git-ignored). **Never commit tokens.**
-
-```bash
-# Or pass directly:
-GROCERY_BOT_TOKEN=eyJ... python scripts/run.py --strategy solo
-```
-
-## Smoke Test (Logger Mode)
-
-```bash
+# 3) Smoke test
 python scripts/run.py --strategy logger
+
+# 4) Run recommended strategies
+python scripts/run.py --level easy --strategy optimized_easy
+python scripts/run.py --level medium --strategy optimized_medium_v5
 ```
 
-Connects to the game, sends `wait` for every bot every round, and saves the full game state stream to a `.jsonl` replay file. Use this to verify connectivity and inspect game state structure.
+## Optimization Workflow
 
-## Running Each Difficulty
+```bash
+# Capture/refresh daily snapshot from replay
+python scripts/optimize.py --level easy --date 2026-03-08 --current-run game_easy_YYYYMMDD_HHMMSS.jsonl
 
-The difficulty is encoded in your JWT token (determined by which map you clicked Play on). The strategy determines how your bots behave:
+# Build easy plan
+python scripts/optimize.py --level easy --date 2026-03-08
 
-| Difficulty | Bots | Recommended Strategy |
-|------------|------|---------------------|
-| Easy       | 1    | `solo`              |
-| Medium     | 3    | `greedy`            |
-| Hard       | 5    | `coordinated`       |
-| Expert     | 10   | `expert`            |
+# Build medium v5 plan
+python scripts/optimize_medium_v5.py --level medium --date 2026-03-08 --max-orders 12
+```
 
-Any strategy works with any difficulty — but higher-level strategies are designed for more bots.
+Generated plans are written under `data/` (git-ignored), then consumed by `optimized_easy` / `optimized_medium_v5`.
+
+## Available Strategy Names
+
+Current registry (`src/grocerybot/strategies/__init__.py`):
+- `logger`
+- `solo`
+- `greedy`
+- `memory_solo`
+- `optimized_easy`
+- `medium_v2`
+- `medium_v3`
+- `medium_v4`
+- `optimized_medium`
+- `optimized_medium_v4`
+- `optimized_medium_v5`
 
 ## Protocol Summary
 
-The game server communicates over WebSocket (`wss://game-dev.ainm.no/ws?token=TOKEN`). Each round, the server sends a `game_state` JSON with the full grid, bot positions, shelf items, and orders. You respond within 2 seconds with an action per bot: `move_up/down/left/right`, `pick_up` (adjacent shelf item), `drop_off` (at the drop-off cell), or `wait`. Invalid actions silently become `wait`. Games last 300 rounds max / 120 seconds wall-clock. Scoring: +1 per delivered item, +5 per completed order.
+Server endpoint format:
+- `wss://game-dev.ainm.no/ws?token=TOKEN`
 
-Full spec: [spec/protocol.md](spec/protocol.md) | Schemas: [spec/schemas_global.json](spec/schemas_global.json)
+Round contract:
+- receive `game_state`,
+- respond with one action per bot (`move_*`, `pick_up`, `drop_off`, `wait`) within 2 seconds.
+
+Scoring:
+- `+1` per delivered item,
+- `+5` per completed order.
+
+References:
+- [spec/protocol.md](spec/protocol.md)
+- [spec/schemas_global.json](spec/schemas_global.json)
 
 ## Development
 
 ```bash
-ruff check src/ tests/              # lint
-mypy src/                           # type check
-pytest                              # run tests
-python scripts/replay.py game.jsonl # replay a saved game
+ruff check src/ tests/
+mypy src/
+pytest
+python scripts/replay.py game.jsonl
+python scripts/analyze_replay.py game.jsonl
 ```
 
 ## Project Structure
 
 ```
 src/grocerybot/
-  models.py          Pydantic models (GameState, BotAction, etc.)
-  client.py          WebSocket client loop with deadline enforcement
-  grid.py            Passable grid, BFS, A*
-  planner.py         Task assignment + collision resolution
-  strategies/        Strategy implementations (logger, solo, greedy, coordinated, expert)
-  util/              Timer, structured logging, replay
-spec/                Protocol docs + JSON schemas + example messages
-docs/                Architecture and roadmap
-tests/               Unit + integration tests
-scripts/             Entry points (run.py, replay.py)
+  models.py          Protocol models
+  client.py          WebSocket loop + deadline handling
+  grid.py            Grid/pathfinding helpers
+  planner.py         Assignment and coordination utilities
+  strategies/        Bot strategy implementations
+  util/              Timer and logging utilities
+scripts/             Runners, optimizers, replay analysis
+docs/                Architecture and roadmap notes
+spec/                Protocol docs + schemas (authoritative)
+tests/               Unit and strategy tests
 ```

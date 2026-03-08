@@ -2,51 +2,40 @@
 
 ## Checkpoint
 
-`optimized_medium_v5` now enforces occupied drop-off blocking during movement and handles order-boundary carryover from inventory already at drop-off. `optimized_medium_v4` now treats checkpoint mismatches as transient vs hard divergence, and only disables the plan after sustained misses.
+Repository documentation has been refreshed to reflect current real project status before migration/merge into a new repo. `README.md` now describes the actual solved problem, solved vs unsolved work, and current best strategy choices for Easy and Medium.
 
 ## Latest Work
 
-- Updated `scripts/optimize_medium_v5.py`:
-  - added `_apply_boundary_carryover(...)` and wired it into completion-chain handling,
-  - removed drop-off occupancy bypass from movement/path blocking,
-  - added proactive step-off behavior for idle bots occupying drop-off when deliveries are waiting.
-- Updated `src/grocerybot/strategies/optimized_medium_v4.py`:
-  - added transient/hard mismatch counters and streak thresholds,
-  - fallback now tolerates short mismatch streaks before hard-divergence handling,
-  - plan disables only after sustained checkpoint-miss streak,
-  - expanded `replay_diagnostics(...)` output with mismatch telemetry.
-- Updated tests:
-  - `tests/test_optimized_medium_v4.py` now covers transient mismatch recovery and sustained-mismatch disable behavior.
-  - `tests/test_optimized_medium_v5.py` now covers occupied drop-off move blocking and boundary carryover consumption.
-- Added local artifacts currently pending in repo:
-  - `.claude/settings.json`
-  - `optimal_solver/solver_easy_optimal.py`
-  - `optimal_solver/game_20260302_074714.jsonl`
-  - `scripts/patch_easy_plan.py`
-  - `project_tree.txt`
+- Rewrote `README.md` to include:
+  - clear problem statement (real-time multi-agent planning under WebSocket + 2s deadline),
+  - current progress snapshot (`as of 2026-03-08`),
+  - solved work vs remaining work,
+  - best-known Easy/Medium strategy recommendations,
+  - concrete replay references for observed best scores,
+  - updated quick-start and optimization workflow for current strategy stack.
+- Documented best-known strategy outcomes from local replay corpus:
+  - Easy peak observed: `142` (`game_easy_20260304_212146.jsonl`) with plan-replay behavior.
+  - Medium peak observed: `106` (`game_medium_20260303_065132.jsonl`) with `OptimizedMediumV5Strategy` diagnostics.
+  - Medium stable validated checkpoint remains `optimized_medium_v4` at score `91` (`game_medium_20260302_214042.jsonl`).
 
 ## Validation
 
-- Ran: `python -m pytest tests/test_optimized_medium_v4.py tests/test_optimized_medium_v5.py -q`
-- Result: `11 passed`
-- Warnings observed:
-  - unknown pytest config option `asyncio_mode`
-  - pytest cache warning creating `.pytest_cache\\v\\cache\\nodeids`.
+- No code-path changes; docs-only update.
+- Replay-score references were derived from local replay files during this session.
 
 ## Known Issues
 
-- No fresh medium live-run replay validation was executed in this checkpoint.
-- `project_tree.txt` and `optimal_solver/game_20260302_074714.jsonl` are large artifacts and may be optional for long-term storage.
-- Environment still reports permission warnings for global git ignore and `.pytest_tmp/` directory access.
+- `optimized_medium_v5` latest occupancy/carryover fixes still require fresh live-run validation after the most recent patch set.
+- Medium still has consistency variance across runs; peak score and stable score differ.
 
 ## Next Steps
 
-1. Regenerate latest v5 plan and confirm server-aligned behavior beyond the previous round-49 divergence point.
-2. Run new medium replays with `optimized_medium_v5` and compare adherence/score to prior baseline.
-3. After merging to the new repo, decide whether to keep or prune local-only artifacts (`.claude/`, `project_tree.txt`, `optimal_solver/` logs).
+1. Merge this repo into the new target repo.
+2. Run a fresh medium benchmark batch using `optimized_medium_v5` and confirm post-fix adherence/consistency.
+3. Keep `optimized_medium_v4` as fallback baseline until v5 is re-validated on new runs.
 
 ## Restart Prompt
 
 ```text
-Read CONTEXT.md and SESSION_HANDOFF.md. Continue from the 2026-03-08 checkpoint: validate optimized_medium_v5 with a fresh generated plan and live medium replay, confirm no occupied-dropoff desync, then measure score/adherence deltas and clean up local-only artifacts if they are not needed in the new repo.
+Read CONTEXT.md and SESSION_HANDOFF.md. Continue from docs checkpoint: run fresh medium replays with optimized_medium_v5 after the latest occupancy/carryover fixes, compare stability vs optimized_medium_v4, and update README/session handoff with post-merge benchmark results.
 ```
