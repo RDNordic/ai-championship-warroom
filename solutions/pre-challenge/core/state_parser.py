@@ -61,5 +61,39 @@ def needed_counts_for_order(order: Optional[dict], bots: list[dict]) -> Counter:
     return needed
 
 
+def preview_needed_counts(
+    preview_order: Optional[dict],
+    active_order: Optional[dict],
+    bots: list[dict],
+) -> Counter:
+    """Items needed for preview, correctly reserving carried items for active first.
+
+    Unlike needed_counts_for_order, this doesn't double-count: items carried
+    for the active order are NOT subtracted from preview needs.
+    """
+    if preview_order is None:
+        return Counter()
+    preview_needed = required_minus_delivered(preview_order)
+    active_needed = required_minus_delivered(active_order)
+
+    # Total carried across all bots
+    carried = Counter()
+    for bot in bots:
+        for item_type in bot["inventory"]:
+            carried[item_type] += 1
+
+    # Reserve carried items for active order first
+    surplus = Counter()
+    for item_type, count in carried.items():
+        reserved_for_active = min(count, active_needed.get(item_type, 0))
+        surplus[item_type] = count - reserved_for_active
+
+    # Only subtract surplus from preview needs
+    for item_type, count in surplus.items():
+        if preview_needed[item_type] > 0:
+            preview_needed[item_type] = max(0, preview_needed[item_type] - count)
+    return preview_needed
+
+
 def occupied_positions(bots: list[dict]) -> set[Coord]:
     return {tuple(b["position"]) for b in bots}

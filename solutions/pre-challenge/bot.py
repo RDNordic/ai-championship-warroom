@@ -24,6 +24,7 @@ from core.state_parser import (
     parse_orders,
     required_minus_delivered,
     needed_counts_for_order,
+    preview_needed_counts,
     occupied_positions,
 )
 from pathfinding.base import Pathfinder
@@ -251,7 +252,7 @@ class GroceryBot:
         active_needed_raw = required_minus_delivered(active_order)
         delivery_alloc, _ = self.delivery.allocate_delivery_slots(bots, active_needed_raw)
         needed = needed_counts_for_order(active_order, bots)
-        preview_needed = needed_counts_for_order(preview_order, bots)
+        preview_needed = preview_needed_counts(preview_order, active_order, bots)
         preview_ids = self.order_mgr.preview_item_ids(state["items"], preview_needed)
         preview_duty_bots = self.order_mgr.current_preview_duty_bots(
             preview_ids, bots, self.bot_targets
