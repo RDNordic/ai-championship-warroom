@@ -1192,7 +1192,8 @@ class TrialBot:
         if len(bot["inventory"]) >= 3:
             return None
 
-        candidates: list[dict] = []
+        drop_zones = self._drop_zones(state)
+        candidates: list[tuple[int, int, str, dict]] = []
         for item in state["items"]:
             if item["id"] in reserved_items:
                 continue
@@ -1202,16 +1203,33 @@ class TrialBot:
                 continue
             item_pos = tuple(item["position"])
             if self._manhattan(pos, item_pos) == 1:
-                candidates.append(item)
+                candidates.append(
+                    (
+                        -needed[item["type"]],
+                        self._nearest_item_drop_distance(item_pos, drop_zones),
+                        item["id"],
+                        item,
+                    )
+                )
 
         if not candidates:
             return None
 
-        chosen = candidates[0]
+        candidates.sort(key=lambda t: (t[0], t[1], t[2]))
+        chosen = candidates[0][3]
         self.bot_targets.pop(bot["id"], None)
         reserved_items.add(chosen["id"])
         needed[chosen["type"]] -= 1
         return {"bot": bot["id"], "action": "pick_up", "item_id": chosen["id"]}
+
+    def _nearest_item_drop_distance(
+        self,
+        item_pos: tuple[int, int],
+        drop_zones: list[tuple[int, int]],
+    ) -> int:
+        if not drop_zones:
+            return 0
+        return min(self._manhattan(item_pos, zone) for zone in drop_zones)
 
     def _select_target_item(
         self,
@@ -1223,6 +1241,8 @@ class TrialBot:
     ) -> Optional[dict]:
         best_item = None
         best_dist = 10**9
+        best_drop_dist = 10**9
+        drop_zones = self._drop_zones(state)
         for item in state["items"]:
             if item["id"] in reserved_items:
                 continue
@@ -1230,9 +1250,12 @@ class TrialBot:
                 continue
             if self._item_pick_blocked(item["id"], round_number):
                 continue
-            dist = self._manhattan(pos, tuple(item["position"]))
-            if dist < best_dist:
+            item_pos = tuple(item["position"])
+            dist = self._manhattan(pos, item_pos)
+            drop_dist = self._nearest_item_drop_distance(item_pos, drop_zones)
+            if dist < best_dist or (dist == best_dist and drop_dist < best_drop_dist):
                 best_dist = dist
+                best_drop_dist = drop_dist
                 best_item = item
         return best_item
 

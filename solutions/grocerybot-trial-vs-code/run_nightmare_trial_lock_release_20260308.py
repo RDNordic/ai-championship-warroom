@@ -1154,6 +1154,10 @@ class TrialBot:
 
         locked_item_id = self.bot_targets.get(bot_id)
         if locked_item_id:
+            if round_number >= 150 and self.wait_streak.get(bot_id, 0) >= 2:
+                self.bot_targets.pop(bot_id, None)
+                locked_item_id = None
+        if locked_item_id:
             locked_item = items_by_id.get(locked_item_id)
             if (
                 locked_item

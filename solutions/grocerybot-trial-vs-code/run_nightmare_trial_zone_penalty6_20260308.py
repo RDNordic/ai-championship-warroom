@@ -633,7 +633,7 @@ class TrialBot:
                 chosen_zone = min(
                     drop_zones,
                     key=lambda zone: (
-                        self._manhattan(pos, zone) + (zone_load[zone] * 4),
+                        self._manhattan(pos, zone) + (zone_load[zone] * 6),
                         zone_load[zone],
                         zone[0],
                         zone[1],
