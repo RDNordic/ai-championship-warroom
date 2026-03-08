@@ -273,7 +273,7 @@ class GroceryBot:
             return self.pathfinder.distance(grid, a, b) + self.pathfinder.distance(grid, b, drop_off)
 
         # Task assignment
-        parked_bots = {6, 7, 9}
+        parked_bots = {6, 7, 8, 9}
         excluded_bots = clear_ids | parked_bots
         blocked_items = {
             iid for iid in items_by_id
@@ -464,7 +464,7 @@ class GroceryBot:
         has_non_useful_inv = bool(inventory) and not useful_inv
 
         # --- Parked bots: stay out of the way ---
-        if bot_id in {6, 7, 9}:
+        if bot_id in {6, 7, 8, 9}:
             return {"bot": bot_id, "action": "wait"}
 
         # --- Drop off at delivery point ---
