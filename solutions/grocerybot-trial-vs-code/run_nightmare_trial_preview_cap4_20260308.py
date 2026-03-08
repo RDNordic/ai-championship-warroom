@@ -306,7 +306,7 @@ class TrialBot:
         preview_needed = self._needed_counts_for_order(preview_order, controlled_bots)
         preview_item_ids = self._preview_item_ids(state["items"], preview_needed)
         preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, controlled_bots)
-        preview_duty_cap = min(max(0, len(controlled_bots) - 1), 6)
+        preview_duty_cap = min(max(0, len(controlled_bots) - 1), 4)
         current_score = int(state.get("score", 0))
         if current_score > self._last_score:
             self._last_score = current_score
@@ -327,7 +327,8 @@ class TrialBot:
             if sum(preview_needed.values()) > 0:
                 needed = preview_needed
         elif stale_pivot:
-            needed = needed + preview_needed
+            preview_duty_cap = min(max(0, len(controlled_bots) - 1), 6)
+            needed = preview_needed
 
         drop_off = tuple(state["drop_off"])
         drop_zones = self._drop_zones(state)

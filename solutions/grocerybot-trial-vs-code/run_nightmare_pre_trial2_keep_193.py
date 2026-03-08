@@ -327,7 +327,7 @@ class TrialBot:
             if sum(preview_needed.values()) > 0:
                 needed = preview_needed
         elif stale_pivot:
-            needed = needed + preview_needed
+            needed = preview_needed
 
         drop_off = tuple(state["drop_off"])
         drop_zones = self._drop_zones(state)

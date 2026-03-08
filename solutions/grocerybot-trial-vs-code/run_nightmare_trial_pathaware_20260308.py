@@ -275,8 +275,6 @@ class TrialBot:
         self.last_pick_item: dict[int, str] = {}
         self.pick_fail_streak: dict[str, int] = {}
         self.pick_block_until_round: dict[str, int] = {}
-        self._last_score: int = 0
-        self._last_score_round: int = 0
         self._parking_spots: list[tuple[int, int]] = []
         self._parking_assignments: dict[int, tuple[int, int]] = {}
         self._parking_cache_key: Optional[tuple] = None
@@ -307,27 +305,11 @@ class TrialBot:
         preview_item_ids = self._preview_item_ids(state["items"], preview_needed)
         preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, controlled_bots)
         preview_duty_cap = min(max(0, len(controlled_bots) - 1), 6)
-        current_score = int(state.get("score", 0))
-        if current_score > self._last_score:
-            self._last_score = current_score
-            self._last_score_round = round_number
-        score_stale_rounds = round_number - self._last_score_round
 
         # Pre-pick preview items once active needs are already in-flight/carried.
-        active_remaining_needed = sum(needed.values())
-        preview_remaining = sum(preview_needed.values())
-        stale_pivot = (
-            round_number >= 100
-            and round_number < 425
-            and score_stale_rounds >= 20
-            and preview_remaining > 0
-            and active_remaining_needed > 0
-        )
-        if active_remaining_needed == 0:
+        if sum(needed.values()) == 0:
             if sum(preview_needed.values()) > 0:
                 needed = preview_needed
-        elif stale_pivot:
-            needed = needed + preview_needed
 
         drop_off = tuple(state["drop_off"])
         drop_zones = self._drop_zones(state)
@@ -354,6 +336,7 @@ class TrialBot:
             needed=needed,
             clear_dropoff_ids=clear_dropoff_ids,
             delivery_alloc=delivery_alloc,
+            drop_zones=drop_zones,
             round_number=round_number,
         )
         # Idle bots just wait — keeping them stacked is better than scattering
@@ -792,6 +775,7 @@ class TrialBot:
         needed: Counter,
         clear_dropoff_ids: set[int],
         delivery_alloc: dict[int, Counter],
+        drop_zones: list[tuple[int, int]],
         round_number: int,
     ) -> dict[int, str]:
         assignments: dict[int, str] = {}
@@ -818,7 +802,8 @@ class TrialBot:
         used_items: set[str] = set()
         while available_bots:
             chosen: Optional[tuple[int, int, str, str]] = None
-            chosen_regret = -1
+            chosen_regret = -1.0
+            chosen_best_score = float("inf")
             chosen_best_dist = 9999
 
             for bot_id, bot in available_bots.items():
@@ -831,7 +816,7 @@ class TrialBot:
                         bot_needed_left[item_type] -= 1
 
                 useful_delivery = self._delivery_count(delivery_alloc.get(bot_id, Counter())) > 0
-                options: list[tuple[int, str, str]] = []
+                options: list[tuple[float, int, str, str]] = []
                 for item in items:
                     item_id = item["id"]
                     if item_id in used_items:
@@ -841,22 +826,34 @@ class TrialBot:
                         continue
                     if self._item_pick_blocked(item_id, round_number):
                         continue
-                    dist = self._manhattan(tuple(bot["position"]), tuple(item["position"]))
-                    # Delivery bots with free slots may still batch-pick, but bias to nearby items.
-                    if useful_delivery:
-                        dist += max(3, dist // 3)
-                    options.append((dist, item_id, item_type))
+                    bot_pos = tuple(bot["position"])
+                    item_pos = tuple(item["position"])
+                    dist = self._manhattan(bot_pos, item_pos)
+                    score = self._item_route_score(
+                        bot_pos=bot_pos,
+                        item_pos=item_pos,
+                        drop_zones=drop_zones,
+                        useful_delivery=useful_delivery,
+                    )
+                    options.append((score, dist, item_id, item_type))
 
                 if not options:
                     continue
 
-                options.sort(key=lambda t: (t[0], t[1]))
-                best_dist, best_item_id, best_item_type = options[0]
-                second_dist = options[1][0] if len(options) > 1 else (best_dist + 8)
-                regret = second_dist - best_dist
+                options.sort(key=lambda t: (t[0], t[1], t[2]))
+                best_score, best_dist, best_item_id, best_item_type = options[0]
+                second_score = options[1][0] if len(options) > 1 else (best_score + 4.0)
+                regret = second_score - best_score
 
-                if regret > chosen_regret or (regret == chosen_regret and best_dist < chosen_best_dist):
+                if regret > chosen_regret or (
+                    regret == chosen_regret
+                    and (
+                        best_score < chosen_best_score
+                        or (best_score == chosen_best_score and best_dist < chosen_best_dist)
+                    )
+                ):
                     chosen_regret = regret
+                    chosen_best_score = best_score
                     chosen_best_dist = best_dist
                     chosen = (bot_id, best_dist, best_item_id, best_item_type)
 
@@ -1213,6 +1210,23 @@ class TrialBot:
         needed[chosen["type"]] -= 1
         return {"bot": bot["id"], "action": "pick_up", "item_id": chosen["id"]}
 
+    def _item_route_score(
+        self,
+        bot_pos: tuple[int, int],
+        item_pos: tuple[int, int],
+        drop_zones: list[tuple[int, int]],
+        useful_delivery: bool,
+    ) -> float:
+        to_item = self._manhattan(bot_pos, item_pos)
+        if not drop_zones:
+            return float(to_item)
+
+        item_to_drop = min(self._manhattan(item_pos, zone) for zone in drop_zones)
+        score = float(to_item) + (0.35 * item_to_drop)
+        if useful_delivery:
+            score += (0.55 * item_to_drop) + 3.0
+        return score
+
     def _select_target_item(
         self,
         pos: tuple[int, int],
@@ -1222,7 +1236,9 @@ class TrialBot:
         round_number: int = -1,
     ) -> Optional[dict]:
         best_item = None
+        best_score = float("inf")
         best_dist = 10**9
+        drop_zones = self._drop_zones(state)
         for item in state["items"]:
             if item["id"] in reserved_items:
                 continue
@@ -1230,8 +1246,16 @@ class TrialBot:
                 continue
             if self._item_pick_blocked(item["id"], round_number):
                 continue
-            dist = self._manhattan(pos, tuple(item["position"]))
-            if dist < best_dist:
+            item_pos = tuple(item["position"])
+            dist = self._manhattan(pos, item_pos)
+            score = self._item_route_score(
+                bot_pos=pos,
+                item_pos=item_pos,
+                drop_zones=drop_zones,
+                useful_delivery=False,
+            )
+            if score < best_score or (score == best_score and dist < best_dist):
+                best_score = score
                 best_dist = dist
                 best_item = item
         return best_item
