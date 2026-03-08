@@ -21,6 +21,8 @@ load_dotenv()
 raw = (os.getenv("GROCERY_BOT_TOKEN_MEDIUM") or "").strip()
 if not raw:
     raise SystemExit("Missing GROCERY_BOT_TOKEN_MEDIUM in .env")
+single_active_bot_raw = (os.getenv("GROCERY_BOT_SINGLE_ACTIVE_BOT") or "").strip()
+SINGLE_ACTIVE_BOT_ID = int(single_active_bot_raw) if single_active_bot_raw else None
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -221,6 +223,8 @@ class TrialBot:
         self.wait_streak: dict[int, int] = {}
         self.last_observed_pos: dict[int, tuple[int, int]] = {}
         self.last_action: dict[int, str] = {}
+        self._last_score: int = 0
+        self._last_score_round: int = 0
 
     def decide(self, state: dict) -> list[dict]:
         if not self._walls:
@@ -246,16 +250,26 @@ class TrialBot:
         preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, bots)
         preview_duty_cap = min(max(0, len(bots) - 1), 3)
 
+        # Track score progress to detect stale orders.
+        current_round = int(state.get("round", -1))
+        current_score = int(state.get("score", 0))
+        if current_score > self._last_score:
+            self._last_score = current_score
+            self._last_score_round = current_round
+        score_stale_rounds = current_round - self._last_score_round
+
         # Pre-pick preview once active demand is covered by carried items, but
         # avoid late-game over-pivoting away from active order completion.
+        # Also pivot to preview if score has been stale for 25+ rounds —
+        # the active order is likely stuck and we should prepare for the next.
         active_remaining_raw = sum(active_needed_raw.values())
         active_remaining_needed = sum(needed.values())
         preview_remaining = sum(preview_needed.values())
-        current_round = int(state.get("round", -1))
+        stale_pivot = score_stale_rounds >= 15 and preview_remaining > 0 and active_remaining_needed > 0
         if (
-            active_remaining_needed == 0
-            and preview_remaining > 0
-            and (active_remaining_raw == 0 or current_round < 200)
+            (active_remaining_needed == 0 and preview_remaining > 0
+             and (active_remaining_raw == 0 or current_round < 200))
+            or stale_pivot
         ):
             needed = preview_needed
 
@@ -297,6 +311,11 @@ class TrialBot:
             )
             actions.append(action)
             self.last_action[bot["id"]] = action["action"]
+        if SINGLE_ACTIVE_BOT_ID is not None:
+            actions = [
+                action if action["bot"] == SINGLE_ACTIVE_BOT_ID else {"bot": action["bot"], "action": "wait"}
+                for action in actions
+            ]
         return actions
 
     def _update_wait_state(self, bots: list[dict]) -> None:
@@ -1243,6 +1262,8 @@ async def main():
         raise SystemExit(
             f"Token expired at {exp_dt.isoformat()} UTC. Click Play to get a fresh token and update .env."
         )
+    if SINGLE_ACTIVE_BOT_ID is not None:
+        print(f"Single-active-bot test mode enabled for bot {SINGLE_ACTIVE_BOT_ID}.", flush=True)
     print("Connecting to Grocery Bot server...", flush=True)
     try:
         async with websockets.connect(WS_URL) as ws:

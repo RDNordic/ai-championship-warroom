@@ -33,6 +33,7 @@ GROCERY_BOT_TOKEN_EASY=<token>
 GROCERY_BOT_TOKEN_MEDIUM=<token>
 GROCERY_BOT_TOKEN_HARD=<token>
 GROCERY_BOT_TOKEN_EXPERT=<token>
+GROCERY_BOT_TOKEN_NIGHTMARE=<token>
 ```
 
 ## Run Commands
@@ -43,6 +44,8 @@ From `solutions/grocerybot-trial-vs-code`:
 & ".venv\Scripts\python.exe" run_medium.py
 & ".venv\Scripts\python.exe" run_hard.py
 & ".venv\Scripts\python.exe" run_expert.py
+& ".venv\Scripts\python.exe" run_nightmare.py
+& ".venv\Scripts\python.exe" test_nightmare_smoke.py --rounds 40
 ```
 
 ## Output + Artifacts

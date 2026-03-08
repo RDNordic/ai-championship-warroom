@@ -25,22 +25,30 @@ def _load_simulator_modules() -> tuple[Any, Any, Any]:
     return parse_replay, create_initial_state, step
 
 
-def _load_trialbot_namespace() -> dict[str, Any]:
-    run_hard_path = BASE_DIR / "run_hard.py"
-    source = run_hard_path.read_text(encoding="utf-8")
-    marker = "asyncio.run(main())"
-    if marker not in source:
-        raise RuntimeError(f"Unable to find module entrypoint marker in {run_hard_path}")
+def _load_bot_namespace(bot_path: Path) -> dict[str, Any]:
+    source = bot_path.read_text(encoding="utf-8")
+    markers = [
+        'if __name__ == "__main__":\n    asyncio.run(main())',
+        "if __name__ == '__main__':\n    asyncio.run(main())",
+        "asyncio.run(main())",
+    ]
+    replaced = False
+    for marker in markers:
+        if marker in source:
+            source = source.replace(marker, "", 1)
+            replaced = True
+            break
+    if not replaced:
+        raise RuntimeError(f"Unable to find module entrypoint marker in {bot_path}")
 
     # Prevent network run at import time while reusing bot logic verbatim.
-    source = source.replace(marker, "", 1)
     os.environ.setdefault("GROCERY_BOT_TOKEN_HARD", "offline-token")
 
     namespace: dict[str, Any] = {
         "__name__": "offline_run_hard",
-        "__file__": str(run_hard_path),
+        "__file__": str(bot_path),
     }
-    exec(compile(source, str(run_hard_path), "exec"), namespace)
+    exec(compile(source, str(bot_path), "exec"), namespace)
     return namespace
 
 
@@ -114,6 +122,7 @@ def _state_for_bot(state: Any, max_rounds: int, total_orders: int) -> dict[str, 
 
 def run_offline(
     replay_path: Path,
+    bot_path: Path,
     seed: int | None,
     progress_every: int,
     compare_actions: bool,
@@ -121,10 +130,20 @@ def run_offline(
     parse_replay, create_initial_state, step = _load_simulator_modules()
     game = parse_replay(replay_path)
 
-    namespace = _load_trialbot_namespace()
-    trial_bot_cls = namespace["TrialBot"]
+    namespace = _load_bot_namespace(bot_path)
+    trial_bot_cls = (
+        namespace.get("TrialBot")
+        or namespace.get("HardModeBotV2")
+        or namespace.get("HardBot")
+    )
+    if trial_bot_cls is None:
+        raise RuntimeError(f"Unable to find supported bot class in {bot_path}")
     sanitize_actions = namespace["sanitize_actions"]
-    all_wait_actions = namespace["all_wait_actions"]
+    all_wait_actions = namespace.get("all_wait_actions")
+    if all_wait_actions is None:
+        all_wait_actions = lambda state: [  # noqa: E731
+            {"bot": b["id"], "action": "wait"} for b in state.get("bots", [])
+        ]
 
     if seed is not None:
         random.seed(seed)
@@ -143,6 +162,7 @@ def run_offline(
     first_action_mismatches: list[tuple[int, list[dict], list[dict]]] = []
 
     print(f"Replay source: {replay_path}")
+    print(f"Bot file: {bot_path}")
     print(
         f"Offline run config: rounds={rounds}, bots={game.config.num_bots}, "
         f"orders_seen={len(game.orders_seen)}, seed={seed}"
@@ -210,6 +230,12 @@ def main() -> None:
         help="Replay JSONL used to extract map + order sequence.",
     )
     parser.add_argument(
+        "--bot-file",
+        type=Path,
+        default=BASE_DIR / "run_hard.py",
+        help="Bot file to load for offline evaluation.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -231,10 +257,14 @@ def main() -> None:
     replay_path = args.replay.resolve()
     if not replay_path.exists():
         raise SystemExit(f"Replay not found: {replay_path}")
+    bot_path = args.bot_file.resolve()
+    if not bot_path.exists():
+        raise SystemExit(f"Bot file not found: {bot_path}")
 
     seed = None if args.seed == -1 else args.seed
     run_offline(
         replay_path=replay_path,
+        bot_path=bot_path,
         seed=seed,
         progress_every=max(0, int(args.progress_every)),
         compare_actions=bool(args.compare_actions),
