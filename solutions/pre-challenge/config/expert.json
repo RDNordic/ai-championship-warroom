@@ -1,0 +1,26 @@
+{
+  "pathfinding": {
+    "algorithm": "bfs"
+  },
+  "assignment": {
+    "algorithm": "regret_greedy",
+    "delivery_penalty": true
+  },
+  "collision": {
+    "algorithm": "reservation",
+    "wait_streak_nudge_threshold": 1
+  },
+  "coordination": {
+    "delivery_queue_leaders": 2,
+    "preview_duty_cap_offset": 2,
+    "pick_cooldown": {
+      "max_cooldown": 18,
+      "base_cooldown": 4,
+      "step": 2
+    }
+  },
+  "late_game": {
+    "stop_chasing_round": 290,
+    "detour_cutoff_round": 250
+  }
+}

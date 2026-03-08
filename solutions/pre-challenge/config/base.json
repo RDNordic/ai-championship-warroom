@@ -1,0 +1,29 @@
+{
+  "seed": 42,
+  "pathfinding": {
+    "algorithm": "bfs",
+    "cache_per_round": true
+  },
+  "assignment": {
+    "algorithm": "greedy",
+    "delivery_penalty": true
+  },
+  "collision": {
+    "algorithm": "reservation",
+    "wait_streak_nudge_threshold": 1,
+    "relax_on_blocked": true
+  },
+  "coordination": {
+    "delivery_queue_leaders": 2,
+    "preview_duty_cap_offset": 1,
+    "pick_cooldown": {
+      "max_cooldown": 18,
+      "base_cooldown": 4,
+      "step": 2
+    }
+  },
+  "late_game": {
+    "stop_chasing_round": 280,
+    "detour_cutoff_round": 250
+  }
+}
