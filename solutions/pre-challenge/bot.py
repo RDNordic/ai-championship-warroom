@@ -268,12 +268,13 @@ class GroceryBot:
         queue_primary = self.delivery.select_queue_primary(queue_ids, bots, drop_off)
         clear_ids = self.delivery.dropoff_clearance_bots(bots, drop_off, delivery_alloc)
 
-        # Distance function for assignment
+        # Distance function for assignment — round-trip: bot→item + item→dropoff
         def dist_fn(a: Coord, b: Coord) -> int:
-            return self.pathfinder.distance(grid, a, b)
+            return self.pathfinder.distance(grid, a, b) + self.pathfinder.distance(grid, b, drop_off)
 
         # Task assignment
-        excluded_bots = clear_ids
+        parked_bots = {6, 7, 9}
+        excluded_bots = clear_ids | parked_bots
         blocked_items = {
             iid for iid in items_by_id
             if self.cooldown.is_blocked(iid, round_number)
@@ -461,6 +462,10 @@ class GroceryBot:
         inventory = bot["inventory"]
         useful_inv = delivery_count(useful_delivery) > 0
         has_non_useful_inv = bool(inventory) and not useful_inv
+
+        # --- Parked bots: stay out of the way ---
+        if bot_id in {6, 7, 9}:
+            return {"bot": bot_id, "action": "wait"}
 
         # --- Drop off at delivery point ---
         if useful_inv and pos == drop_off:
