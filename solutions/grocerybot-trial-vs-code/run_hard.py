@@ -210,7 +210,8 @@ def token_is_expired(claims: dict) -> tuple[bool, Optional[datetime]]:
 
 
 class TrialBot:
-    NUM_WORKERS = 2  # Only this many bots do actual work
+    NUM_WORKERS = 3  # A/B test: was 2, testing 3 with preview disabled
+    PREVIEW_ENABLED = False  # Disabled to isolate worker count effect
 
     def __init__(self) -> None:
         self.shelves: set[tuple[int, int]] = set()
@@ -351,7 +352,7 @@ class TrialBot:
         preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, worker_bots)
         preview_duty_cap = min(max(0, len(worker_bots) - 1), 3)
 
-        if sum(needed.values()) == 0:
+        if self.PREVIEW_ENABLED and sum(needed.values()) == 0:
             if sum(preview_needed.values()) > 0:
                 needed = preview_needed
 
@@ -370,7 +371,7 @@ class TrialBot:
             round_number=round_number,
         )
         preview_priority_bots: set[int] = set()
-        if sum(preview_needed.values()) > 0:
+        if self.PREVIEW_ENABLED and sum(preview_needed.values()) > 0:
             coverage = Counter()
             for alloc in delivery_alloc.values():
                 coverage.update(alloc)
