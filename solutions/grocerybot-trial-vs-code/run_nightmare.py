@@ -355,6 +355,7 @@ class TrialBot:
             clear_dropoff_ids=clear_dropoff_ids,
             delivery_alloc=delivery_alloc,
             round_number=round_number,
+            state=state,
         )
         # Idle bots just wait — keeping them stacked is better than scattering
         actions_by_id: dict[int, dict] = {
@@ -375,8 +376,7 @@ class TrialBot:
             b for b in controlled_bots if sum(delivery_alloc.get(b["id"], Counter()).values()) == 0
         ]
 
-        # --- Phase 1: Process delivery bots first ---
-        for bot in delivery_bots:
+        for bot in delivery_bots + non_delivery_bots:
             action = self._decide_one(
                 bot=bot,
                 round_number=round_number,
@@ -407,93 +407,6 @@ class TrialBot:
                     self.last_pick_item.pop(bot["id"], None)
             else:
                 self.last_pick_item.pop(bot["id"], None)
-
-        # --- Phase 2: Identify stuck delivery bots ---
-        stuck_delivery_info: dict[int, dict] = {}
-        for bot in delivery_bots:
-            bot_id = bot["id"]
-            if (
-                actions_by_id[bot_id]["action"] == "wait"
-                and self.wait_streak.get(bot_id, 0) >= 1
-                and self._delivery_count(delivery_alloc.get(bot_id, Counter())) > 0
-            ):
-                stuck_delivery_info[bot_id] = {
-                    "pos": tuple(bot["position"]),
-                    "target": delivery_zone_by_bot.get(bot_id, drop_off),
-                }
-
-        # --- Phase 3: Process non-delivery bots with yield awareness ---
-        yielded_from: set[tuple[int, int]] = set()
-        for bot in non_delivery_bots:
-            bot_id = bot["id"]
-            pos = tuple(bot["position"])
-            yield_action = self._yield_for_delivery(
-                bot_id=bot_id,
-                pos=pos,
-                stuck_delivery_info=stuck_delivery_info,
-                state=state,
-                occupied_now=occupied_now,
-                reserved_next=reserved_next,
-            )
-            if yield_action is not None:
-                yielded_from.add(pos)
-                action = yield_action
-            else:
-                action = self._decide_one(
-                    bot=bot,
-                    round_number=round_number,
-                    state=state,
-                    needed=needed,
-                    target_drop_off=delivery_zone_by_bot.get(bot["id"], drop_off),
-                    drop_zones=drop_zones,
-                    occupied_now=occupied_now,
-                    reserved_items=reserved_items,
-                    reserved_next=reserved_next,
-                    clear_dropoff_ids=clear_dropoff_ids,
-                    items_by_id=items_by_id,
-                    assigned_item_id=assignments.get(bot["id"]),
-                    useful_delivery=delivery_alloc.get(bot["id"], Counter()),
-                    preview_needed=preview_needed,
-                    preview_item_ids=preview_item_ids,
-                    preview_duty_bots=preview_duty_bots,
-                    preview_duty_cap=preview_duty_cap,
-                    zone_primary_by_zone=zone_primary_by_zone,
-                )
-            actions_by_id[bot["id"]] = action
-            self.last_action[bot["id"]] = action["action"]
-            if action["action"] == "pick_up":
-                item_id = action.get("item_id")
-                if isinstance(item_id, str) and item_id:
-                    self.last_pick_item[bot["id"]] = item_id
-                else:
-                    self.last_pick_item.pop(bot["id"], None)
-            else:
-                self.last_pick_item.pop(bot["id"], None)
-
-        # --- Phase 4: Re-plan stuck delivery bots that now have cleared paths ---
-        if yielded_from:
-            replan_occupied = occupied_now - yielded_from
-            for bot in delivery_bots:
-                bot_id = bot["id"]
-                if bot_id not in stuck_delivery_info:
-                    continue
-                pos = tuple(bot["position"])
-                if not any(self._manhattan(pos, yc) <= 1 for yc in yielded_from):
-                    continue
-                action = self._move_toward(
-                    bot_id=bot_id,
-                    start=pos,
-                    goals={stuck_delivery_info[bot_id]["target"]},
-                    state=state,
-                    occupied_now=replan_occupied,
-                    reserved_next=reserved_next,
-                    allow_occupied_goals=True,
-                    relax_reservation_if_blocked=True,
-                )
-                if action["action"] != "wait":
-                    actions_by_id[bot_id] = action
-                    self.last_action[bot_id] = action["action"]
-                    self.last_pick_item.pop(bot_id, None)
 
         return [actions_by_id[b["id"]] for b in bots]
 
@@ -873,6 +786,43 @@ class TrialBot:
                 needed[item_type] = max(0, needed[item_type] - count)
         return needed
 
+    def _bfs_distance_map(
+        self, start: tuple[int, int], state: dict
+    ) -> dict[tuple[int, int], int]:
+        """BFS from start ignoring bots, returns distance to all reachable walkable cells."""
+        width = state["grid"]["width"]
+        height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
+        dist_map: dict[tuple[int, int], int] = {start: 0}
+        q: deque[tuple[int, int]] = deque([start])
+        while q:
+            cur = q.popleft()
+            d = dist_map[cur]
+            for nxt in self._neighbors(cur):
+                if nxt in dist_map:
+                    continue
+                nx, ny = nxt
+                if not (0 <= nx < width and 0 <= ny < height):
+                    continue
+                if nxt in walls or nxt in self.shelves:
+                    continue
+                dist_map[nxt] = d + 1
+                q.append(nxt)
+        return dist_map
+
+    def _bfs_dist_to_item(
+        self, dist_map: dict[tuple[int, int], int], item_pos: tuple[int, int]
+    ) -> int:
+        """Shortest BFS distance to any walkable cell adjacent to item (on a shelf)."""
+        best = 10**9
+        for nbr in self._neighbors(item_pos):
+            if nbr in dist_map:
+                best = min(best, dist_map[nbr])
+        # Also check the item position itself (in case it's walkable)
+        if item_pos in dist_map:
+            best = min(best, dist_map[item_pos])
+        return best
+
     def _build_greedy_assignments(
         self,
         bots: list[dict],
@@ -881,6 +831,7 @@ class TrialBot:
         clear_dropoff_ids: set[int],
         delivery_alloc: dict[int, Counter],
         round_number: int,
+        state: dict = None,
     ) -> dict[int, str]:
         assignments: dict[int, str] = {}
         needed_left = Counter(needed)
@@ -903,6 +854,14 @@ class TrialBot:
                 continue
             available_bots[bot["id"]] = bot
 
+        # Pre-compute BFS distance maps for better item targeting
+        bot_dist_maps: dict[int, dict[tuple[int, int], int]] = {}
+        if state is not None:
+            for bot_id, bot in available_bots.items():
+                bot_dist_maps[bot_id] = self._bfs_distance_map(
+                    tuple(bot["position"]), state
+                )
+
         used_items: set[str] = set()
         while available_bots:
             chosen: Optional[tuple[int, int, str, str]] = None
@@ -919,6 +878,7 @@ class TrialBot:
                         bot_needed_left[item_type] -= 1
 
                 useful_delivery = self._delivery_count(delivery_alloc.get(bot_id, Counter())) > 0
+                dist_map = bot_dist_maps.get(bot_id)
                 options: list[tuple[int, str, str]] = []
                 for item in items:
                     item_id = item["id"]
@@ -929,7 +889,13 @@ class TrialBot:
                         continue
                     if self._item_pick_blocked(item_id, round_number):
                         continue
-                    dist = self._manhattan(tuple(bot["position"]), tuple(item["position"]))
+                    # Use BFS distance when available, fall back to manhattan
+                    if dist_map is not None:
+                        dist = self._bfs_dist_to_item(dist_map, tuple(item["position"]))
+                    else:
+                        dist = self._manhattan(tuple(bot["position"]), tuple(item["position"]))
+                    if dist >= 10**9:
+                        continue  # Item unreachable — skip it
                     # Delivery bots with free slots may still batch-pick, but bias to nearby items.
                     if useful_delivery:
                         dist += max(3, dist // 3)
@@ -962,63 +928,6 @@ class TrialBot:
             needed_left[item_type] -= 1
 
         return assignments
-
-    def _yield_for_delivery(
-        self,
-        bot_id: int,
-        pos: tuple[int, int],
-        stuck_delivery_info: dict[int, dict],
-        state: dict,
-        occupied_now: set[tuple[int, int]],
-        reserved_next: set[tuple[int, int]],
-    ) -> Optional[dict]:
-        """Move out of the way if blocking a stuck delivery bot."""
-        if not stuck_delivery_info:
-            return None
-        width = state["grid"]["width"]
-        height = state["grid"]["height"]
-        walls = {tuple(w) for w in state["grid"]["walls"]}
-        blocked = (occupied_now - {pos}) | reserved_next
-
-        for del_id, info in stuck_delivery_info.items():
-            del_pos = info["pos"]
-            del_target = info["target"]
-            if self._manhattan(pos, del_pos) != 1:
-                continue
-
-            # Only yield if this bot is roughly between delivery bot and its target
-            direct_dist = self._manhattan(del_pos, del_target)
-            via_me = self._manhattan(del_pos, pos) + self._manhattan(pos, del_target)
-            if via_me > direct_dist + 1:
-                continue
-
-            # Direction from delivery bot to this bot
-            dx = pos[0] - del_pos[0]
-            dy = pos[1] - del_pos[1]
-            # Try perpendicular moves first, then continue-away
-            if dx != 0:
-                candidates = [
-                    (pos[0], pos[1] + 1),
-                    (pos[0], pos[1] - 1),
-                    (pos[0] + dx, pos[1]),
-                ]
-            else:
-                candidates = [
-                    (pos[0] + 1, pos[1]),
-                    (pos[0] - 1, pos[1]),
-                    (pos[0], pos[1] + dy),
-                ]
-
-            for cell in candidates:
-                cx, cy = cell
-                if not (0 <= cx < width and 0 <= cy < height):
-                    continue
-                if cell in walls or cell in self.shelves or cell in blocked:
-                    continue
-                reserved_next.add(cell)
-                return {"bot": bot_id, "action": self._action_from_step(pos, cell)}
-
-        return None
 
     def _decide_one(
         self,
@@ -1366,6 +1275,7 @@ class TrialBot:
         reserved_items: set[str],
         round_number: int = -1,
     ) -> Optional[dict]:
+        dist_map = self._bfs_distance_map(pos, state)
         best_item = None
         best_dist = 10**9
         for item in state["items"]:
@@ -1375,7 +1285,7 @@ class TrialBot:
                 continue
             if self._item_pick_blocked(item["id"], round_number):
                 continue
-            dist = self._manhattan(pos, tuple(item["position"]))
+            dist = self._bfs_dist_to_item(dist_map, tuple(item["position"]))
             if dist < best_dist:
                 best_dist = dist
                 best_item = item
