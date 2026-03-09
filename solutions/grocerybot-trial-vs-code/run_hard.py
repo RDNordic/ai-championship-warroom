@@ -210,8 +210,7 @@ def token_is_expired(claims: dict) -> tuple[bool, Optional[datetime]]:
 
 
 class TrialBot:
-    NUM_WORKERS = 2
-    PREVIEW_ENABLED = True
+    NUM_WORKERS = 2  # Only this many bots do actual work
 
     def __init__(self) -> None:
         self.shelves: set[tuple[int, int]] = set()
@@ -346,27 +345,17 @@ class TrialBot:
         active_needed_raw = self._required_minus_delivered(active_order)
         delivery_alloc, _ = self._allocate_delivery_slots(worker_bots, active_needed_raw)
         needed = self._needed_counts_for_order(active_order, worker_bots)
-
-        # Sort workers by delivery priority: carriers first, closer to drop-off first, then bot_id
-        drop_off = tuple(state["drop_off"])
-        worker_bots = sorted(
-            worker_bots,
-            key=lambda b: (
-                0 if self._delivery_count(delivery_alloc.get(b["id"], Counter())) > 0 else 1,
-                self._manhattan(tuple(b["position"]), drop_off) if self._delivery_count(delivery_alloc.get(b["id"], Counter())) > 0 else 999,
-                b["id"],
-            ),
-        )
         preview_order = self._get_order_by_status(state, "preview")
         preview_needed = self._needed_counts_for_order(preview_order, worker_bots)
         preview_item_ids = self._preview_item_ids(state["items"], preview_needed)
         preview_duty_bots = self._current_preview_duty_bots(preview_item_ids, worker_bots)
         preview_duty_cap = min(max(0, len(worker_bots) - 1), 3)
 
-        if self.PREVIEW_ENABLED and sum(needed.values()) == 0:
+        if sum(needed.values()) == 0:
             if sum(preview_needed.values()) > 0:
                 needed = preview_needed
 
+        drop_off = tuple(state["drop_off"])
         dropoff_queue_ids = self._select_dropoff_queue_leader(worker_bots, drop_off, delivery_alloc)
         dropoff_queue_leader = self._select_dropoff_queue_primary(
             dropoff_queue_ids, worker_bots, drop_off
@@ -381,7 +370,7 @@ class TrialBot:
             round_number=round_number,
         )
         preview_priority_bots: set[int] = set()
-        if self.PREVIEW_ENABLED and sum(preview_needed.values()) > 0:
+        if sum(preview_needed.values()) > 0:
             coverage = Counter()
             for alloc in delivery_alloc.values():
                 coverage.update(alloc)
@@ -1245,12 +1234,9 @@ class TrialBot:
         reserved_next: set[tuple[int, int]],
     ) -> dict:
         if self.wait_streak.get(bot_id, 0) >= 3:
-            # Suppress random nudges near drop-off to avoid disrupting delivery flow
-            drop_off = tuple(state["drop_off"])
-            if self._manhattan(pos, drop_off) > 3:
-                nudge = self._random_nudge(bot_id, pos, state, occupied_now, reserved_next)
-                if nudge is not None:
-                    return nudge
+            nudge = self._random_nudge(bot_id, pos, state, occupied_now, reserved_next)
+            if nudge is not None:
+                return nudge
         return {"bot": bot_id, "action": "wait"}
 
     def _random_nudge(
