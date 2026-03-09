@@ -375,7 +375,8 @@ class TrialBot:
             b for b in controlled_bots if sum(delivery_alloc.get(b["id"], Counter()).values()) == 0
         ]
 
-        for bot in delivery_bots + non_delivery_bots:
+        # --- Phase 1: Process delivery bots first ---
+        for bot in delivery_bots:
             action = self._decide_one(
                 bot=bot,
                 round_number=round_number,
@@ -406,6 +407,93 @@ class TrialBot:
                     self.last_pick_item.pop(bot["id"], None)
             else:
                 self.last_pick_item.pop(bot["id"], None)
+
+        # --- Phase 2: Identify stuck delivery bots ---
+        stuck_delivery_info: dict[int, dict] = {}
+        for bot in delivery_bots:
+            bot_id = bot["id"]
+            if (
+                actions_by_id[bot_id]["action"] == "wait"
+                and self.wait_streak.get(bot_id, 0) >= 1
+                and self._delivery_count(delivery_alloc.get(bot_id, Counter())) > 0
+            ):
+                stuck_delivery_info[bot_id] = {
+                    "pos": tuple(bot["position"]),
+                    "target": delivery_zone_by_bot.get(bot_id, drop_off),
+                }
+
+        # --- Phase 3: Process non-delivery bots with yield awareness ---
+        yielded_from: set[tuple[int, int]] = set()
+        for bot in non_delivery_bots:
+            bot_id = bot["id"]
+            pos = tuple(bot["position"])
+            yield_action = self._yield_for_delivery(
+                bot_id=bot_id,
+                pos=pos,
+                stuck_delivery_info=stuck_delivery_info,
+                state=state,
+                occupied_now=occupied_now,
+                reserved_next=reserved_next,
+            )
+            if yield_action is not None:
+                yielded_from.add(pos)
+                action = yield_action
+            else:
+                action = self._decide_one(
+                    bot=bot,
+                    round_number=round_number,
+                    state=state,
+                    needed=needed,
+                    target_drop_off=delivery_zone_by_bot.get(bot["id"], drop_off),
+                    drop_zones=drop_zones,
+                    occupied_now=occupied_now,
+                    reserved_items=reserved_items,
+                    reserved_next=reserved_next,
+                    clear_dropoff_ids=clear_dropoff_ids,
+                    items_by_id=items_by_id,
+                    assigned_item_id=assignments.get(bot["id"]),
+                    useful_delivery=delivery_alloc.get(bot["id"], Counter()),
+                    preview_needed=preview_needed,
+                    preview_item_ids=preview_item_ids,
+                    preview_duty_bots=preview_duty_bots,
+                    preview_duty_cap=preview_duty_cap,
+                    zone_primary_by_zone=zone_primary_by_zone,
+                )
+            actions_by_id[bot["id"]] = action
+            self.last_action[bot["id"]] = action["action"]
+            if action["action"] == "pick_up":
+                item_id = action.get("item_id")
+                if isinstance(item_id, str) and item_id:
+                    self.last_pick_item[bot["id"]] = item_id
+                else:
+                    self.last_pick_item.pop(bot["id"], None)
+            else:
+                self.last_pick_item.pop(bot["id"], None)
+
+        # --- Phase 4: Re-plan stuck delivery bots that now have cleared paths ---
+        if yielded_from:
+            replan_occupied = occupied_now - yielded_from
+            for bot in delivery_bots:
+                bot_id = bot["id"]
+                if bot_id not in stuck_delivery_info:
+                    continue
+                pos = tuple(bot["position"])
+                if not any(self._manhattan(pos, yc) <= 1 for yc in yielded_from):
+                    continue
+                action = self._move_toward(
+                    bot_id=bot_id,
+                    start=pos,
+                    goals={stuck_delivery_info[bot_id]["target"]},
+                    state=state,
+                    occupied_now=replan_occupied,
+                    reserved_next=reserved_next,
+                    allow_occupied_goals=True,
+                    relax_reservation_if_blocked=True,
+                )
+                if action["action"] != "wait":
+                    actions_by_id[bot_id] = action
+                    self.last_action[bot_id] = action["action"]
+                    self.last_pick_item.pop(bot_id, None)
 
         return [actions_by_id[b["id"]] for b in bots]
 
@@ -874,6 +962,63 @@ class TrialBot:
             needed_left[item_type] -= 1
 
         return assignments
+
+    def _yield_for_delivery(
+        self,
+        bot_id: int,
+        pos: tuple[int, int],
+        stuck_delivery_info: dict[int, dict],
+        state: dict,
+        occupied_now: set[tuple[int, int]],
+        reserved_next: set[tuple[int, int]],
+    ) -> Optional[dict]:
+        """Move out of the way if blocking a stuck delivery bot."""
+        if not stuck_delivery_info:
+            return None
+        width = state["grid"]["width"]
+        height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
+        blocked = (occupied_now - {pos}) | reserved_next
+
+        for del_id, info in stuck_delivery_info.items():
+            del_pos = info["pos"]
+            del_target = info["target"]
+            if self._manhattan(pos, del_pos) != 1:
+                continue
+
+            # Only yield if this bot is roughly between delivery bot and its target
+            direct_dist = self._manhattan(del_pos, del_target)
+            via_me = self._manhattan(del_pos, pos) + self._manhattan(pos, del_target)
+            if via_me > direct_dist + 1:
+                continue
+
+            # Direction from delivery bot to this bot
+            dx = pos[0] - del_pos[0]
+            dy = pos[1] - del_pos[1]
+            # Try perpendicular moves first, then continue-away
+            if dx != 0:
+                candidates = [
+                    (pos[0], pos[1] + 1),
+                    (pos[0], pos[1] - 1),
+                    (pos[0] + dx, pos[1]),
+                ]
+            else:
+                candidates = [
+                    (pos[0] + 1, pos[1]),
+                    (pos[0] - 1, pos[1]),
+                    (pos[0], pos[1] + dy),
+                ]
+
+            for cell in candidates:
+                cx, cy = cell
+                if not (0 <= cx < width and 0 <= cy < height):
+                    continue
+                if cell in walls or cell in self.shelves or cell in blocked:
+                    continue
+                reserved_next.add(cell)
+                return {"bot": bot_id, "action": self._action_from_step(pos, cell)}
+
+        return None
 
     def _decide_one(
         self,
