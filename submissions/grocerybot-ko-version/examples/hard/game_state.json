@@ -1,0 +1,51 @@
+{
+  "type": "game_state",
+  "round": 55,
+  "max_rounds": 300,
+  "grid": {
+    "width": 22,
+    "height": 14,
+    "walls": [[0,0],[1,0],[2,0],[3,0],[4,0],[5,0],[6,0],[7,0],[8,0],[9,0],[10,0],[11,0],[12,0],[13,0],[14,0],[15,0],[16,0],[17,0],[18,0],[19,0],[20,0],[21,0]]
+  },
+  "bots": [
+    {"id": 0, "position": [3, 5],   "inventory": ["milk"]},
+    {"id": 1, "position": [7, 3],   "inventory": []},
+    {"id": 2, "position": [11, 11], "inventory": ["bread", "eggs"]},
+    {"id": 3, "position": [15, 7],  "inventory": ["cheese"]},
+    {"id": 4, "position": [19, 5],  "inventory": []}
+  ],
+  "items": [
+    {"id": "item_0",  "type": "milk",     "position": [2, 2]},
+    {"id": "item_1",  "type": "bread",    "position": [2, 4]},
+    {"id": "item_2",  "type": "eggs",     "position": [6, 2]},
+    {"id": "item_3",  "type": "cheese",   "position": [6, 4]},
+    {"id": "item_4",  "type": "butter",   "position": [10, 2]},
+    {"id": "item_5",  "type": "pasta",    "position": [10, 4]},
+    {"id": "item_6",  "type": "rice",     "position": [14, 2]},
+    {"id": "item_7",  "type": "juice",    "position": [14, 4]},
+    {"id": "item_8",  "type": "yogurt",   "position": [18, 2]},
+    {"id": "item_9",  "type": "cereal",   "position": [18, 4]},
+    {"id": "item_10", "type": "flour",    "position": [2, 8]},
+    {"id": "item_11", "type": "sugar",    "position": [6, 8]}
+  ],
+  "orders": [
+    {
+      "id": "order_2",
+      "items_required": ["butter", "pasta", "rice", "juice", "yogurt"],
+      "items_delivered": ["butter"],
+      "complete": false,
+      "status": "active"
+    },
+    {
+      "id": "order_3",
+      "items_required": ["cereal", "flour", "sugar"],
+      "items_delivered": [],
+      "complete": false,
+      "status": "preview"
+    }
+  ],
+  "drop_off": [19, 12],
+  "score": 14,
+  "active_order_index": 2,
+  "total_orders": 20
+}

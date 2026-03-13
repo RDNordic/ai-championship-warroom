@@ -1,0 +1,45 @@
+{
+  "type": "game_state",
+  "round": 30,
+  "max_rounds": 300,
+  "grid": {
+    "width": 16,
+    "height": 12,
+    "walls": [[0,0],[1,0],[2,0],[3,0],[4,0],[5,0],[6,0],[7,0],[8,0],[9,0],[10,0],[11,0],[12,0],[13,0],[14,0],[15,0]]
+  },
+  "bots": [
+    {"id": 0, "position": [3, 7],  "inventory": ["milk"]},
+    {"id": 1, "position": [7, 3],  "inventory": []},
+    {"id": 2, "position": [11, 9], "inventory": ["bread", "eggs"]}
+  ],
+  "items": [
+    {"id": "item_0",  "type": "milk",    "position": [2, 2]},
+    {"id": "item_1",  "type": "bread",   "position": [2, 4]},
+    {"id": "item_2",  "type": "eggs",    "position": [6, 2]},
+    {"id": "item_3",  "type": "cheese",  "position": [6, 4]},
+    {"id": "item_4",  "type": "butter",  "position": [10, 2]},
+    {"id": "item_5",  "type": "pasta",   "position": [10, 4]},
+    {"id": "item_6",  "type": "rice",    "position": [2, 6]},
+    {"id": "item_7",  "type": "juice",   "position": [6, 6]}
+  ],
+  "orders": [
+    {
+      "id": "order_0",
+      "items_required": ["milk", "bread", "eggs", "cheese"],
+      "items_delivered": ["milk"],
+      "complete": false,
+      "status": "active"
+    },
+    {
+      "id": "order_1",
+      "items_required": ["butter", "pasta", "rice"],
+      "items_delivered": [],
+      "complete": false,
+      "status": "preview"
+    }
+  ],
+  "drop_off": [13, 10],
+  "score": 1,
+  "active_order_index": 0,
+  "total_orders": 15
+}
