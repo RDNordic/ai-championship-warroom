@@ -1,0 +1,5 @@
+{
+  "actions": [
+    {"bot": 0, "action": "move_left"}
+  ]
+}

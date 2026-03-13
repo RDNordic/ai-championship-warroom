@@ -1,0 +1,7 @@
+{
+  "actions": [
+    {"bot": 0, "action": "move_up"},
+    {"bot": 1, "action": "pick_up", "item_id": "item_3"},
+    {"bot": 2, "action": "drop_off"}
+  ]
+}
