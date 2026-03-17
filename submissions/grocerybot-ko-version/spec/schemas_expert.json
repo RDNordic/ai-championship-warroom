@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Grocery Bot Protocol — EXPERT Level Constraints",
+  "description": "Level-specific constraints for Expert. All base schemas are in schemas_global.json.",
+  "scope": "EXPERT",
+
+  "level_parameters": {
+    "grid_width": 28,
+    "grid_height": 18,
+    "bot_count": 10,
+    "aisles": 5,
+    "item_types": 16,
+    "items_per_order_min": 4,
+    "items_per_order_max": 6
+  },
+
+  "$defs": {
+    "game_state_expert": {
+      "title": "GameState [EXPERT]",
+      "description": "Inherits schemas_global.json#/$defs/game_state with Expert constraints applied.",
+      "allOf": [
+        { "$ref": "schemas_global.json#/$defs/game_state" },
+        {
+          "type": "object",
+          "properties": {
+            "grid": {
+              "type": "object",
+              "properties": {
+                "width":  { "const": 28 },
+                "height": { "const": 18 }
+              }
+            },
+            "bots": {
+              "type": "array",
+              "minItems": 10,
+              "maxItems": 10
+            }
+          }
+        }
+      ]
+    },
+
+    "bot_response_expert": {
+      "title": "BotResponse [EXPERT]",
+      "description": "Inherits schemas_global.json#/$defs/bot_response — exactly 10 actions.",
+      "allOf": [
+        { "$ref": "schemas_global.json#/$defs/bot_response" },
+        {
+          "type": "object",
+          "properties": {
+            "actions": {
+              "minItems": 10,
+              "maxItems": 10
+            }
+          }
+        }
+      ]
+    }
+  }
+}
