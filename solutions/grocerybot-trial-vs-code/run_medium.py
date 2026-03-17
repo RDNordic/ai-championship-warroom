@@ -285,6 +285,7 @@ class TrialBot:
             needed=needed,
             clear_dropoff_ids=clear_dropoff_ids,
             delivery_alloc=delivery_alloc,
+            drop_off=drop_off,
         )
         actions: list[dict] = []
 
@@ -470,6 +471,7 @@ class TrialBot:
         needed: Counter,
         clear_dropoff_ids: set[int],
         delivery_alloc: dict[int, Counter],
+        drop_off: tuple[int, int],
     ) -> dict[int, str]:
         assignments: dict[int, str] = {}
         needed_left = Counter(needed)
@@ -501,10 +503,14 @@ class TrialBot:
             for item in items:
                 if bot_needed_left[item["type"]] <= 0:
                     continue
-                dist = self._manhattan(tuple(bot["position"]), tuple(item["position"]))
+                item_pos = tuple(item["position"])
+                dist = (
+                    self._manhattan(tuple(bot["position"]), item_pos)
+                    + self._manhattan(item_pos, drop_off)
+                )
                 # Delivery bots with free slots may still batch-pick, but bias to nearby items.
                 if useful_delivery:
-                    dist += max(3, dist // 3)
+                    dist += max(3, dist // 4)
                 candidates.append((dist, bot["id"], item["id"]))
 
         candidates.sort(key=lambda x: x[0])
@@ -850,16 +856,18 @@ class TrialBot:
         needed: Counter,
         reserved_items: set[str],
     ) -> Optional[dict]:
+        drop_off = tuple(state["drop_off"])
         best_item = None
-        best_dist = 10**9
+        best_cost = 10**9
         for item in state["items"]:
             if item["id"] in reserved_items:
                 continue
             if needed[item["type"]] <= 0:
                 continue
-            dist = self._manhattan(pos, tuple(item["position"]))
-            if dist < best_dist:
-                best_dist = dist
+            item_pos = tuple(item["position"])
+            cost = self._manhattan(pos, item_pos) + self._manhattan(item_pos, drop_off)
+            if cost < best_cost:
+                best_cost = cost
                 best_item = item
         return best_item
 
