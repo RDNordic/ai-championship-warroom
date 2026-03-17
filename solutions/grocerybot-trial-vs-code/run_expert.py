@@ -216,6 +216,7 @@ class TrialBot:
         self.last_drop_round: dict[int, int] = {}
         self._staging_cache_key: Optional[tuple] = None
         self._staging_candidates: list[tuple[int, int]] = []
+        self._bfs_cache: dict[tuple[tuple[int, int], tuple], dict[tuple[int, int], int]] = {}
         self.wait_streak: dict[int, int] = {}
         self.last_observed_pos: dict[int, tuple[int, int]] = {}
         self.last_action: dict[int, str] = {}
@@ -266,6 +267,7 @@ class TrialBot:
             clear_dropoff_ids=clear_dropoff_ids,
             delivery_alloc=delivery_alloc,
             round_number=round_number,
+            state=state,
         )
         actions_by_id: dict[int, dict] = {}
 
@@ -320,7 +322,9 @@ class TrialBot:
                     if current_size <= prev_size:
                         streak = self.pick_fail_streak.get(attempted_item_id, 0) + 1
                         self.pick_fail_streak[attempted_item_id] = streak
-                        cooldown_rounds = min(18, 4 + ((streak - 1) * 2))
+                        # Force a real retarget after a failed pickup instead of
+                        # reacquiring the same blocked shelf item a few rounds later.
+                        cooldown_rounds = min(60, 18 + ((streak - 1) * 12))
                         until_round = round_number + cooldown_rounds
                         self.pick_block_until_round[attempted_item_id] = max(
                             self.pick_block_until_round.get(attempted_item_id, -1),
@@ -502,6 +506,7 @@ class TrialBot:
         clear_dropoff_ids: set[int],
         delivery_alloc: dict[int, Counter],
         round_number: int,
+        state: dict,
     ) -> dict[int, str]:
         assignments: dict[int, str] = {}
         needed_left = Counter(needed)
@@ -550,7 +555,11 @@ class TrialBot:
                         continue
                     if self._item_pick_blocked(item_id, round_number):
                         continue
-                    dist = self._manhattan(tuple(bot["position"]), tuple(item["position"]))
+                    dist = self._bfs_dist_to_item(
+                        tuple(bot["position"]),
+                        tuple(item["position"]),
+                        state,
+                    )
                     # Delivery bots with free slots may still batch-pick, but bias to nearby items.
                     if useful_delivery:
                         dist += max(3, dist // 3)
@@ -583,6 +592,73 @@ class TrialBot:
             needed_left[item_type] -= 1
 
         return assignments
+
+    def _bfs_layout_key(self, state: dict) -> tuple:
+        grid = state["grid"]
+        return (
+            grid["width"],
+            grid["height"],
+            tuple(sorted(tuple(w) for w in grid["walls"])),
+            tuple(sorted(self.shelves)),
+        )
+
+    def _bfs_distances(self, start: tuple[int, int], state: dict) -> dict[tuple[int, int], int]:
+        layout_key = self._bfs_layout_key(state)
+        cache_key = (start, layout_key)
+        cached = self._bfs_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        width = state["grid"]["width"]
+        height = state["grid"]["height"]
+        walls = {tuple(w) for w in state["grid"]["walls"]}
+
+        dists: dict[tuple[int, int], int] = {}
+        if (
+            start[0] < 0
+            or start[0] >= width
+            or start[1] < 0
+            or start[1] >= height
+            or start in walls
+            or start in self.shelves
+        ):
+            self._bfs_cache[cache_key] = dists
+            return dists
+
+        q = deque([start])
+        dists[start] = 0
+        while q:
+            cur = q.popleft()
+            next_dist = dists[cur] + 1
+            for nxt in self._neighbors(cur):
+                if (
+                    nxt[0] < 0
+                    or nxt[0] >= width
+                    or nxt[1] < 0
+                    or nxt[1] >= height
+                    or nxt in walls
+                    or nxt in self.shelves
+                    or nxt in dists
+                ):
+                    continue
+                dists[nxt] = next_dist
+                q.append(nxt)
+
+        self._bfs_cache[cache_key] = dists
+        return dists
+
+    def _bfs_dist_to_item(
+        self,
+        start: tuple[int, int],
+        item_pos: tuple[int, int],
+        state: dict,
+    ) -> int:
+        dists = self._bfs_distances(start, state)
+        goals = self._adjacent_walkable(item_pos, state, set(), start)
+        if not goals:
+            return 9999
+        best = min((dists.get(goal, 9999) for goal in goals), default=9999)
+        return best
 
     def _decide_one(
         self,

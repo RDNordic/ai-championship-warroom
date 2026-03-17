@@ -10,7 +10,7 @@ __pycache__/
 .venv/
 venv/
 
-# Generated run artifacts (grocery bot project)
+# Generated run artifacts (solutions)
 solutions/grocerybot-trial-vs-code/logs/
 solutions/grocerybot-trial-vs-code/input-from-team/logs/
 solutions/grocerybot-trial-vs-code/input-from-team/__pycache__/

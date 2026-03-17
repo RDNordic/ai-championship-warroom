@@ -1,0 +1,253 @@
+Executive summary
+
+My bet is that the dominant failure is **traffic management**, not raw pathfinding and not task allocation in isolation. In `run_hard.py`, the biggest structural choice is that only **2 bots are active workers** while the rest are sent to parking, combined with **single-agent BFS plus one-step reservation**, drop-off staging, queueing, nudges, and preview logic. That means the controller is already implicitly telling us the real problem is congestion, but it is handling congestion with local heuristics that likely reduce chaos while also leaving throughput on the table.
+
+Analysis
+
+My answers below are grounded mainly in Hard. Where I mention Expert, treat it as a structural inference from your description, not a direct code read.
+
+## 1 to 5. Top-level diagnosis
+
+**1. One structural mistake: task allocation, pathfinding, or traffic management?**
+Traffic management. The code already has a lot of machinery devoted to clearing drop-off, staging, queue leaders, parked bots, reserved next cells, nudges, and delivery detours. That is where the controller is spending its complexity budget, which usually means that is where the system is hurting. The problem is not “cannot find paths”, it is “many locally reasonable paths and assignments interfere with each other”.
+
+**2. Are you solving the wrong problem greedily each round?**
+Probably yes, but only partly. I would not jump to full 3 to 10 turn planning first. I think the current weakness is less “no horizon” and more “no shared traffic contract”. A short horizon helps only after you impose stronger movement priorities.
+
+**3. One invariant for all bots?**
+**Delivery priority with lane discipline**. If I must choose one, I pick: bots carrying useful active-order inventory get right-of-way, and everyone else yields away from drop-off and choke cells. That is more valuable than global specialization or zone ownership on Hard.
+
+**4. What would I delete first?**
+The **hard two-worker specialist model** as a fixed rule. Parking non-workers is elegant locally, but globally it can waste map capacity, especially if the map can support 3 or 4 productive workers without collapse. This is the most obviously high-upside ablation. `NUM_WORKERS = 2` is the single loudest structural gamble in the file.
+
+**5. If only one heuristic family survives?**
+**Drop-off queuing**, but simplified into a real priority rule. Preview prefetching and detour-on-delivery are optional extras. Pickup retry cooldowns are defensive glue. If one family survives, keep delivery flow control because score only materialises when items actually turn into completed orders.
+
+## 6 to 15. Pathfinding and congestion
+
+**6. Is single-agent BFS with `reserved_next` too weak at density?**
+Yes, once density rises. It prevents same-turn collisions, but it does not reason about swaps, follow-behind moves, corridor ownership, or two-turn consequences. It is good as a baseline, not as the main coordination layer. 
+
+**7. Time-expanded planning or overkill?**
+Full time-expanded planning is probably overkill for the next step. I would first add **simple traffic rules plus 2 to 4 turn local reservation** around choke areas and drop-off.
+
+**8. Minimum viable cooperative pathfinding?**
+**Prioritised planning with a small reservation window**. Not full MAPF. Order bots by priority, plan 2 to 4 turns ahead for the top few, reserve cells and maybe edges, then let the rest use ordinary BFS around that.
+
+**9. Other bots as hard, soft, or role-dependent obstacles?**
+Role-dependent. Useful carriers to drop-off should be treated as near-hard obstacles with priority. Parked or preview bots should be soft and yielding. Same-role bots should obey a deterministic tiebreak.
+
+**10. Detect true deadlock vs temporary contention?**
+Track a repeated pattern over 2 to 4 rounds:
+
+* same two or three bots
+* same local cells
+* zero net progress toward goals
+* repeated wait or oscillation
+  That is deadlock. A single missed move is just contention.
+
+**11. Penalise wait explicitly?**
+Only lightly. Forced motion is often worse. The current file already nudges after wait streaks of 3 via random movement, and I suspect that is sometimes harmful because it breaks useful patience with noise. Waiting should be cheap for low-priority bots and expensive only when they are blocking critical flow.
+
+**12. Deterministic tie-break for symmetric swaps or corridor access?**
+Use a stable priority tuple such as:
+
+1. carrying useful active inventory
+2. distance to drop-off if carrying
+3. lower ETA to goal
+4. lower bot id
+   Do not rely on accidental processing order.
+
+**13. One-way corridor conventions without explicit detection?**
+Yes, around drop-off and obvious approach lanes. Even crude conventions can outperform clever local rerouting.
+
+**14. Clean graph-theoretic choke-point identification?**
+Yes. Compute articulation points, bridges, and low-width cuts on the walkable graph, then assign congestion penalties or directional priorities near them. That is one of the cleanest upgrades available.
+
+**15. Should delivery bots get absolute priority?**
+Only when carrying **useful** inventory for the active order. The file already distinguishes useful delivery allocation from non-useful inventory, and that is the correct distinction.
+
+## 16 to 25. Task allocation and order strategy
+
+**16. Over-optimising nearest-item pickup?**
+Yes. The greedy assignment builder ranks candidate bot-item pairs mainly by distance, with a penalty tweak for bots already holding useful delivery. That is still basically local nearest-pick logic. It is not directly optimising order completion rate. 
+
+**17. Complete active order fast or maximise future optionality?**
+For Hard, bias toward **complete the active order fast**, unless the active order is already fully covered by held plus assigned inventory. The current code already tries a version of this before preview expansion, and I think that basic instinct is right. 
+
+**18. Partition map into pickup zones?**
+Yes, lightly. Soft zone ownership is a strong candidate because it reduces crossing traffic without needing heavy planning.
+
+**19. Is preview helping?**
+Mixed. The file only lets preview expand once active demand is fully covered, which is sane, but preview bots still create aisle occupation and can fill inventory with non-useful items that then require staging near drop-off. My instinct is that preview helps only on maps with spare aisle capacity.
+
+**20. When is preview mathematically worth it?**
+When:
+
+* active order is fully covered by held plus assigned inventory
+* at least one low-congestion worker has spare capacity
+* preview target lies on or near an already useful route
+* expected delay imposed on active completion is near zero
+  Otherwise it is probably score-negative.
+
+**21. Carry partial future-order inventory while blocked on one hard item?**
+Yes, but only for a capped number of bots and only if they are not likely to interfere with delivery lanes. Your code already caps preview-duty bots indirectly; that is the right idea.
+
+**22. Missing a batch-pick strategy?**
+Probably yes. With inventory size 3, single-target greed leaves route value on the table. A tiny 2-item lookahead would likely beat pure one-target assignment on many maps.
+
+**23. Optimise assignments per bot, per order, or per drop-off lane?**
+Per order first, with a delivery-lane constraint. Per-bot greedy alone is too myopic.
+
+**24. Principled marginal value score?**
+Yes. Score item candidates by something like:
+`marginal order completion gain / expected extra turns including congestion`
+Distance alone is too crude.
+
+**25. Inventory size 3: packing policy?**
+Best default is **mixed active/preview only when route-shaped**. Otherwise same-order first. Route-shaped mixed packing is strong, but arbitrary mixed packing creates staging and interference debt.
+
+## 26 to 31. Roles and specialisation
+
+**26. In Hard, does two-worker specialist help or hurt?**
+My bet: it helps stability but hurts total score. It is a congestion bandage, not an optimal throughput policy. Good for avoiding collapses, bad for ceiling.
+
+**27. In Expert, all generalists or explicit roles?**
+Not all generalists. Expert likely needs at least soft roles: fetchers, carriers, and yielders. But hard-coded blockers/clearers as dedicated jobs feels like a smell unless the map is extremely choke-heavy.
+
+**28. Optimal number of active workers from topology?**
+Estimate from map capacity:
+
+* number of independent shelf-access regions
+* width and count of routes into drop-off
+* count of articulation points near centre
+* mean aisle width / local branching factor
+  Then choose workers so expected simultaneous traffic load stays below choke capacity. In practice: derive a map congestion score and map it to 2, 3, or 4 workers.
+
+**29. Should role count be adaptive?**
+Yes. By current congestion and order state, more than by raw round number.
+
+**30. Is idle parking the wrong abstraction?**
+Mostly yes. Better: send spare bots to **safe basins** or low-impact anchors where they can re-enter work quickly, not deep parking chosen by dead-end preference. Current parking explicitly prefers corners and dead-ends far from drop-off, which is good for getting out of the way but bad for responsiveness.
+
+**31. Ever dedicate a bot to keeping drop-off clear?**
+Only as an emergency adaptive behaviour, not as a permanent role. Permanent clearing duty usually means upstream traffic design is weak.
+
+## 32 to 36. Objective and telemetry
+
+**32. Best surrogate objective offline?**
+I would optimise a weighted combination of:
+
+* completed active-order units by round
+* useful-delivery turns
+* congestion penalties near drop-off and choke cells
+* starvation count for needed item types
+
+**33. Earliest best predictor of final score?**
+My guess: **completed orders by round 100**, then delivery latency. Useful-carry ratio is good but more indirect.
+
+**34. Best gate metric besides clean median?**
+**Timeout rounds** plus **active-order completion latency**. If I must pick one extra: active-order completion latency. That is closer to score than idle ratio or path stretch.
+
+**35. Are all rounds equal?**
+No. Early tempo matters more because it compounds into more order cycles. Your late-round rule of waiting after round 285 if not carrying useful inventory is already implicitly acknowledging uneven round value. 
+
+**36. Huge leaderboard gap: raise median or ceiling?**
+Raise median first on Hard. If you are far behind, you probably have a structural flaw, not just untapped upside tails.
+
+## 37 to 41. Code architecture
+
+**37. Rewrite boundaries**
+I would split into:
+
+* state estimation
+* demand model and utility scoring
+* assignment
+* movement priority / traffic policy
+* path planning
+* conflict resolution / deadlock breaker
+  Right now too much is fused into one decision pass.
+
+**38. What state are you not remembering?**
+Most useful missing state:
+
+* per-cell congestion heat
+* repeated contested edges
+* bot pair deadlock history
+* choke occupancy over time
+* per-bot realised utility, not just target
+
+**39. Which functions should become cost models?**
+Anything now acting as a boolean gate around preview, detours, staging, and clearing. Those are really cost trade-offs, not yes/no truths.
+
+**40. Is one giant decision pass blocking better coordination?**
+Yes. It encourages local commitments before later bots can react intelligently. A staged planner would help:
+
+1. assign priorities
+2. commit high-priority movers
+3. route medium-priority bots around them
+4. park or wait the rest
+
+**41. Where to insert simulation under 1.8s?**
+Only for top-k ambiguous choices:
+
+* number of active workers
+* whether to preview
+* whether a delivery detour is worth it
+  Run tiny 2 to 4 turn rollouts on a reduced local state, not full-board simulation.
+
+## 42 to 46. Best experiments
+
+**42. Highest-information A/B on Hard**
+A/B `NUM_WORKERS = 2` versus `NUM_WORKERS = 3`, with all else fixed. This is the cleanest structural test with the best upside-to-noise ratio.
+
+**43. Highest-information A/B on Expert**
+If Expert currently resembles Hard conceptually, test **strict preview suppression** versus current preview behaviour under equal worker counts.
+
+**44. One-file changes worth testing first**
+Traffic policy changes, not fancy assignment math. Specifically:
+
+* adaptive worker count
+* stronger delivery priority
+* suppress random nudges near choke cells
+* preview only when route-shaped
+
+**45. Failures to reproduce offline before more tweaks**
+I would explicitly recreate:
+
+* symmetric corridor stand-offs
+* drop-off ring congestion
+* preview bots blocking active delivery
+* workers stranded because parked bots occupy re-entry lanes
+* oscillation from repeated target changes
+
+**46. Ablation sequence**
+
+1. disable preview
+2. disable delivery detours
+3. disable random nudges
+4. change workers 2 to 3
+5. remove fixed parking and replace with soft waiting basins
+   That sequence tells you whether gains come from true throughput or from accidental interactions among safety heuristics.
+
+## 47. One-sentence brutal explanation
+
+Your bots are still well below stronger Hard/Expert scores because they are using **local greedy assignments and one-step collision avoidance to manage what is fundamentally a shared-traffic throughput problem**.
+
+Options
+
+1. Test worker-count structure first.
+   Pros: highest upside, easiest ablation.
+   Risk: can destabilise congestion if traffic rules stay weak.
+
+2. Keep worker count fixed and harden traffic rules.
+   Pros: lower variance, cleaner diagnosis of movement policy.
+   Risk: may leave ceiling capped.
+
+3. Strip preview and detours, then rebuild.
+   Pros: reveals whether “cleverness” is masking the core flaw.
+   Risk: temporary score drop before recovery.
+
+Recommendation
+
+Run this next on Hard: **A/B fixed 2 workers versus fixed 3 workers, with preview disabled and everything else unchanged**. That isolates the biggest structural bet in the file while removing one major source of aisle interference. If 3 workers wins cleanly, your main problem is under-utilisation masked as congestion control. If 2 still wins, then the next target is not assignment, it is traffic policy around drop-off and chokepoints.
