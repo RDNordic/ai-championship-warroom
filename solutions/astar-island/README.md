@@ -263,6 +263,23 @@ session.headers["Authorization"] = "Bearer YOUR_JWT_TOKEN"
 # Get JWT: log in at app.ainm.no, inspect browser cookies for access_token
 ```
 
+## Local Token Workflow
+
+- Paste the full `access_token` JWT into `solutions/astar-island/.token`
+- The template file is `solutions/astar-island/.token.example`
+- Quick auth + round check:
+
+```powershell
+python solutions/astar-island/client.py
+```
+
+This fetches:
+- public `GET /astar-island/rounds`
+- public `GET /astar-island/rounds/{round_id}` for the active round
+- authenticated `GET /astar-island/budget`
+
+It does **not** consume query budget.
+
 ---
 
 ## Quickstart Code

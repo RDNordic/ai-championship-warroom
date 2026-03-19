@@ -1,6 +1,7 @@
 # Secrets
 **/.env
 **/.env.*
+**/.token
 
 # Python bytecode / cache
 __pycache__/
@@ -15,3 +16,4 @@ solutions/grocerybot-trial-vs-code/logs/
 solutions/grocerybot-trial-vs-code/input-from-team/logs/
 solutions/grocerybot-trial-vs-code/input-from-team/__pycache__/
 solutions/grocerybot-simulator/__pycache__/
+solutions/astar-island/artifacts/
