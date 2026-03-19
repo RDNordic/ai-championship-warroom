@@ -268,10 +268,6 @@ class GroceryBot:
         queue_primary = self.delivery.select_queue_primary(queue_ids, bots, drop_off)
         clear_ids = self.delivery.dropoff_clearance_bots(bots, drop_off, delivery_alloc)
 
-        # Distance function for assignment — round-trip: bot→item + item→dropoff
-        def dist_fn(a: Coord, b: Coord) -> int:
-            return self.pathfinder.distance(grid, a, b) + self.pathfinder.distance(grid, b, drop_off)
-
         # Task assignment
         parked_bots = {6, 7, 8, 9}
         excluded_bots = clear_ids | parked_bots
@@ -279,6 +275,10 @@ class GroceryBot:
             iid for iid in items_by_id
             if self.cooldown.is_blocked(iid, round_number)
         }
+
+        # Distance function for assignment — round-trip: bot→item + item→dropoff
+        def dist_fn(a: Coord, b: Coord) -> int:
+            return self.pathfinder.distance(grid, a, b) + self.pathfinder.distance(grid, b, drop_off)
         delivering_bots = {
             b["id"] for b in bots
             if delivery_count(delivery_alloc.get(b["id"], Counter())) > 0
