@@ -2,7 +2,7 @@
 
 **Sponsor:** Tripletex
 **Status:** In progress
-**Owner:** TBD
+**Owner:** KO
 
 ---
 

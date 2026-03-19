@@ -2,7 +2,7 @@
 
 **Sponsor:** NorgesGruppen Data
 **Status:** In progress
-**Owner:** KO (training) — all team members review before each submission
+**Owner:** Chris (training/modelling) — all team members review before each submission
 
 ---
 
