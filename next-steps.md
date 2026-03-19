@@ -7,6 +7,7 @@
 ---
 
 ## Session Log
+- **2026-03-19:** COMPETITION HAS BEGUN. Added `nmiai` MCP server (`https://mcp-docs.ainm.no/mcp`) — restart Claude Code to activate. Challenges not yet read.
 - **2026-03-17:** Rules published. Task 2 sponsor confirmed as Astar (not DNV). GCP account applied. Repo cleaned of legacy trial references. Vipps verification and public repo flagged as urgent.
 - **2026-03-13:** Meeting with Patrick. Intel gathered, Slack connected, `/session-handoff` + `/btw` commands created, next-steps cleaned. See `comms/meeting-notes.md` and `comms/intel-sources.md` for full details.
 
@@ -19,12 +20,12 @@
 | AD (Andrew) | PM / Governance | — |
 | Chris (Christopher) | Solver / Eval Lead | — |
 | Patrick | Governance + Coordination | Intel Core Ultra 5 135H, 96GB RAM, 54GB NPU, no dedicated GPU |
-| KO (Oddar) | Infra / Red Team | ASUS ROG Zephyrus G16 — RTX 5080 16GB VRAM, Intel Core Ultra 9, 64GB RAM |
+| KO (Oddar) | Infra / Red Team | ASUS ROG Zephyrus G16 — RTX 5090 Mobile 24GB VRAM, Intel Core Ultra 9, 64GB RAM |
 
 **Comms:** Signal for team updates. John keeps GitHub hub in sync.
 
 **Hardware strategy:**
-- GPU workloads (LLM inference, CV, fine-tuning) → KO's machine (RTX 5080)
+- GPU workloads (LLM inference, CV, fine-tuning) → KO's machine (RTX 5090 Mobile, 24GB VRAM)
 - CPU/tabular ML, large-context NPU inference → John's machine (96GB RAM)
 - Cloud burst → Google infra (confirm access at app.ainm.no before March 19)
 
