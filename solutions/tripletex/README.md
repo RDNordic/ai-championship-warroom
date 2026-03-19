@@ -6,6 +6,22 @@
 
 ---
 
+## Companion Docs
+
+- Implementation plan: `solutions/tripletex/PLAN.md`
+- Session handoff: `solutions/tripletex/SESSION_HANDOFF.md`
+
+---
+
+## Scaffold Status
+
+- Python project scaffold created under `solutions/tripletex/`
+- FastAPI app entrypoint: `src/tripletex_agent/app.py`
+- Initial planner/client/workflow skeleton in place
+- Current workflows are stubbed and do not yet perform real Tripletex writes
+
+---
+
 ## What We're Building
 
 A publicly accessible HTTPS `/solve` endpoint that:
@@ -161,8 +177,11 @@ Prompt (multilingual)
 ### Run Locally
 
 ```bash
-pip install fastapi uvicorn requests anthropic
-uvicorn main:app --host 0.0.0.0 --port 8000
+cd solutions/tripletex
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000
 ```
 
 ### Expose via HTTPS
