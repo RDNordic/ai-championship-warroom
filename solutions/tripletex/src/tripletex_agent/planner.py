@@ -126,11 +126,20 @@ class InvoiceLineExtraction(BaseModel):
 class InvoiceExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    invoiceId: int | None = None
+    invoiceNumber: str | None = None
     customerName: str | None = None
     customerOrganizationNumber: str | None = None
     invoiceDate: str | None = None
     invoiceDueDate: str | None = None
     deliveryDate: str | None = None
+    paymentDate: str | None = None
+    paidAmount: float | None = None
+    paidAmountCurrency: float | None = None
+    paymentTypeId: int | None = None
+    paymentTypeDescription: str | None = None
+    creditNoteDate: str | None = None
+    creditNoteEmail: str | None = None
     comment: str | None = None
     invoiceComment: str | None = None
     line: InvoiceLineExtraction | None = None
@@ -181,22 +190,122 @@ class KeywordTaskPlanner:
     """A conservative keyword-based fallback used when LLM planning is unavailable."""
 
     _rules = (
-        IntentRule(TaskFamily.DEPARTMENTS, Operation.CREATE, "department", ("department", "avdeling")),
-        IntentRule(TaskFamily.PROJECTS, Operation.CREATE, "project", ("project", "prosjekt")),
-        IntentRule(TaskFamily.INVOICING, Operation.REGISTER_PAYMENT, "invoice", ("payment", "betaling")),
+        IntentRule(
+            TaskFamily.DEPARTMENTS,
+            Operation.CREATE,
+            "department",
+            (
+                "department",
+                "avdeling",
+                "add department",
+                "register department",
+                "registrer avdeling",
+                "legg til avdeling",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.PROJECTS,
+            Operation.CREATE,
+            "project",
+            (
+                "project",
+                "prosjekt",
+                "new project",
+                "sett opp prosjekt",
+                "legg til prosjekt",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.INVOICING,
+            Operation.REGISTER_PAYMENT,
+            "invoice",
+            (
+                "payment",
+                "betaling",
+                "pay invoice",
+                "paid invoice",
+                "mark invoice",
+                "mark the invoice",
+                "betal faktura",
+                "betale faktura",
+                "innbetaling",
+            ),
+        ),
         IntentRule(
             TaskFamily.INVOICING,
             Operation.CREATE_CREDIT_NOTE,
             "invoice",
-            ("credit note", "credit memo", "kreditnota"),
+            (
+                "credit note",
+                "credit memo",
+                "credit invoice",
+                "credit the invoice",
+                "kreditnota",
+                "krediter",
+                "kreditere",
+            ),
         ),
-        IntentRule(TaskFamily.INVOICING, Operation.CREATE, "invoice", ("invoice", "faktura")),
-        IntentRule(TaskFamily.CUSTOMERS_PRODUCTS, Operation.CREATE, "customer", ("customer", "kunde")),
-        IntentRule(TaskFamily.CUSTOMERS_PRODUCTS, Operation.CREATE, "product", ("product", "produkt")),
-        IntentRule(TaskFamily.EMPLOYEES, Operation.UPDATE, "employee", ("update employee", "oppdater ansatt")),
-        IntentRule(TaskFamily.EMPLOYEES, Operation.CREATE, "employee", ("employee", "ansatt")),
+        IntentRule(
+            TaskFamily.INVOICING,
+            Operation.CREATE,
+            "invoice",
+            ("invoice", "faktura", "issue invoice", "send invoice", "utsted faktura"),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.CREATE,
+            "customer",
+            (
+                "customer",
+                "kunde",
+                "register customer",
+                "add customer",
+                "registrer kunde",
+                "legg til kunde",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.CREATE,
+            "product",
+            (
+                "product",
+                "produkt",
+                "register product",
+                "add product",
+                "registrer produkt",
+                "legg til produkt",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.EMPLOYEES,
+            Operation.UPDATE,
+            "employee",
+            ("update employee", "oppdater ansatt"),
+        ),
+        IntentRule(
+            TaskFamily.EMPLOYEES,
+            Operation.CREATE,
+            "employee",
+            (
+                "employee",
+                "ansatt",
+                "register employee",
+                "add employee",
+                "new employee",
+                "hire employee",
+                "registrer ansatt",
+                "legg til ansatt",
+                "ansett",
+            ),
+        ),
         IntentRule(TaskFamily.CORRECTIONS, Operation.REVERSE, "voucher", ("reverse", "reverser")),
-        IntentRule(TaskFamily.TRAVEL_EXPENSES, Operation.DELETE, "travel_expense", ("delete travel", "slett reise")),
+        IntentRule(
+            TaskFamily.TRAVEL_EXPENSES,
+            Operation.DELETE,
+            "travel_expense",
+            ("delete travel", "slett reise"),
+        ),
         IntentRule(
             TaskFamily.TRAVEL_EXPENSES,
             Operation.CREATE,
@@ -234,6 +343,7 @@ class KeywordTaskPlanner:
         completion_checks: list[CompletionCheck] = []
         entities_to_create: list[EntityPayload] = []
         entities_to_find: list[EntityReference] = []
+        fields_to_set: dict[str, object] = {}
 
         if operation == Operation.CREATE:
             entities_to_create.append(EntityPayload(entity_type=entity_type, fields=payload))
@@ -241,14 +351,29 @@ class KeywordTaskPlanner:
                 CompletionCheck(kind="created", entity_type=entity_type, expected_fields=["id"])
             )
         elif operation != Operation.UNKNOWN:
+            lookup = payload
+            if entity_type == "invoice" and operation in (
+                Operation.REGISTER_PAYMENT,
+                Operation.CREATE_CREDIT_NOTE,
+            ):
+                lookup, fields_to_set = _extract_invoice_action_components(prompt, operation)
             entities_to_find.append(EntityReference(entity_type=entity_type, lookup=payload))
+            if entity_type == "invoice" and operation in (
+                Operation.REGISTER_PAYMENT,
+                Operation.CREATE_CREDIT_NOTE,
+            ):
+                entities_to_find[-1] = EntityReference(entity_type=entity_type, lookup=lookup)
+            elif operation == Operation.UPDATE:
+                fields_to_set = payload
 
-        confidence = 0.7 if payload else 0.45
+        extracted_lookup = entities_to_find[0].lookup if entities_to_find else {}
+        confidence = 0.7 if payload or fields_to_set or extracted_lookup else 0.45
         return TaskPlan(
             task_family=family,
             operation=operation,
             entities_to_create=entities_to_create,
             entities_to_find=entities_to_find,
+            fields_to_set=fields_to_set,
             attachment_facts=attachment_facts,
             completion_checks=completion_checks,
             confidence=confidence,
@@ -327,7 +452,9 @@ class FallbackPlanner:
         if plan.task_family == TaskFamily.UNKNOWN:
             logger.info("Primary planner returned unknown; using keyword fallback")
             return self._fallback.plan(prompt, attachments)
-        return plan
+
+        fallback_plan = self._fallback.plan(prompt, attachments)
+        return _merge_with_fallback_plan(plan, fallback_plan)
 
 
 def build_default_planner(settings: AppSettings) -> Planner:
@@ -365,6 +492,13 @@ def _plan_from_extraction(
         lookup = _lookup_for_extraction(extraction)
         entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
         fields_to_set = payload
+
+    if extraction.operation in (Operation.REGISTER_PAYMENT, Operation.CREATE_CREDIT_NOTE):
+        if entity_type == "invoice":
+            lookup, fields_to_set = _invoice_lookup_and_fields_from_payload(
+                payload, extraction.operation
+            )
+            entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
 
     return TaskPlan(
         task_family=extraction.task_family,
@@ -435,8 +569,55 @@ def _payload_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
                 product_lookup["productNumber"] = product_number
             if product_lookup:
                 line_payload["productLookup"] = product_lookup
+
+        payment_type_lookup: dict[str, object] = {}
+        payment_type_id = invoice_payload.pop("paymentTypeId", None)
+        payment_type_description = invoice_payload.pop("paymentTypeDescription", None)
+        if payment_type_id is not None:
+            payment_type_lookup["id"] = payment_type_id
+        if payment_type_description is not None:
+            payment_type_lookup["description"] = payment_type_description
+        if payment_type_lookup:
+            invoice_payload["paymentTypeLookup"] = payment_type_lookup
         return invoice_payload
     return {}
+
+
+def _invoice_lookup_and_fields_from_payload(
+    payload: dict[str, object],
+    operation: Operation,
+) -> tuple[dict[str, object], dict[str, object]]:
+    lookup: dict[str, object] = {}
+    fields: dict[str, object] = {}
+
+    if "invoiceId" in payload:
+        lookup["id"] = payload["invoiceId"]
+    if "invoiceNumber" in payload:
+        lookup["invoiceNumber"] = payload["invoiceNumber"]
+    if "invoiceDate" in payload:
+        lookup["invoiceDate"] = payload["invoiceDate"]
+    if "customerLookup" in payload:
+        lookup["customerLookup"] = payload["customerLookup"]
+
+    if operation == Operation.REGISTER_PAYMENT:
+        if "paymentDate" in payload:
+            fields["paymentDate"] = payload["paymentDate"]
+        if "paidAmount" in payload:
+            fields["paidAmount"] = payload["paidAmount"]
+        if "paidAmountCurrency" in payload:
+            fields["paidAmountCurrency"] = payload["paidAmountCurrency"]
+        if "paymentTypeLookup" in payload:
+            fields["paymentTypeLookup"] = payload["paymentTypeLookup"]
+
+    if operation == Operation.CREATE_CREDIT_NOTE:
+        if "creditNoteDate" in payload:
+            fields["creditNoteDate"] = payload["creditNoteDate"]
+        if "comment" in payload:
+            fields["comment"] = payload["comment"]
+        if "creditNoteEmail" in payload:
+            fields["creditNoteEmail"] = payload["creditNoteEmail"]
+
+    return lookup, fields
 
 
 def _lookup_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
@@ -453,6 +634,181 @@ def _attachment_facts(attachments: list[AttachmentFile]) -> list[AttachmentFact]
         AttachmentFact(filename=attachment.filename, mime_type=attachment.mime_type)
         for attachment in attachments
     ]
+
+
+def _merge_with_fallback_plan(primary: TaskPlan, fallback: TaskPlan) -> TaskPlan:
+    merged = _sanitize_plan(primary)
+    if fallback.task_family != merged.task_family or fallback.operation != merged.operation:
+        return merged
+    if fallback.primary_entity_type() != merged.primary_entity_type():
+        return merged
+
+    update: dict[str, object] = {}
+
+    if merged.entities_to_create and fallback.entities_to_create:
+        primary_payload = merged.entities_to_create[0]
+        fallback_payload = fallback.entities_to_create[0]
+        if primary_payload.entity_type == fallback_payload.entity_type:
+            entities_to_create = list(merged.entities_to_create)
+            entities_to_create[0] = primary_payload.model_copy(
+                update={"fields": _merge_mappings(primary_payload.fields, fallback_payload.fields)}
+            )
+            update["entities_to_create"] = entities_to_create
+
+    if merged.entities_to_find and fallback.entities_to_find:
+        primary_reference = merged.entities_to_find[0]
+        fallback_reference = fallback.entities_to_find[0]
+        if primary_reference.entity_type == fallback_reference.entity_type:
+            entities_to_find = list(merged.entities_to_find)
+            entities_to_find[0] = primary_reference.model_copy(
+                update={
+                    "lookup": _merge_mappings(
+                        primary_reference.lookup,
+                        fallback_reference.lookup,
+                    )
+                }
+            )
+            update["entities_to_find"] = entities_to_find
+
+    if fallback.fields_to_set:
+        update["fields_to_set"] = _merge_mappings(merged.fields_to_set, fallback.fields_to_set)
+
+    return merged.model_copy(update=update) if update else merged
+
+
+def _sanitize_plan(plan: TaskPlan) -> TaskPlan:
+    update: dict[str, object] = {}
+
+    if plan.entities_to_create:
+        update["entities_to_create"] = [
+            entity.model_copy(update={"fields": _sanitize_mapping(entity.fields)})
+            for entity in plan.entities_to_create
+        ]
+
+    if plan.entities_to_find:
+        update["entities_to_find"] = [
+            entity.model_copy(update={"lookup": _sanitize_mapping(entity.lookup)})
+            for entity in plan.entities_to_find
+        ]
+
+    if plan.fields_to_set:
+        update["fields_to_set"] = _sanitize_mapping(plan.fields_to_set)
+
+    return plan.model_copy(update=update) if update else plan
+
+
+def _sanitize_mapping(mapping: dict[str, object]) -> dict[str, object]:
+    sanitized: dict[str, object] = {}
+    for key, value in mapping.items():
+        normalized = _sanitize_value(key, value)
+        if normalized is not None:
+            sanitized[key] = normalized
+    return sanitized
+
+
+def _sanitize_value(key: str, value: object) -> object | None:
+    if isinstance(value, dict):
+        cleaned = _sanitize_mapping(value)
+        return cleaned or None
+
+    if key == "organizationNumber":
+        if isinstance(value, str) and _is_valid_org_number(value):
+            return value
+        return None
+
+    return value
+
+
+def _merge_mappings(primary: dict[str, object], fallback: dict[str, object]) -> dict[str, object]:
+    merged: dict[str, object] = {}
+    for key in primary.keys() | fallback.keys():
+        value = _merge_values(key, primary.get(key), fallback.get(key))
+        if value is not None:
+            merged[key] = value
+    return _prune_conflicting_fields(primary, fallback, merged)
+
+
+def _merge_values(key: str, primary: object | None, fallback: object | None) -> object | None:
+    if isinstance(primary, dict) and isinstance(fallback, dict):
+        merged = _merge_mappings(primary, fallback)
+        return merged or None
+
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+
+    if key == "organizationNumber":
+        if isinstance(primary, str) and _is_valid_org_number(primary):
+            return primary
+        if isinstance(fallback, str) and _is_valid_org_number(fallback):
+            return fallback
+        return None
+
+    if isinstance(primary, str) and isinstance(fallback, str):
+        if _should_replace_text_value(key, primary, fallback):
+            return fallback
+
+    return primary
+
+
+def _should_replace_text_value(key: str, primary: str, fallback: str) -> bool:
+    normalized_primary = " ".join(primary.lower().split())
+    normalized_fallback = " ".join(fallback.lower().split())
+
+    if not normalized_fallback:
+        return False
+    if not normalized_primary:
+        return True
+
+    if key in {"name", "customerName", "firstName", "lastName"}:
+        if _looks_suspicious_name_text(primary) and not _looks_suspicious_name_text(fallback):
+            return True
+        if normalized_fallback.startswith(normalized_primary) and len(
+            normalized_fallback
+        ) > len(normalized_primary):
+            return True
+
+    return False
+
+
+def _looks_suspicious_name_text(value: str) -> bool:
+    if _EMAIL_RE.search(value):
+        return True
+    return bool(
+        re.search(
+            (
+                r"\b(?:invoice comment|fakturakommentar|comment|kommentar|description|"
+                r"beskrivelse|project number|prosjektnummer|start date|startdato|"
+                r"end date|sluttdato|payment|betaling|department|avdeling)\b"
+            ),
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _prune_conflicting_fields(
+    primary: dict[str, object],
+    fallback: dict[str, object],
+    merged: dict[str, object],
+) -> dict[str, object]:
+    product_lookup = merged.get("productLookup")
+    description = merged.get("description")
+    if (
+        isinstance(product_lookup, dict)
+        and "productLookup" not in fallback
+        and isinstance(description, str)
+        and "description" in fallback
+    ):
+        product_name = product_lookup.get("name")
+        if isinstance(product_name, str) and _normalize_text(product_name) == _normalize_text(
+            description
+        ):
+            merged = dict(merged)
+            merged.pop("productLookup", None)
+
+    return merged
 
 
 def _build_generic_plan(
@@ -505,12 +861,20 @@ Important rules:
   - create department
   - create project linked to an existing customer
   - create invoice for an existing customer with one line item
-- Invoice payment, credit note, travel expense, correction, and module tasks are not yet implemented.
+  - register invoice payment
+  - create credit note for an existing invoice
+- Travel expense, correction, and module tasks are not yet implemented.
 - For people, split names into firstName and lastName when possible.
 - For projects, put customer references into customerName and/or customerOrganizationNumber.
-- For projects, put explicit project manager references into projectManagerName and/or projectManagerEmail.
+- For projects, put explicit project manager references into projectManagerName and/or
+  projectManagerEmail.
 - For invoices, put customer references into customerName and/or customerOrganizationNumber.
 - For invoice lines, put product references into productName and/or productNumber.
+- For invoice payment or credit note tasks, prefer invoiceNumber unless the prompt explicitly says
+  invoice id; extract invoiceId only when that wording is explicit.
+- For invoice payment tasks, put payment method hints into paymentTypeId and/or
+  paymentTypeDescription.
+- For credit note tasks, put the credit note date into creditNoteDate.
 - If a field is not present, leave it null.
 - Confidence should reflect how sure you are that the extraction is correct.
 """.strip()
@@ -524,21 +888,71 @@ def _extract_customer_payload(prompt: str) -> dict[str, object]:
     name = _extract_named_value(
         prompt,
         [
-            r"(?:customer|kunde)\s+(?:named|med navn|with name)\s+(?P<value>[^,\n]+)",
-            r"opprett\s+en\s+kunde\s+(?P<value>[^,\n]+)",
-            r"create\s+(?:a|an)\s+customer\s+(?P<value>[^,\n]+)",
+            (
+                r"(?:customer|kunde|company|selskap)\s+"
+                r"(?:named|med navn|with name|som heter|called)\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:opprett|registrer|lag|legg til)\s+(?:en\s+)?kunde"
+                r"(?:\s+(?:med navn|som heter))?\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:create|register|add)\s+(?:a|an)\s+customer"
+                r"(?:\s+(?:named|called|with name))?\s+(?P<value>[^,\n]+)"
+            ),
         ],
     )
     if name:
-        payload["name"] = name
+        payload["name"] = _strip_customer_suffixes(name)
 
     email_match = _EMAIL_RE.search(prompt)
     if email_match:
         payload["email"] = email_match.group("email")
 
-    org_match = _ORG_RE.search(prompt)
-    if org_match:
-        payload["organizationNumber"] = org_match.group("org")
+    invoice_email = _extract_named_value(
+        prompt,
+        [
+            (
+                r"(?:invoice email|billing email|faktura(?:e-?post| email))\s+"
+                r"(?P<value>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})"
+            ),
+        ],
+    )
+    if invoice_email:
+        payload["invoiceEmail"] = invoice_email
+
+    organization_number = _extract_org_number(prompt)
+    if organization_number:
+        payload["organizationNumber"] = organization_number
+
+    phone_number = _extract_named_value(
+        prompt,
+        [
+            r"(?:phone|telefon)\s+(?P<value>\+?\d[\d\s-]+)",
+        ],
+    )
+    if phone_number:
+        payload["phoneNumber"] = phone_number
+
+    mobile_number = _extract_named_value(
+        prompt,
+        [
+            r"(?:mobile|mobil(?:nummer)?)\s+(?P<value>\+?\d[\d\s-]+)",
+        ],
+    )
+    if mobile_number:
+        payload["phoneNumberMobile"] = mobile_number
+
+    language = _extract_named_value(
+        prompt,
+        [
+            r"(?:language|språk)\s+(?P<value>[^,\n]+)",
+        ],
+    )
+    if language:
+        normalized_language = _normalize_language(language)
+        if normalized_language is not None:
+            payload["language"] = normalized_language
 
     return payload
 
@@ -548,12 +962,20 @@ def _extract_employee_payload(prompt: str) -> dict[str, object]:
     full_name = _extract_named_value(
         prompt,
         [
-            r"(?:employee|ansatt)\s+(?:named|med navn|with name)\s+(?P<value>[^,\n]+)",
+            (
+                r"(?:employee|ansatt|new hire)\s+"
+                r"(?:named|med navn|with name|som heter|called)\s+(?P<value>[^,\n]+)"
+            ),
+            r"(?:create|register|add|hire)\s+(?:(?:a|an)\s+)?employee\s+(?P<value>[^,\n]+)",
+            (
+                r"(?:ansett|legg til|registrer)\s+(?:en\s+)?ansatt"
+                r"(?:\s+(?:med navn|som heter))?\s+(?P<value>[^,\n]+)"
+            ),
             r"oppdater\s+ansatt\s+(?P<value>[^,\n]+)",
         ],
     )
     if full_name:
-        parts = full_name.split()
+        parts = _strip_person_suffixes(full_name).split()
         if parts:
             payload["firstName"] = parts[0]
         if len(parts) > 1:
@@ -563,19 +985,69 @@ def _extract_employee_payload(prompt: str) -> dict[str, object]:
     if email_match:
         payload["email"] = email_match.group("email")
 
+    employee_number = _extract_named_value(
+        prompt,
+        [
+            r"(?:employee number|ansattnummer)\s+(?P<value>[A-Z0-9._-]+)",
+        ],
+    )
+    if employee_number:
+        payload["employeeNumber"] = employee_number
+
+    mobile_number = _extract_named_value(
+        prompt,
+        [
+            r"(?:mobile|mobil(?:nummer)?)\s+(?P<value>\+?\d[\d\s-]+)",
+            r"(?:phone|telefon)\s+(?P<value>\+?\d[\d\s-]+)",
+        ],
+    )
+    if mobile_number:
+        payload["phoneNumberMobile"] = mobile_number
+
+    comments = _extract_named_value(
+        prompt,
+        [
+            r"(?:comment|kommentar)\s+(?P<value>[^,\n]+)",
+        ],
+    )
+    if comments:
+        payload["comments"] = comments
+
     return payload
 
 
 def _extract_department_payload(prompt: str) -> dict[str, object]:
+    payload: dict[str, object] = {}
     name = _extract_named_value(
         prompt,
         [
-            r"(?:department|avdeling)\s+(?:named|med navn|with name)\s+(?P<value>[^,\n]+)",
-            r"opprett\s+en\s+avdeling\s+(?P<value>[^,\n]+)",
-            r"create\s+(?:a|an)\s+department\s+(?P<value>[^,\n]+)",
+            (
+                r"(?:department|avdeling)\s+"
+                r"(?:named|med navn|with name|som heter|called)\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:opprett|registrer|legg til)\s+(?:en\s+)?avdeling"
+                r"(?:\s+(?:med navn|som heter))?\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:create|register|add)\s+(?:a|an)\s+department"
+                r"(?:\s+(?:named|called|with name))?\s+(?P<value>[^,\n]+)"
+            ),
         ],
     )
-    return {"name": name} if name else {}
+    if name:
+        payload["name"] = _strip_department_suffixes(name)
+
+    department_number = _extract_named_value(
+        prompt,
+        [
+            r"(?:department number|avdelingsnummer)\s+(?P<value>[A-Z0-9._-]+)",
+        ],
+    )
+    if department_number:
+        payload["departmentNumber"] = department_number
+
+    return payload
 
 
 def _extract_product_payload(prompt: str) -> dict[str, object]:
@@ -583,9 +1055,18 @@ def _extract_product_payload(prompt: str) -> dict[str, object]:
     product_name = _extract_named_value(
         prompt,
         [
-            r"(?:product|produkt)\s+(?:named|med navn|with name)\s+(?P<value>[^,\n]+)",
-            r"create\s+(?:a|an)\s+product\s+(?P<value>[^,\n]+)",
-            r"opprett\s+et\s+produkt\s+(?P<value>[^,\n]+)",
+            (
+                r"(?:product|produkt)\s+"
+                r"(?:named|med navn|with name|som heter|called)\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:create|register|add)\s+(?:a|an)\s+product"
+                r"(?:\s+(?:named|called|with name))?\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:opprett|registrer|legg til)\s+(?:et|et nytt)?\s*produkt"
+                r"(?:\s+(?:med navn|som heter))?\s+(?P<value>[^,\n]+)"
+            ),
         ],
     )
     if product_name:
@@ -599,6 +1080,15 @@ def _extract_product_payload(prompt: str) -> dict[str, object]:
     )
     if product_number:
         payload["number"] = product_number
+
+    description = _extract_named_value(
+        prompt,
+        [
+            r"(?:description|beskrivelse)\s+(?P<value>[^,\n]+)",
+        ],
+    )
+    if description:
+        payload["description"] = description
 
     price_match = re.search(
         r"(?:price|pris)\s+(?:på\s+|of\s+)?(?P<value>\d+(?:[.,]\d+)?)",
@@ -621,6 +1111,7 @@ def _extract_product_payload(prompt: str) -> dict[str, object]:
 
 def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     payload: dict[str, object] = {}
+    customer_lookup: dict[str, object] = {}
     customer_name = _extract_named_value(
         prompt,
         [
@@ -628,7 +1119,14 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
         ],
     )
     if customer_name:
-        payload["customerLookup"] = {"customerName": _strip_invoice_suffixes(customer_name)}
+        customer_lookup["customerName"] = _strip_invoice_customer_suffixes(customer_name)
+
+    organization_number = _extract_org_number(prompt)
+    if organization_number:
+        customer_lookup.setdefault("organizationNumber", organization_number)
+
+    if customer_lookup:
+        payload["customerLookup"] = customer_lookup
 
     invoice_date = _extract_named_value(
         prompt,
@@ -647,6 +1145,33 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     )
     if due_date:
         payload["invoiceDueDate"] = due_date
+
+    delivery_date = _extract_named_value(
+        prompt,
+        [
+            r"(?:delivery date|leveringsdato)\s+(?P<value>\d{4}-\d{2}-\d{2})",
+        ],
+    )
+    if delivery_date:
+        payload["deliveryDate"] = delivery_date
+
+    invoice_comment = _extract_named_value(
+        prompt,
+        [
+            r"(?:invoice comment|fakturakommentar)\s+(?P<value>[^,\n]+)",
+        ],
+    )
+    if invoice_comment:
+        payload["invoiceComment"] = invoice_comment
+
+    comment = _extract_named_value(
+        prompt,
+        [
+            r"(?<!invoice\s)(?<!faktura\s)(?:comment|kommentar)\s+(?P<value>[^,\n]+)",
+        ],
+    )
+    if comment:
+        payload["comment"] = comment
 
     line: dict[str, object] = {}
     product_name = _extract_named_value(
@@ -669,8 +1194,17 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
         line.setdefault("productLookup", {})
         line["productLookup"]["productNumber"] = product_number
 
+    description = _extract_named_value(
+        prompt,
+        [
+            r"(?:line description|invoice line|description|beskrivelse)\s+(?P<value>[^,\n]+)",
+        ],
+    )
+    if description:
+        line["description"] = _strip_invoice_line_suffixes(description)
+
     quantity_match = re.search(
-        r"(?:quantity|count|antall)\s+(?P<value>\d+(?:[.,]\d+)?)",
+        r"(?:quantity|qty|count|antall|stk)\s+(?P<value>\d+(?:[.,]\d+)?)",
         prompt,
         flags=re.IGNORECASE,
     )
@@ -678,7 +1212,7 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
         line["count"] = _parse_decimal(quantity_match.group("value"))
 
     price_match = re.search(
-        r"(?:price|pris)\s+(?:på\s+|of\s+)?(?P<value>\d+(?:[.,]\d+)?)",
+        r"(?:unit price|enhetspris|price|pris)\s+(?:på\s+|of\s+)?(?P<value>\d+(?:[.,]\d+)?)",
         prompt,
         flags=re.IGNORECASE,
     )
@@ -691,18 +1225,170 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     return payload
 
 
+def _extract_invoice_action_components(
+    prompt: str, operation: Operation
+) -> tuple[dict[str, object], dict[str, object]]:
+    lookup = _extract_invoice_lookup(prompt)
+    fields: dict[str, object] = {}
+
+    if operation == Operation.REGISTER_PAYMENT:
+        payment_date = _extract_named_value(
+            prompt,
+            [
+                (
+                    r"(?:payment date|paid on|betalingsdato|betalt(?: på| den)?|on)\s+"
+                    r"(?P<value>\d{4}-\d{2}-\d{2})"
+                ),
+            ],
+        )
+        if payment_date:
+            fields["paymentDate"] = payment_date
+
+        payment_type = _extract_named_value(
+            prompt,
+            [
+                r"(?:payment type|payment method|betalingstype|betalingsmåte)\s+(?P<value>[^,\n]+)",
+                r"via\s+(?P<value>[^,\n]+)",
+            ],
+        )
+        if payment_type:
+            fields["paymentTypeLookup"] = {
+                "description": _strip_payment_type_suffixes(payment_type)
+            }
+
+        amount_match = re.search(
+            (
+                r"(?:paid amount|payment amount|amount|betalt beløp|beløp)\s+"
+                r"(?:på\s+|of\s+)?(?P<value>\d+(?:[.,]\d+)?)"
+            ),
+            prompt,
+            flags=re.IGNORECASE,
+        )
+        if amount_match is None:
+            amount_match = re.search(
+                r"(?:payment|betaling)\s+(?:of|på)\s+(?P<value>\d+(?:[.,]\d+)?)",
+                prompt,
+                flags=re.IGNORECASE,
+            )
+        if amount_match is None:
+            amount_match = re.search(
+                r"(?:pay|paid|betal)\s+(?P<value>\d+(?:[.,]\d+)?)",
+                prompt,
+                flags=re.IGNORECASE,
+            )
+        if amount_match:
+            fields["paidAmount"] = _parse_decimal(amount_match.group("value"))
+
+        if "paymentTypeLookup" not in fields:
+            if re.search(r"\b(?:bank|bankkonto|bank account)\b", prompt, flags=re.IGNORECASE):
+                fields["paymentTypeLookup"] = {"query": "bank"}
+            elif re.search(r"\b(?:cash|kontant)\b", prompt, flags=re.IGNORECASE):
+                fields["paymentTypeLookup"] = {"query": "kontant"}
+
+    if operation == Operation.CREATE_CREDIT_NOTE:
+        credit_note_date = _extract_named_value(
+            prompt,
+            [
+                (
+                    r"(?:credit note date|credit memo date|kreditnotadato|date|dated|on)\s+"
+                    r"(?P<value>\d{4}-\d{2}-\d{2})"
+                ),
+            ],
+        )
+        if credit_note_date:
+            fields["creditNoteDate"] = credit_note_date
+
+        comment = _extract_named_value(
+            prompt,
+            [
+                r"(?:comment|kommentar)\s+(?P<value>[^,\n]+)",
+                r"(?:reason|because|på grunn av|pga)\s+(?P<value>[^,\n]+)",
+            ],
+        )
+        if comment:
+            fields["comment"] = comment
+
+        email_match = _EMAIL_RE.search(prompt)
+        if email_match:
+            fields["creditNoteEmail"] = email_match.group("email")
+
+    return lookup, fields
+
+
+def _extract_invoice_lookup(prompt: str) -> dict[str, object]:
+    lookup: dict[str, object] = {}
+
+    invoice_id = _extract_named_value(
+        prompt,
+        [
+            r"(?:invoice id|fakturaid|faktura id)\s+(?P<value>\d+)",
+        ],
+    )
+    if invoice_id:
+        lookup["id"] = int(invoice_id)
+
+    invoice_number = _extract_named_value(
+        prompt,
+        [
+            (
+                r"(?:invoice number|invoice no\.?|invoice nr\.?|fakturanummer|"
+                r"faktura nr\.?)\s*#?(?P<value>\d+)"
+            ),
+            r"(?:invoice|faktura)\s*#(?P<value>\d+)",
+            r"(?:for|på|on)?\s*(?:invoice|faktura)\s+(?P<value>\d+)",
+        ],
+    )
+    if invoice_number:
+        lookup["invoiceNumber"] = invoice_number
+
+    invoice_date = _extract_named_value(
+        prompt,
+        [
+            r"(?:invoice date|fakturadato)\s+(?P<value>\d{4}-\d{2}-\d{2})",
+        ],
+    )
+    if invoice_date:
+        lookup["invoiceDate"] = invoice_date
+
+    customer_name = _extract_named_value(
+        prompt,
+        [
+            r"(?:for|til)\s+(?:customer|kunde)\s+(?P<value>[^,\n]+)",
+        ],
+    )
+    customer_lookup: dict[str, object] = {}
+    if customer_name:
+        customer_lookup["customerName"] = _strip_invoice_customer_suffixes(customer_name)
+    organization_number = _extract_org_number(prompt)
+    if organization_number:
+        customer_lookup.setdefault("organizationNumber", organization_number)
+    if customer_lookup:
+        lookup["customerLookup"] = customer_lookup
+
+    return lookup
+
+
 def _extract_project_payload(prompt: str) -> dict[str, object]:
     payload: dict[str, object] = {}
     project_name = _extract_named_value(
         prompt,
         [
-            r"(?:project|prosjekt)\s+(?:named|med navn|with name)\s+(?P<value>[^,\n]+)",
-            r"create\s+(?:a|an)\s+project\s+(?P<value>[^,\n]+)",
-            r"opprett\s+et\s+prosjekt\s+(?P<value>[^,\n]+)",
+            (
+                r"(?:project|prosjekt)\s+"
+                r"(?:named|med navn|with name|som heter|called)\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:create|register|add)\s+(?:a|an)\s+project"
+                r"(?:\s+(?:named|called|with name))?\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:opprett|registrer|legg til|sett opp)\s+(?:et\s+)?prosjekt"
+                r"(?:\s+(?:med navn|som heter))?\s+(?P<value>[^,\n]+)"
+            ),
         ],
     )
     if project_name:
-        payload["name"] = project_name
+        payload["name"] = _strip_project_suffixes(project_name)
 
     customer_name = _extract_named_value(
         prompt,
@@ -713,15 +1399,23 @@ def _extract_project_payload(prompt: str) -> dict[str, object]:
     if customer_name:
         payload["customerLookup"] = {"customerName": _strip_project_manager_clause(customer_name)}
 
+    organization_number = _extract_org_number(prompt)
+    if organization_number:
+        payload.setdefault("customerLookup", {})
+        payload["customerLookup"].setdefault("organizationNumber", organization_number)
+
     project_manager_name = _extract_named_value(
         prompt,
         [
-            r"(?:project manager|prosjektleder)\s+(?:named|med navn|with name)\s+(?P<value>[^,\n]+)",
+            (
+                r"(?:project manager|prosjektleder)\s+"
+                r"(?:named|med navn|with name)\s+(?P<value>[^,\n]+)"
+            ),
             r"(?:project manager|prosjektleder)\s+(?P<value>[^,\n]+)",
         ],
     )
     if project_manager_name:
-        names = project_manager_name.split()
+        names = _strip_person_suffixes(project_manager_name).split()
         manager_lookup: dict[str, object] = {}
         if names:
             manager_lookup["firstName"] = names[0]
@@ -729,6 +1423,33 @@ def _extract_project_payload(prompt: str) -> dict[str, object]:
             manager_lookup["lastName"] = " ".join(names[1:])
         if manager_lookup:
             payload["projectManagerLookup"] = manager_lookup
+
+    project_number = _extract_named_value(
+        prompt,
+        [
+            r"(?:project number|prosjektnummer)\s+(?P<value>[A-Z0-9._-]+)",
+        ],
+    )
+    if project_number:
+        payload["number"] = project_number
+
+    start_date = _extract_named_value(
+        prompt,
+        [
+            r"(?:start date|startdato)\s+(?P<value>\d{4}-\d{2}-\d{2})",
+        ],
+    )
+    if start_date:
+        payload["startDate"] = start_date
+
+    end_date = _extract_named_value(
+        prompt,
+        [
+            r"(?:end date|sluttdato)\s+(?P<value>\d{4}-\d{2}-\d{2})",
+        ],
+    )
+    if end_date:
+        payload["endDate"] = end_date
 
     email_matches = _EMAIL_RE.findall(prompt)
     if project_manager_name and email_matches:
@@ -751,10 +1472,20 @@ def _clean_extracted_value(value: str) -> str:
     return cleaned
 
 
+def _strip_suffixes(value: str, stop_patterns: list[str]) -> str:
+    cleaned = value
+    for pattern in stop_patterns:
+        cleaned = re.split(pattern, cleaned, maxsplit=1, flags=re.IGNORECASE)[0]
+    return _clean_extracted_value(cleaned)
+
+
 def _strip_project_manager_clause(value: str) -> str:
-    cleaned = re.split(r"\b(?:project manager|prosjektleder)\b", value, maxsplit=1, flags=re.IGNORECASE)[
-        0
-    ]
+    cleaned = re.split(
+        r"\b(?:project manager|prosjektleder)\b",
+        value,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
     return _clean_extracted_value(cleaned)
 
 
@@ -763,30 +1494,153 @@ def _parse_decimal(value: str) -> float:
 
 
 def _strip_product_suffixes(value: str) -> str:
-    cleaned = re.split(
-        r"\b(?:product number|produktnummer|varenummer|price|pris|cost|kost(?:pris)?)\b",
+    return _strip_suffixes(
         value,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    return _clean_extracted_value(cleaned)
+        [
+            (
+                r"\b(?:and|og)\s+(?:product number|produktnummer|varenummer|price|pris|"
+                r"cost|kost(?:pris)?|description|beskrivelse)\b"
+            ),
+            (
+                r"\b(?:product number|produktnummer|varenummer|price|pris|cost|"
+                r"kost(?:pris)?|description|beskrivelse)\b"
+            ),
+        ],
+    )
 
 
-def _strip_invoice_suffixes(value: str) -> str:
-    cleaned = re.split(
-        r"\b(?:with|med)\s+(?:product|produkt)\b|\b(?:product number|produktnummer|varenummer|price|pris|quantity|count|antall)\b",
+def _strip_customer_suffixes(value: str) -> str:
+    return _strip_suffixes(
         value,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    return _clean_extracted_value(cleaned)
+        [
+            (
+                r"\b(?:and|og)\s+(?:e-?post|email|invoice email|billing email|"
+                r"faktura(?:e-?post| email)|organization number|organisasjonsnummer|orgnr|"
+                r"phone|telefon|mobile|mobil(?:nummer)?|language|språk|description|beskrivelse)\b"
+            ),
+            (
+                r"\b(?:e-?post|email|invoice email|billing email|faktura(?:e-?post| email)|"
+                r"organization number|organisasjonsnummer|orgnr|phone|telefon|mobile|"
+                r"mobil(?:nummer)?|language|språk|description|beskrivelse)\b"
+            ),
+        ],
+    )
+
+
+def _strip_person_suffixes(value: str) -> str:
+    return _strip_suffixes(
+        value,
+        [
+            (
+                r"\b(?:and|og)\s+(?:email|e-?post|employee number|ansattnummer|mobile|"
+                r"mobil(?:nummer)?|phone|telefon|comment|kommentar|department|avdeling|"
+                r"project number|prosjektnummer|start date|startdato|end date|sluttdato)\b"
+            ),
+            (
+                r"\b(?:email|e-?post|employee number|ansattnummer|mobile|mobil(?:nummer)?|"
+                r"phone|telefon|comment|kommentar|department|avdeling|project number|"
+                r"prosjektnummer|start date|startdato|end date|sluttdato)\b"
+            ),
+            _EMAIL_RE.pattern,
+        ],
+    )
+
+
+def _strip_department_suffixes(value: str) -> str:
+    return _strip_suffixes(
+        value,
+        [
+            r"\b(?:and|og)\s+(?:department number|avdelingsnummer)\b",
+            r"\b(?:department number|avdelingsnummer)\b",
+        ],
+    )
+
+
+def _strip_invoice_customer_suffixes(value: str) -> str:
+    return _strip_suffixes(
+        value,
+        [
+            (
+                r"\b(?:with|med)\s+(?:product|produkt)\b|"
+                r"\b(?:project manager|prosjektleder)\b|"
+                r"\b(?:invoice date|fakturadato|due date|forfallsdato|delivery date|leveringsdato|"
+                r"comment|kommentar|invoice comment|fakturakommentar|product number|"
+                r"produktnummer|varenummer|price|pris|quantity|qty|count|antall|stk|"
+                r"line description|invoice line|description|beskrivelse)\b"
+            ),
+        ],
+    )
 
 
 def _strip_invoice_line_suffixes(value: str) -> str:
-    cleaned = re.split(
-        r"\b(?:product number|produktnummer|varenummer|price|pris|quantity|count|antall)\b",
+    return _strip_suffixes(
         value,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    return _clean_extracted_value(cleaned)
+        [
+            (
+                r"\b(?:and|og)\s+(?:product number|produktnummer|varenummer|price|pris|"
+                r"unit price|enhetspris|quantity|qty|count|antall|stk|description|"
+                r"beskrivelse)\b"
+            ),
+            (
+                r"\b(?:product number|produktnummer|varenummer|price|pris|unit price|"
+                r"enhetspris|quantity|qty|count|antall|stk|description|beskrivelse)\b"
+            ),
+        ],
+    )
+
+
+def _strip_payment_type_suffixes(value: str) -> str:
+    return _strip_suffixes(
+        value,
+        [
+            (
+                r"\b(?:paid amount|payment amount|amount|betalt beløp|beløp|payment date|"
+                r"betalingsdato|date|dato)\b"
+            ),
+        ],
+    )
+
+
+def _strip_project_suffixes(value: str) -> str:
+    return _strip_suffixes(
+        value,
+        [
+            (
+                r"\b(?:for|tilknyttet)\s+(?:customer|kunde)\b|"
+                r"\b(?:project manager|prosjektleder)\b|"
+                r"\b(?:project number|prosjektnummer|start date|startdato|end date|sluttdato)\b"
+            ),
+        ],
+    )
+
+
+def _extract_org_number(prompt: str) -> str | None:
+    labeled = _extract_named_value(
+        prompt,
+        [
+            r"(?:organization number|organisasjonsnummer|orgnr)\s+(?P<value>\d{3}\s?\d{3}\s?\d{3})",
+        ],
+    )
+    if labeled:
+        return labeled
+    org_match = _ORG_RE.search(prompt)
+    if org_match:
+        return org_match.group("org")
+    return None
+
+
+def _is_valid_org_number(value: str) -> bool:
+    return bool(re.fullmatch(r"\d{3}\s?\d{3}\s?\d{3}", value.strip()))
+
+
+def _normalize_text(value: str) -> str:
+    return " ".join(value.lower().split())
+
+
+def _normalize_language(value: str) -> Literal["NO", "EN"] | None:
+    normalized = " ".join(value.lower().split())
+    if normalized in {"no", "nb", "nn", "norsk", "norwegian"}:
+        return "NO"
+    if normalized in {"en", "engelsk", "english"}:
+        return "EN"
+    return None

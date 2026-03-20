@@ -14,21 +14,25 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from tripletex_agent.client import TripletexClient  # noqa: E402
-from tripletex_agent.client import TripletexAPIError  # noqa: E402
+from tripletex_agent.client import (  # noqa: E402
+    TripletexAPIError,  # noqa: E402
+    TripletexClient,  # noqa: E402
+)
 from tripletex_agent.config import AppSettings  # noqa: E402
 from tripletex_agent.planner import build_default_planner  # noqa: E402
+from tripletex_agent.task_plan import TaskFamily  # noqa: E402
 from tripletex_agent.workflows import (  # noqa: E402
     CustomerCreateWorkflow,
     DepartmentCreateWorkflow,
     EmployeeCreateWorkflow,
     InvoiceCreateWorkflow,
+    InvoiceCreditNoteWorkflow,
+    InvoicePaymentWorkflow,
     ProductCreateWorkflow,
     ProjectCreateWorkflow,
     StubWorkflow,
     WorkflowRegistry,
 )
-from tripletex_agent.task_plan import TaskFamily  # noqa: E402
 from tripletex_agent.workflows.base import WorkflowExecutionError  # noqa: E402
 
 
@@ -41,6 +45,8 @@ def build_registry() -> WorkflowRegistry:
             DepartmentCreateWorkflow(),
             ProjectCreateWorkflow(),
             InvoiceCreateWorkflow(),
+            InvoicePaymentWorkflow(),
+            InvoiceCreditNoteWorkflow(),
         ],
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )

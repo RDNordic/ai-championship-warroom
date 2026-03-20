@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,22 @@ from .models import TripletexCredentials
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
+
+
+def configure_logging(log_level: str) -> None:
+    """Ensure Tripletex agent logs are visible during local and tunnel runs."""
+
+    agent_logger = logging.getLogger("tripletex_agent")
+    if not agent_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
+        agent_logger.addHandler(handler)
+
+    resolved_level = getattr(logging, log_level.upper(), logging.INFO)
+    agent_logger.setLevel(resolved_level)
+    agent_logger.propagate = False
 
 
 def load_local_env(env_path: Path = DEFAULT_ENV_PATH) -> None:
@@ -41,10 +58,12 @@ class AppSettings:
     host: str
     port: int
     log_level: str
+    solve_event_log_path: Path
 
     @classmethod
-    def load(cls) -> "AppSettings":
+    def load(cls) -> AppSettings:
         load_local_env()
+        configured_log_path = os.getenv("SOLVE_EVENT_LOG_PATH")
         return cls(
             tripletex_base_url=os.getenv("TRIPLETEX_BASE_URL"),
             tripletex_session_token=os.getenv("TRIPLETEX_SESSION_TOKEN"),
@@ -53,12 +72,16 @@ class AppSettings:
             host=os.getenv("HOST", "0.0.0.0"),
             port=int(os.getenv("PORT", "8000")),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
+            solve_event_log_path=Path(configured_log_path)
+            if configured_log_path
+            else PROJECT_ROOT / "logs" / "solve-events.jsonl",
         )
 
     def tripletex_credentials(self) -> TripletexCredentials:
         if not self.tripletex_base_url or not self.tripletex_session_token:
             raise ValueError(
-                "TRIPLETEX_BASE_URL and TRIPLETEX_SESSION_TOKEN must be set in the environment or .env"
+                "TRIPLETEX_BASE_URL and TRIPLETEX_SESSION_TOKEN must be set "
+                "in the environment or .env"
             )
 
         return TripletexCredentials(
