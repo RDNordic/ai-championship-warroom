@@ -21,15 +21,22 @@ from .solve_logging import SolveEventLogger, SolveRequestContext
 from .task_plan import TaskFamily, TaskPlan
 from .workflows import (
     CustomerCreateWorkflow,
+    CustomerDeleteWorkflow,
+    CustomerUpdateWorkflow,
     DepartmentCreateWorkflow,
+    DepartmentDeleteWorkflow,
     EmployeeCreateWorkflow,
+    EmployeeUpdateWorkflow,
     InvoiceCreateWorkflow,
     InvoiceCreditNoteWorkflow,
     InvoicePaymentWorkflow,
     ProductCreateWorkflow,
+    ProductDeleteWorkflow,
     ProjectCreateWorkflow,
+    ProjectDeleteWorkflow,
     StubWorkflow,
     TravelExpenseCreateWorkflow,
+    TravelExpenseDeleteWorkflow,
     WorkflowRegistry,
 )
 
@@ -256,6 +263,7 @@ def build_default_service() -> SolverService:
     settings = AppSettings.load()
     workflows = WorkflowRegistry(
         workflows=[
+            # Creates
             CustomerCreateWorkflow(),
             ProductCreateWorkflow(),
             EmployeeCreateWorkflow(),
@@ -265,6 +273,15 @@ def build_default_service() -> SolverService:
             InvoicePaymentWorkflow(),
             InvoiceCreditNoteWorkflow(),
             TravelExpenseCreateWorkflow(),
+            # Updates
+            CustomerUpdateWorkflow(),
+            EmployeeUpdateWorkflow(),
+            # Deletes
+            CustomerDeleteWorkflow(),
+            ProductDeleteWorkflow(),
+            DepartmentDeleteWorkflow(),
+            ProjectDeleteWorkflow(),
+            TravelExpenseDeleteWorkflow(),
         ],
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )

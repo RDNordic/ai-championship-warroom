@@ -325,7 +325,15 @@ class KeywordTaskPlanner:
             TaskFamily.TRAVEL_EXPENSES,
             Operation.DELETE,
             "travel_expense",
-            ("delete travel", "slett reise"),
+            (
+                "delete travel",
+                "remove travel",
+                "slett reise",
+                "fjern reise",
+                "ta bort reise",
+                "delete expense",
+                "slett utlegg",
+            ),
         ),
         IntentRule(
             TaskFamily.TRAVEL_EXPENSES,
@@ -337,7 +345,77 @@ class KeywordTaskPlanner:
             TaskFamily.EMPLOYEES,
             Operation.UPDATE,
             "employee",
-            ("update employee", "oppdater ansatt"),
+            (
+                "update employee",
+                "edit employee",
+                "change employee",
+                "modify employee",
+                "oppdater ansatt",
+                "endre ansatt",
+                "rediger ansatt",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.DELETE,
+            "customer",
+            (
+                "delete customer",
+                "remove customer",
+                "slett kunde",
+                "fjern kunde",
+                "ta bort kunde",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.UPDATE,
+            "customer",
+            (
+                "update customer",
+                "edit customer",
+                "change customer",
+                "modify customer",
+                "oppdater kunde",
+                "endre kunde",
+                "rediger kunde",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.DELETE,
+            "product",
+            (
+                "delete product",
+                "remove product",
+                "slett produkt",
+                "fjern produkt",
+                "ta bort produkt",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.DEPARTMENTS,
+            Operation.DELETE,
+            "department",
+            (
+                "delete department",
+                "remove department",
+                "slett avdeling",
+                "fjern avdeling",
+                "ta bort avdeling",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.PROJECTS,
+            Operation.DELETE,
+            "project",
+            (
+                "delete project",
+                "remove project",
+                "slett prosjekt",
+                "fjern prosjekt",
+                "ta bort prosjekt",
+            ),
         ),
         IntentRule(
             TaskFamily.EMPLOYEES,
@@ -559,6 +637,10 @@ def _plan_from_extraction(
         lookup = _lookup_for_extraction(extraction)
         entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
         fields_to_set = payload
+
+    if extraction.operation == Operation.DELETE and entity_type != "unknown":
+        lookup = _lookup_for_extraction(extraction)
+        entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
 
     if extraction.operation in (Operation.REGISTER_PAYMENT, Operation.CREATE_CREDIT_NOTE):
         if entity_type == "invoice":
@@ -1066,15 +1148,22 @@ Important rules:
 - If the prompt is outside the currently supported slice, return unknown.
 - The currently supported live implementation slice is:
   - create customer
+  - update customer (change name, email, phone, address, etc.)
+  - delete customer
   - create product
+  - delete product
   - create employee
+  - update employee (change name, email, phone, comments)
   - create department
+  - delete department
   - create project linked to an existing customer
+  - delete project
   - create invoice for an existing customer with one line item
   - register invoice payment
   - create credit note for an existing invoice
-- Travel expense create is now supported; correction, deletion, and module tasks
-  are not yet implemented.
+  - create travel expense report
+  - delete travel expense report
+- Module activation and voucher reversal tasks are not yet implemented.
 - For travel expenses, put employee references into employeeName and/or employeeEmail.
 - For travel expenses, put cost items into the costs array with description, amount, and date.
 - For travel expenses, put mileage items into the mileageAllowances array with km, date, and
