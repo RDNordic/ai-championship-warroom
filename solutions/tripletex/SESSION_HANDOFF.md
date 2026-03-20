@@ -1,145 +1,138 @@
 # SESSION_HANDOFF.md
 
-## Checkpoint
+## Current State
 
-Endpoint was **LIVE at 0/7**. This session added 9 new workflows and fixed 2 broken ones.
-Score should improve significantly on next submission.
+**Score: 5.0 — Rank #221 — 11/30 tasks solved**
+**Branch: `feature/tripletex-multiline-invoice`** (not yet merged to main)
+**Last commit: `379338d`**
 
-## What Was Done This Session
+---
 
-### New workflows added (9)
-| Workflow | Pattern | Status |
+## What's Running
+
+- Server: `.venv/Scripts/uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000`
+- Tunnel: `npx cloudflared tunnel --url http://localhost:8000`
+- Last tunnel URL: `https://silence-reggae-cause-gained.trycloudflare.com/solve` (**ephemeral — will change**)
+- Register URL at: `https://app.ainm.no/submit/tripletex`
+
+---
+
+## Workflows (20 total)
+
+### Working / Confirmed
+| Workflow | Status |
+|---|---|
+| CustomerCreate | Fixed (isCustomer removed) |
+| CustomerUpdate | Coded |
+| CustomerDelete | Coded |
+| ProductCreate | Live |
+| ProductDelete | Coded |
+| EmployeeCreate | Live |
+| EmployeeUpdate | Coded |
+| DepartmentCreate | Fixed (multi-entity names[]) |
+| DepartmentDelete | Coded |
+| ProjectCreate | Confirmed live |
+| ProjectDelete | Coded |
+| InvoiceCreate+Send | Live, multi-line + VAT added this session |
+| InvoicePayment | Live |
+| InvoiceCreditNote | Live |
+| TravelExpenseCreate | Sandbox validated |
+| TravelExpenseDelete | Coded |
+| VoucherReverse | Fixed (customer→invoice→voucher path) |
+
+---
+
+## Tasks Seen From Platform (Real Competition Prompts)
+
+| Prompt type | Our handling | Notes |
 |---|---|---|
-| CustomerDeleteWorkflow | GET /customer → DELETE /customer/{id} | Coded, untested live |
-| CustomerUpdateWorkflow | GET /customer → PUT /customer/{id} | Coded, untested live |
-| ProductDeleteWorkflow | GET /product → DELETE /product/{id} | Coded, untested live |
-| EmployeeUpdateWorkflow | GET /employee → PUT /employee/{id} | Coded, untested live |
-| DepartmentDeleteWorkflow | GET /department → DELETE /department/{id} | Coded, untested live |
-| ProjectDeleteWorkflow | GET /project → DELETE /project/{id} | Coded, untested live |
-| TravelExpenseDeleteWorkflow | GET /travelExpense → DELETE /travelExpense/{id} | Coded, untested live |
-| VoucherReverseWorkflow | GET /ledger/voucher → PUT /ledger/voucher/{id}/:reverse | Coded, untested live |
+| CustomerCreate (DE/ES/FR) | ✓ Working | 8/8 checks passed |
+| ProjectCreate (FR, basic) | ✓ Runs | Partial — misses fixed price/milestone |
+| DepartmentCreate (3 depts, Nynorsk) | ✓ Fixed | names[] loop |
+| Invoice multi-line + VAT (NO) | ✓ NEW — untested live | lines[] + vatPercent added |
+| Payment reversal (ES) | ✓ Fixed | customer→invoice→voucher path |
+| Order→invoice→payment (Nynorsk) | ✗ StubWorkflow | Complex 3-step, not implemented |
+| Time tracking + project invoice (FR) | ✗ StubWorkflow | Tier 3, out of scope |
+| Accounting dimension + voucher (NO) | ✗ StubWorkflow | Tier 3, out of scope |
 
-### Fixes
-- **CustomerCreate**: removed `isCustomer: True` from POST body (was likely causing proxy rejection as read-only field); added `_normalize_language()` to map EN/ENG/ENGLISH → EN, NO/NB/NN → NO
-- **DepartmentCreate**: now supports multi-entity prompts ("Create depts: X, Y, Z") via `names: list[str]` in planner schema + loop in workflow
-- **Planner**: DELETE/REVERSE handling added to `_plan_from_extraction`; expanded keyword rules for all new operations (EN + NO); LLM system prompt updated with all new supported operations
+---
 
-### Commits
-- `9a48b99` tripletex: add delete+update workflows — 7 new task types
-- `9b5d07d` tripletex: fix CustomerCreate + DepartmentCreate multi-entity
-- `9494c2c` tripletex: add VoucherReverseWorkflow + expand REVERSE planner coverage
+## Highest ROI Next Work
 
-## Current Workflow Coverage (18 workflows)
+### 1. Order→Invoice workflow (Tier 2, seen in logs)
+Prompt: *"Opprett ein ordre for Strandvik AS med produkta X og Y. Konverter ordren til faktura og registrer full betaling."*
+= POST /order + orderLines → PUT /order/{id}/:invoice → PUT /invoice/{id}/:payment
+This is a 3-step workflow but all parts exist. High ROI.
 
-### Creates (9)
-- CustomerCreate ✓ (fixed — `isCustomer` removed)
-- ProductCreate ✓
-- EmployeeCreate ✓ (requires default dept)
-- DepartmentCreate ✓ (now multi-entity capable)
-- ProjectCreate ✓ (confirmed live)
-- InvoiceCreate+Send ✓ (send semantics implemented)
-- InvoicePayment ✓
-- InvoiceCreditNote ✓
-- TravelExpenseCreate ✓ (sandbox validated)
+### 2. Merge feature branch to main
+`git checkout main && git merge feature/tripletex-multiline-invoice`
+So Chris can pull latest.
 
-### Updates (2)
-- CustomerUpdate (new)
-- EmployeeUpdate (new)
+### 3. Submit and check logs after each fix
+Check: `.venv/Scripts/python scripts/inspect_solve_logs.py recent --limit 10`
 
-### Deletes (5)
-- CustomerDelete (new)
-- ProductDelete (new)
-- DepartmentDelete (new)
-- ProjectDelete (new)
-- TravelExpenseDelete (new)
+---
 
-### Corrections (1)
-- VoucherReverse (new)
+## How to Start the Server (Windows PowerShell)
 
-### Still Missing (StubWorkflow → 0 pts)
-- EmployeeDelete
-- Module activation (company/salesmodules)
-- PDF/image attachment extraction
-- Complex voucher/ledger tasks (Tier 3)
+**Kill any existing process on port 8000 first:**
+```powershell
+netstat -ano | findstr :8000
+taskkill /PID <PID> /F
+```
 
-## Handoff Contract
+**Terminal 1 — server:**
+```powershell
+cd "c:\Users\John Brown\ai-championship-warroom\solutions\tripletex"
+.venv/Scripts/uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000
+```
 
-- Branch: `feature/tripletex-coverage-expansion` at commit `9494c2c`
-- `.venv` set up and working (Python 3.14.2)
-- `.env` file EXISTS with valid credentials
-- Server command: `.venv/Scripts/uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000`
-- Tunnel command: `npx cloudflared tunnel --url http://localhost:8000`
-- **Tunnel URL is ephemeral** — must re-register at `https://app.ainm.no/submit/tripletex` each restart
+**Terminal 2 — tunnel:**
+```powershell
+npx cloudflared tunnel --url http://localhost:8000
+```
+Copy the trycloudflare.com URL, add `/solve`, register at `https://app.ainm.no/submit/tripletex`.
 
-## Priority Work Order (Next Session)
+---
 
-### IMMEDIATE
-1. **Start endpoint** — uvicorn + cloudflared + register URL
-2. **Submit** — the new workflows are live, get a baseline score
-3. **Check logs** — `python scripts/inspect_solve_logs.py recent --limit 20`
+## Key Files
+- Workflows: `src/tripletex_agent/workflows/live.py`
+- Planner: `src/tripletex_agent/planner.py`
+- Service registry: `src/tripletex_agent/service.py`
+- Logs: `logs/solve-events.jsonl`
+- Tests: `.venv/Scripts/pytest -q` (65 pass)
 
-### If CustomerCreate still fails
-- Check the actual error from logs
-- Try: `python scripts/run_prompt.py --execute "Create customer Test AS with org 123456789"`
-- The `isCustomer` fix should help; if still failing check the actual API error detail
+---
 
-### High-value additions
-4. **EmployeeDelete** — simple GET + DELETE /employee/{id}, 15-min job
-5. **ProductUpdate** — GET + PUT /product/{id}, 30-min job
-6. **Travel expense deliver/approve** — PUT /travelExpense/{id}/:deliver after create
-7. **Improve voucher lookup** — currently requires voucherNumber; try adding description/date search
+## Restart Prompt for Next Session
 
-### Planner improvements
-- The LLM planner system prompt now covers all current operations
-- Watch for prompts that route to StubWorkflow — add keywords for those patterns
-- Multi-employee create (same pattern as multi-department) — low priority
-
-## Validation
-
-- `.venv/Scripts/pytest -q`: 65 passed
-- All new workflows coded but NOT yet tested against proxy
-- CustomerCreate fix: isCustomer removed — should fix proxy rejection
-- Test before trusting any new workflow in live submission
-
-## Session Archive
-
-- `solutions/tripletex/session_archive/2026-03-20-scaffold-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-invoice-create-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-validated-invoicing-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-pre-first-solve-submission-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-conversational-prompt-layer-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-log-observability-and-plan-refresh-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-invoice-send-semantics-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-invoice-drift-hardening-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-pre-api-call-plan-dry-run-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-api-call-plan-dry-run-checkpoint.md`
-
-## Restart Prompt
-
-```text
-Branch: feature/tripletex-coverage-expansion at commit 9494c2c
-Scope: solutions/tripletex/ only.
+```
+Branch: feature/tripletex-multiline-invoice (or merge to main first)
+Score: 5.0, rank #221, 11/30 tasks solved
+Last commit: 379338d
 
 Read solutions/tripletex/SESSION_HANDOFF.md first.
 
-STEP 1 — GET ENDPOINT LIVE:
+STEP 1 — merge to main if not done:
+  git checkout main
+  git merge feature/tripletex-multiline-invoice
+  git checkout -b feature/tripletex-order-invoice
+
+STEP 2 — kill port 8000 and start server:
+  netstat -ano | findstr :8000  → taskkill /PID <X> /F
   cd solutions/tripletex
   .venv/Scripts/uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000
+
+STEP 3 — tunnel:
   npx cloudflared tunnel --url http://localhost:8000
-  Register tunnel URL + /solve at https://app.ainm.no/submit/tripletex
+  Register new URL + /solve at app.ainm.no/submit/tripletex
 
-STEP 2 — SUBMIT:
-  Hit submit on the platform and wait for results.
-  Check: python scripts/inspect_solve_logs.py recent --limit 20
+STEP 4 — submit and check logs:
+  .venv/Scripts/python scripts/inspect_solve_logs.py recent --limit 10
 
-STEP 3 — DEBUG IF NEEDED:
-  CustomerCreate fix shipped (isCustomer removed). If still failing:
-    python scripts/run_prompt.py --execute "Create customer Test AS"
-  DepartmentCreate multi-entity fix shipped. Test:
-    python scripts/run_prompt.py "Opprett tre avdelingar: Logistikk, Kundeservice, HR"
-
-STEP 4 — NEXT WORKFLOWS (by ROI):
-  - EmployeeDelete: GET /employee → DELETE /employee/{id}
-  - ProductUpdate: GET /product → PUT /product/{id}
-  - Travel expense deliver: add deliver=true support to planner extraction
+STEP 5 — implement Order→Invoice workflow (highest ROI unsolved task):
+  POST /order with orderLines
+  PUT /order/{id}/:invoice → creates invoice
+  PUT /invoice/{id}/:payment → registers payment
+  Keywords: "ordre", "order", "konverter", "convert to invoice"
 ```
