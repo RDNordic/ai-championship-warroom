@@ -13,6 +13,7 @@ _DEFAULT_INVOICE_BANK_ACCOUNT_NUMBER = "12345678903"
 _DEFAULT_INVOICE_DUE_DAYS = 14
 _DEFAULT_INVOICE_LOOKUP_DATE_FROM = "2000-01-01"
 _DEFAULT_INVOICE_LOOKUP_DATE_TO = "2100-01-01"
+_DEFAULT_EMPLOYEE_USER_TYPE = "NO_ACCESS"
 
 
 def _compact_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
@@ -318,6 +319,21 @@ class EmployeeCreateWorkflow(BaseWorkflow):
         if not isinstance(last_name, str) or not last_name.strip():
             raise WorkflowExecutionError("Employee creation requires lastName")
 
+        user_type = fields.get("userType")
+        normalized_user_type = (
+            user_type.strip().upper()
+            if isinstance(user_type, str) and user_type.strip()
+            else _DEFAULT_EMPLOYEE_USER_TYPE
+        )
+        if normalized_user_type not in {"STANDARD", "EXTENDED", "NO_ACCESS"}:
+            raise WorkflowExecutionError(
+                f"Employee creation received unsupported userType {normalized_user_type!r}"
+            )
+        department = await _resolve_employee_department(client, fields)
+        department_id = _extract_id(department)
+        if department_id is None:
+            raise WorkflowExecutionError("Matched department did not include an id")
+
         body = _compact_mapping(
             {
                 "firstName": first_name.strip(),
@@ -327,6 +343,8 @@ class EmployeeCreateWorkflow(BaseWorkflow):
                 "phoneNumberMobile": fields.get("phoneNumberMobile"),
                 "comments": fields.get("comments"),
                 "address": _compact_address(_as_dict(fields.get("address"))),
+                "userType": normalized_user_type,
+                "department": {"id": department_id},
             }
         )
 
@@ -336,9 +354,14 @@ class EmployeeCreateWorkflow(BaseWorkflow):
 
         return WorkflowResult(
             name="employee_create",
-            intended_operations=["POST /employee"],
+            intended_operations=["GET /department", "POST /employee"],
             resource_ids=[created_id] if created_id is not None else [],
-            details={"entity": "employee", "created": created},
+            details={
+                "entity": "employee",
+                "departmentId": department_id,
+                "userType": normalized_user_type,
+                "created": created,
+            },
         )
 
 
@@ -621,6 +644,60 @@ async def _resolve_project_manager(
     if lookup:
         return await _find_single_employee(client, lookup, require_assignable=True)
     return await _find_default_project_manager(client)
+
+
+async def _resolve_employee_department(
+    client: TripletexClient,
+    fields: dict[str, Any],
+) -> dict[str, Any]:
+    department_lookup = _as_dict(fields.get("department"))
+    department_id = _coerce_int(fields.get("departmentId"))
+    if department_lookup is None and department_id is not None:
+        department_lookup = {"id": department_id}
+    if department_lookup:
+        return await _find_single_department(client, department_lookup)
+    return await _find_default_department(client)
+
+
+async def _find_default_department(client: TripletexClient) -> dict[str, Any]:
+    payload = await client.get(
+        "/department",
+        params={
+            "count": 1,
+            "sorting": "id",
+            "fields": client.select_fields("id", "name", "departmentNumber"),
+        },
+    )
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError("No default department was available for employee creation")
+    return matches[0]
+
+
+async def _find_single_department(
+    client: TripletexClient,
+    lookup: dict[str, Any],
+) -> dict[str, Any]:
+    params = _compact_mapping(
+        {
+            "id": lookup.get("id"),
+            "name": lookup.get("name"),
+            "departmentNumber": lookup.get("departmentNumber") or lookup.get("number"),
+            "count": 2,
+            "sorting": "id",
+            "fields": client.select_fields("id", "name", "departmentNumber"),
+        }
+    )
+    if not params or set(params) <= {"count", "sorting", "fields"}:
+        raise WorkflowExecutionError("Department lookup requires id, name, or departmentNumber")
+
+    payload = await client.get("/department", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No department matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Department lookup was ambiguous for {lookup!r}")
+    return matches[0]
 
 
 async def _find_default_project_manager(client: TripletexClient) -> dict[str, Any]:
