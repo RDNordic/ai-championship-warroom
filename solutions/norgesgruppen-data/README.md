@@ -364,7 +364,7 @@ if __name__ == "__main__":
 | Run | Model | Data | Epochs | Val mAP50 | Val cls_loss | Det mAP@0.5 | Cls mAP@0.5 | **Score** | Still improving? |
 |-----|-------|------|--------|-----------|-------------|-------------|-------------|-----------|------------------|
 | 1 — Baseline | YOLOv8L | Original (248 img) | 50 | 0.646 | 1.002 | 0.781 | 0.570 | **0.7175** | Yes |
-| 2 — Augmented | YOLOv8L | Augmented (496 img) | 50 | 0.799 | 0.726 | — | — | **TBD** | Yes |
+| 2 — Augmented | YOLOv8L | Augmented (496 img) | 50 | 0.799 | 0.726 | — | — | **0.8329** | Yes |
 
 > Scores in the table use inference tweaks: `conf=0.01`, `augment=True` (TTA), `max_det=1000`.
 > Run 1 baseline without inference tweaks scored 0.7039.
@@ -385,7 +385,7 @@ uv run python scripts/train.py --model-size l --epochs 50 --batch 4 --imgsz 1280
 
 - **Config:** YOLOv8L, 50 epochs, batch 4, imgsz 1280, augmented 496 images (248 original + 248 synthetic)
 - **Final val metrics:** mAP50=0.799, mAP50-95=0.594, cls_loss=0.726
-- **Local eval:** TBD (run eval after training completes)
+- **Local eval (with inference tweaks):** score=**0.8329**
 - **Observation:** Significant improvement over Run 1 on all val metrics. cls_loss dropped from 1.002 to 0.726 (+27%), mAP50 jumped from 0.646 to 0.799 (+24%). Model still improving at epoch 50.
 - **Weights:** `runs/detect/train_aug/weights/best.pt`
 
