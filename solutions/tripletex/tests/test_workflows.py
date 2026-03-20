@@ -16,6 +16,7 @@ from tripletex_agent.task_plan import (
 )
 from tripletex_agent.workflows import (
     CustomerCreateWorkflow,
+    EmployeeCreateWorkflow,
     InvoiceCreateWorkflow,
     InvoiceCreditNoteWorkflow,
     InvoicePaymentWorkflow,
@@ -105,6 +106,58 @@ async def test_product_create_workflow_posts_expected_payload() -> None:
 
     assert result.resource_ids == [202]
     assert len(recorded) == 1
+
+
+@pytest.mark.asyncio
+async def test_employee_create_workflow_resolves_default_department_and_sets_user_type() -> None:
+    recorded: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/v2/department":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": 854238, "name": "Default Department"}]},
+            )
+        if request.method == "POST" and request.url.path == "/v2/employee":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["firstName"] == "Ola"
+            assert payload["lastName"] == "Nordmann"
+            assert payload["email"] == "ola@example.test"
+            assert payload["userType"] == "NO_ACCESS"
+            assert payload["department"] == {"id": 854238}
+            return httpx.Response(
+                200,
+                json={"value": {"id": 303, "displayName": "Ola Nordmann"}},
+            )
+        raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+    workflow = EmployeeCreateWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.EMPLOYEES,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="employee",
+                fields={
+                    "firstName": "Ola",
+                    "lastName": "Nordmann",
+                    "email": "ola@example.test",
+                },
+            )
+        ],
+        confidence=0.9,
+    )
+
+    async with TripletexClient(
+        base_url="https://example.test/v2",
+        session_token="token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await workflow.execute(plan=plan, client=client)
+
+    assert result.resource_ids == [303]
+    assert recorded == [("GET", "/v2/department"), ("POST", "/v2/employee")]
 
 
 @pytest.mark.asyncio

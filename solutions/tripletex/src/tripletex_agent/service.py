@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 
@@ -42,20 +43,38 @@ class SolverService:
         self._client_factory = client_factory
 
     async def solve(self, request: SolveRequest) -> SolveResponse:
+        logger.info(
+            "Received solve request prompt=%r attachments=%s base_url=%s",
+            request.prompt,
+            [attachment.filename for attachment in request.files],
+            request.tripletex_credentials.base_url,
+        )
         plan = await asyncio.to_thread(self._planner.plan, request.prompt, request.files)
         workflow = self._workflows.for_plan(plan)
+        logger.info(
+            "Planned solve workflow=%s plan=%s",
+            workflow.__class__.__name__,
+            json.dumps(plan.model_dump(), ensure_ascii=False, default=str),
+        )
 
-        async with self._client_factory(request.tripletex_credentials) as client:
-            result = await workflow.execute(plan=plan, client=client)
+        try:
+            async with self._client_factory(request.tripletex_credentials) as client:
+                result = await workflow.execute(plan=plan, client=client)
+        except Exception:
+            logger.exception("Solve request failed prompt=%r", request.prompt)
+            raise
 
         logger.info(
-            "Solved request with scaffold workflow",
-            extra={
-                "task_family": plan.task_family.value,
-                "operation": plan.operation.value,
-                "workflow": result.name,
-                "intended_operations": result.intended_operations,
-            },
+            (
+                "Solved request task_family=%s operation=%s workflow=%s "
+                "operations=%s resources=%s details=%s"
+            ),
+            plan.task_family.value,
+            plan.operation.value,
+            result.name,
+            result.intended_operations,
+            result.resource_ids,
+            json.dumps(result.details, ensure_ascii=False, default=str),
         )
 
         return SolveResponse(status="completed")

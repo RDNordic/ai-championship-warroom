@@ -2,83 +2,80 @@
 
 ## Checkpoint
 
-Tripletex now has live end-to-end coverage for the full baseline invoicing slice:
+Tripletex now has a working public `/solve` endpoint, a reusable submission checklist, and a stronger baseline across the supported API-only slice:
 
+- customer create
+- product create
+- employee create
+- department create
+- project create linked to an existing customer
 - invoice create
 - invoice payment
 - invoice credit note
 
-This checkpoint confirmed invoice creation through the normal `scripts/run_prompt.py --execute ...` path and added deterministic payment and credit note workflows that are validated in the sandbox.
+The first competition submission was a total failure. After the latest fixes, the baseline improved to `2 / 30` tasks solved. The latest visible task result passed `1 / 4` checks and failed `3 / 4`, which is still far from acceptable but confirms that the service can now reach and satisfy part of the scoring path.
 
 Repository scope for the next session stays inside `solutions/tripletex/` unless the owner explicitly asks for something broader.
 
 ## Handoff Contract
 
 - Current objective:
-  - Stabilize the Tripletex baseline after the invoicing slice.
+  - Strengthen the conversational prompt-to-API layer so the solver chooses and executes the correct deterministic Tripletex workflow across more prompt variants and task types.
 - Exact artifact reference:
-  - Working tree in `solutions/tripletex/` on `2026-03-20` after live sandbox validation and focused tests.
-  - Archived prior handoffs:
-    - `solutions/tripletex/session_archive/2026-03-20-invoice-create-checkpoint.md`
-    - `solutions/tripletex/session_archive/2026-03-20-validated-invoicing-checkpoint.md`
+  - Working tree in `solutions/tripletex/` on `2026-03-20` after the first public `/solve` submission, employee-create fix, live endpoint logging, and submission-checklist addition.
+  - Key docs for the next session:
+    - `solutions/tripletex/PLAN.md`
+    - `solutions/tripletex/SUBMISSION_CHECKLIST.md`
+    - `solutions/tripletex/docs.md`
 - What is proven:
-  - `scripts/run_prompt.py` successfully created invoice `#3`, paid invoice `#3`, created invoice `#4`, and created credit note `#5` for invoice `#4`.
-  - Focused tests pass for planner and live workflows, including the numeric invoice-id fallback case.
+  - The public `/solve` endpoint is reachable over HTTPS and accepts the documented competition payload.
+  - A public `/solve` request created a customer in the sandbox and later created employee `18562422`.
+  - `scripts/run_prompt.py --execute` now live-validates employee creation after adding the required employee fields.
+  - Focused tests and lint pass for the current baseline workflows and logging changes.
 - What is assumed:
-  - The challenge prompts will mostly reference invoice numbers, not internal Tripletex invoice IDs.
-  - Defaulting invoice payments to the bank payment type is acceptable when the prompt does not specify a payment method.
+  - The move from `0 / 30` to `2 / 30` is mainly limited by unsupported or weakly interpreted task variants, not by endpoint reachability.
+  - PDF and CSV handling can stay lower priority while we improve API-only prompt interpretation and workflow selection.
 - Next highest-priority task:
-  - Live-validate employee creation, then move to travel expense workflows.
+  - Build a stronger prompt-to-API bot for API-only tasks before investing further in attachment handling.
 
 ## Session Archive
 
 - `solutions/tripletex/session_archive/2026-03-20-scaffold-checkpoint.md`
 - `solutions/tripletex/session_archive/2026-03-20-invoice-create-checkpoint.md`
 - `solutions/tripletex/session_archive/2026-03-20-validated-invoicing-checkpoint.md`
+- `solutions/tripletex/session_archive/2026-03-20-pre-first-solve-submission-checkpoint.md`
 
 ## Latest Work
 
-- Confirmed invoice creation through the real local runner:
-  - `./.venv/bin/python scripts/run_prompt.py --execute "Opprett en faktura ..."`
-- Added new live workflows in `src/tripletex_agent/workflows/live.py` for:
-  - invoice payment
-  - invoice credit note
-- Added invoice helpers for:
-  - invoice lookup by invoice number with required date window
-  - invoice payment type lookup via `/invoice/paymentType`
-  - fallback from mistaken numeric invoice `id` lookups to invoice-number search when `GET /invoice/{id}` returns `404`
-- Extended planner extraction for:
-  - invoice payment
-  - invoice credit note
-  - payment date / amount / payment type hints
-  - credit note date / comment
-- Wired new workflows into:
-  - `src/tripletex_agent/service.py`
-  - `scripts/run_prompt.py`
-  - workflow exports
-- Updated README status to reflect the implemented invoicing slice.
+- Added a reusable checklist in `solutions/tripletex/SUBMISSION_CHECKLIST.md` for sandbox validation, local runner checks, and full `/solve` contract replay.
+- Confirmed that the public Cloudflare-backed `/solve` endpoint receives real external requests from the competition platform.
+- Added request, plan, workflow, and result logging in the service layer so the next failed submission is not a black box.
+- Updated the stub workflow to log when unsupported tasks quietly fall back to a no-op path.
+- Fixed employee creation by resolving the required default department and sending a valid `userType`.
+- Live-validated employee creation both through `scripts/run_prompt.py --execute` and through the public `/solve` endpoint.
 
 ## Validation
 
 - Focused tests:
   - `./.venv/bin/pytest -q tests/test_app.py tests/test_config.py tests/test_models.py tests/test_planner.py tests/test_workflows.py`
-  - Result: `22 passed`
+  - Result: `23 passed`
 - Changed-file lint:
-  - `./.venv/bin/ruff check scripts/run_prompt.py src/tripletex_agent/planner.py src/tripletex_agent/service.py src/tripletex_agent/workflows/__init__.py src/tripletex_agent/workflows/live.py tests/test_planner.py tests/test_workflows.py`
+  - `./.venv/bin/ruff check src/tripletex_agent/app.py src/tripletex_agent/config.py src/tripletex_agent/service.py src/tripletex_agent/workflows/live.py src/tripletex_agent/workflows/stub.py tests/test_workflows.py`
   - Result: `All checks passed!`
 - Live sandbox runner validations:
-  - Invoice create:
-    - Prompt: `Opprett en faktura for kunde Codex Test Kunde 20260320 med produkt Codex Test Produkt 20260320 antall 1 pris 500`
-    - Result: invoice id `2147521961`, invoice number `3`, amount `625.0`
-  - Invoice payment:
-    - Prompt: `Register payment for invoice 3 payment date 2026-03-20 payment type Betalt til bank amount 625`
-    - Result: invoice id `2147521961`, payment type id `33535763`, outstanding amount `0.0`
-  - Credit-note validation create:
-    - Prompt: `Opprett en faktura for kunde Codex Test Kunde 20260320 med produkt Codex Test Produkt 20260320 antall 1 pris 400`
-    - Result: invoice id `2147521996`, invoice number `4`, amount `500.0`
-  - Credit note:
-    - Prompt: `Create credit note for invoice 4 date 2026-03-20 comment Codex credit validation`
-    - Result: credit note id `2147522003`, invoice number `5`, source invoice id `2147521996`
+  - `python scripts/smoke_read_only.py`
+    - Result: read-only sandbox access succeeded
+  - `./.venv/bin/python scripts/run_prompt.py --execute "Create employee named Codex Employee20260320B, email codex.employee20260320b@acme.test"`
+    - Result: employee id `18562413`
+- Public `/solve` validations:
+  - Customer create via public endpoint
+    - Result: customer id `108240330`, `Codex Public Kunde 20260320-public-1`
+  - Employee create via public endpoint
+    - Result: employee id `18562422`, `Codex PublicEmployee 20260320-public-employee-1`
+- Competition signal:
+  - First submission: `0 / 30`
+  - Latest submission after fixes: `2 / 30`
+  - Latest visible task card: `1 / 4` checks passed, `3 / 4` failed
 
 ## Important Sandbox Findings
 
@@ -86,57 +83,47 @@ Repository scope for the next session stays inside `solutions/tripletex/` unless
   - `invoiceDateFrom`
   - `invoiceDateTo`
 - Exact `invoiceNumber` search works when those dates are included.
-- `PUT /invoice/{id}/:payment` uses query params, not JSON body:
-  - `paymentDate`
-  - `paymentTypeId`
-  - `paidAmount`
-  - optional `paidAmountCurrency`
-- `PUT /invoice/{id}/:createCreditNote` also uses query params, not JSON body:
-  - required `date`
-  - optional `comment`
-  - optional `creditNoteEmail`
-  - `sendToCustomer` defaults to true in the API, so the workflow explicitly sends `false`
-- Sandbox invoice payment types currently available:
-  - `33535762` = `Kontant`
-  - `33535763` = `Betalt til bank`
-- The invoice bank account prerequisite from the prior checkpoint still applies:
-  - invoice ledger account `1920` / id `431985679` needed `bankAccountNumber=12345678903`
+- `PUT /invoice/{id}/:payment` uses query params, not JSON body.
+- `PUT /invoice/{id}/:createCreditNote` uses query params, not JSON body, and should explicitly send `sendToCustomer=false`.
+- Employee creation requires more than first name, last name, and email:
+  - valid `userType`
+  - `department.id`
+- The verified minimal employee create path currently works with:
+  - `userType=NO_ACCESS`
+  - default department id `854238`
+- Unsupported tasks currently risk returning HTTP 200 through `StubWorkflow` while scoring zero, so unsupported-plan detection must remain visible in logs.
 
 ## Notable Sandbox Records
 
-- Customer: `108177116` (`Codex Test Kunde 20260320`)
-- Product: `84382330` (`Codex Test Produkt 20260320`)
-- Department: `869327`
-- Project: `401951260` (`Codex Test Prosjekt 20260320`)
-- Manual invoice probe: `2147520855` (invoice number `1`)
-- Runner-confirmed invoice create: `2147521809` (invoice number `2`)
+- Customer: `108240330` (`Codex Public Kunde 20260320-public-1`)
+- Employee from local runner: `18562413` (`Codex Employee20260320B`)
+- Employee from public `/solve`: `18562422` (`Codex PublicEmployee 20260320-public-employee-1`)
+- Department used for employee creation: `854238`
 - Paid validation invoice: `2147521961` (invoice number `3`)
 - Credited source invoice: `2147521996` (invoice number `4`)
 - Credit note: `2147522003` (invoice number `5`)
 
 ## Known Issues / Risks
 
-- Employee create exists but is still not live-validated in this sandbox during this session.
-- Travel expense workflows are still not implemented.
-- Correction workflows are still not implemented.
-- OpenAI planning may still classify a bare numeric invoice reference as an internal ID in some prompts; the workflow fallback now covers that case, but more multilingual invoice-action examples would still help.
-- Credit note flow currently supports the safe baseline path:
-  - lookup existing invoice
-  - create full credit note
-  - do not send to customer
+- The current implemented workflow slice is still too narrow for the competition task spread, which likely explains the `2 / 30` ceiling so far.
+- Travel expense workflows are still unimplemented.
+- Correction workflows are still unimplemented.
+- Attachment extraction for PDF and CSV is still deferred.
+- Unsupported tasks can still appear “successful” at the HTTP level if they hit `StubWorkflow`.
+- Planner coverage is still weaker than needed for broad conversational prompts and multilingual variants.
 - `solutions/CloudRun.md` remains untouched.
 
 ## Next Steps
 
-1. Try connecting the current Tripletex solver to the competition sandbox properly and get a first result with the code we have now.
-2. Live-validate employee creation through `scripts/run_prompt.py`.
-3. Implement the first travel expense workflow slice.
-4. Implement correction workflows.
-5. Expand multilingual planner coverage for invoice payment and credit note phrasing.
-6. Prepare deployment for the public `/solve` endpoint once the next live slice is stable.
+1. Use `solutions/tripletex/SUBMISSION_CHECKLIST.md` as the required gate before every new competition submission.
+2. Build a stronger prompt-to-API bot for API-only tasks: better task classification, field extraction, entity lookup, and workflow selection from conversational prompts.
+3. Expand deterministic workflow coverage across existing API-only areas before touching attachments again.
+4. Reduce silent `StubWorkflow` dependence by replacing stubs with real handlers and watching logs for unsupported plans.
+5. Implement the first travel expense workflow slice after the API-only bot is materially stronger.
+6. Keep PDF and CSV handling lower priority until the prompt-to-API baseline stops failing obvious non-attachment tasks.
 
 ## Restart Prompt
 
 ```text
-Read solutions/tripletex/PLAN.md and solutions/tripletex/SESSION_HANDOFF.md. Stay scoped to solutions/tripletex/. First, try connecting the current solver to the competition sandbox properly and get a first result with the implemented baseline. Then live-validate employee creation through scripts/run_prompt.py and continue with the first travel expense workflow slice. Preserve session history by archiving the current handoff in solutions/tripletex/session_archive/ before replacing SESSION_HANDOFF.md again.
+Read solutions/tripletex/PLAN.md, solutions/tripletex/SUBMISSION_CHECKLIST.md, and solutions/tripletex/SESSION_HANDOFF.md. Stay scoped to solutions/tripletex/. Use the checklist to validate API-only scenarios in the sandbox and through a full `/solve` replay. Focus on strengthening the conversational prompt-to-API layer so the solver can choose and execute the correct Tripletex workflows for more prompt variants. Keep PDF and CSV handling lower priority unless a concrete task requires them. Preserve session history by archiving the current handoff in solutions/tripletex/session_archive/ before replacing SESSION_HANDOFF.md again.
 ```

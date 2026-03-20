@@ -10,6 +10,8 @@
 
 - Implementation plan: `solutions/tripletex/PLAN.md`
 - Session handoff: `solutions/tripletex/SESSION_HANDOFF.md`
+- Submission checklist: `solutions/tripletex/SUBMISSION_CHECKLIST.md`
+- Assignment notes and examples: `solutions/tripletex/docs.md`
 
 ---
 
@@ -27,6 +29,8 @@
   - invoice creation
   - invoice payment
   - invoice credit note
+- Public `/solve` has been exercised end to end over HTTPS with sandbox credentials
+- First competition submission has moved the baseline to `2 / 30` tasks solved
 - Travel expense, correction, and module workflows are still pending
 - Local `.env` loading and a read-only sandbox smoke script are available
 
