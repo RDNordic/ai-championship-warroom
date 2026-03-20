@@ -21,6 +21,8 @@
 - [x] Round 2 improved observation-based submission accepted for seeds 0-4
 - [x] Round 2 final 2 extra repeat queries spent on highest-value unrepeated hotspots
 - [x] Round 2 final overwrite submitted after using the full `50 / 50` query budget
+- [x] Round 2 completed and scored
+- [x] Round 2 full analysis exported locally for all 5 seeds
 
 ## Immediate Priorities
 
@@ -37,7 +39,8 @@
 - [x] Pull `/analysis/{round_id}/{seed_index}` when available
 - [ ] Convert round-1 findings into the next-round starting policy
 - [x] Fix repeat-query payload handling so repeat `/simulate` calls target the intended viewport
-- [ ] Run the read-only poller through scoring / next-round transition
+- [x] Run the read-only poller through scoring / next-round transition
+- [ ] Convert round-2 analysis into concrete prior and observation-weight updates before the next active round
 
 ## Query Discipline
 
@@ -71,6 +74,11 @@
 - Round 2 extra repeat targets: `seed 1 @ (15,0,15,15)` and `seed 2 @ (0,15,15,15)`
 - Round 2 query budget after final overwrite: `50 / 50` used
 - Round 2 queries remaining: `0`
+- Round 2 final score: `40.8117`
+- Round 2 seed scores: `41.3371, 40.6250, 40.8440, 41.0013, 40.2510`
+- Round 2 rank: `95 / 153`
+- Round 2 analysis status: exported for all 5 seeds
+- Round 2 analysis finding: model over-predicted settlements materially (`pred class 1 = 534` vs `truth class 1 = 155`)
 
 ## Working Rules
 
@@ -94,6 +102,7 @@
 - Round 2 cycle summary: `solutions/astar-island/artifacts/round_76909e29-f664-4b2f-b16b-61b7507277e9/observation_cycle_summary.json`
 - Round 2 extra repeat summary: `solutions/astar-island/artifacts/round_76909e29-f664-4b2f-b16b-61b7507277e9/extra_repeat_summary.json`
 - Round 2 improved tensors: `solutions/astar-island/artifacts/round_76909e29-f664-4b2f-b16b-61b7507277e9/improved_prediction_seed_*.json`
+- Round 2 exported analysis: `solutions/astar-island/artifacts/round_76909e29-f664-4b2f-b16b-61b7507277e9/analysis/`
 
 ## Fresh Context Start Prompt
 
@@ -128,8 +137,8 @@ Then give a concise handoff summary.
 
 ## Handoff Contract
 
-- Current objective: monitor round 2 through scoring and pull `/analysis` as soon as it becomes available.
+- Current objective: turn round-2 analysis into a safer round-3 starting policy before the next active round opens.
 - Exact artifact reference: `solutions/astar-island/artifacts/round_76909e29-f664-4b2f-b16b-61b7507277e9/`
-- What is proven: token workflow works; round 1 scored `42.623` with rank `39/117`; `/analysis` is available for all 5 round-1 seeds; round 2 baseline, improved submission, and final overwrite are all accepted for all 5 seeds; round 2 query budget is fully used at `50 / 50`; repeat `/simulate` calls must send `viewport_x/viewport_y/viewport_w/viewport_h`, and the local workflow has been fixed accordingly.
-- What is assumed: final ranking impact now depends entirely on the quality of the saved round 2 tensors and whatever the scoring system returns; no further query-side improvement is possible this round.
-- Next highest-priority task: run the read-only poller through the round-2 scoring transition and fetch round-2 `/analysis/{round_id}/{seed_index}` as soon as it becomes available.
+- What is proven: token workflow works; round 1 scored `42.623` with rank `39/117`; `/analysis` is available for all 5 round-1 and round-2 seeds; round 2 baseline, improved submission, and final overwrite were all accepted for all 5 seeds; round 2 query budget was fully used at `50 / 50`; repeat `/simulate` calls must send `viewport_x/viewport_y/viewport_w/viewport_h`, and the local workflow has been fixed accordingly; round 2 still underperformed round 1 (`40.8117` vs `42.623`) despite the cleaner execution.
+- What is assumed: the next improvement should come from reducing settlement-heavy bias in priors and/or observation weighting rather than from further query-routing changes alone.
+- Next highest-priority task: quantify a conservative prior update for plains and near-settlement cells before the next round, then re-check whether a new active round exists.
