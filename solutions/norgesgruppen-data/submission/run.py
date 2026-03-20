@@ -11,7 +11,6 @@ Usage:
 import argparse
 import functools
 import json
-import sys
 from pathlib import Path
 
 import torch
@@ -34,18 +33,16 @@ def parse_image_id(filename: str) -> int:
 def run_inference(
     input_dir: Path,
     output_path: Path,
-    model_size: str = "s",
     confidence: float = 0.25,
     imgsz: int = 1280,
 ) -> None:
     """Run YOLOv8 on all images in input_dir, write COCO predictions."""
     # Load model from same directory as this script
     script_dir = Path(__file__).resolve().parent
-    model_path = script_dir / f"yolov8{model_size}.pt"
+    model_path = script_dir / "best.pt"
 
     if not model_path.exists():
-        print(f"ERROR: Model not found at {model_path}", file=sys.stderr)
-        sys.exit(1)
+        raise FileNotFoundError(f"Model not found at {model_path}")
 
     model = YOLO(str(model_path))
 
@@ -57,11 +54,11 @@ def run_inference(
     )
 
     if not image_paths:
-        print(f"WARNING: No images found in {input_dir}", file=sys.stderr)
+        print(f"WARNING: No images found in {input_dir}")
         output_path.write_text(json.dumps([]))
         return
 
-    print(f"Running inference on {len(image_paths)} images with yolov8{model_size}")
+    print(f"Running inference on {len(image_paths)} images with best.pt")
 
     predictions = []
 
@@ -88,7 +85,7 @@ def run_inference(
 
                 predictions.append({
                     "image_id": image_id,
-                    "category_id": 0,
+                    "category_id": int(boxes.cls[i]),
                     "bbox": [round(x1, 2), round(y1, 2), round(w, 2), round(h, 2)],
                     "score": round(float(boxes.conf[i]), 4),
                 })
@@ -103,8 +100,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="YOLOv8 grocery shelf detection")
     parser.add_argument("--input", type=str, required=True, help="Input image directory")
     parser.add_argument("--output", type=str, required=True, help="Output predictions JSON path")
-    parser.add_argument("--model-size", type=str, default="s", choices=["n", "s", "m", "l", "x"],
-                        help="YOLOv8 model size (default: s)")
     parser.add_argument("--confidence", type=float, default=0.25, help="Confidence threshold")
     parser.add_argument("--imgsz", type=int, default=1280, help="Inference image size")
     args = parser.parse_args()
@@ -112,7 +107,6 @@ def main() -> None:
     run_inference(
         input_dir=Path(args.input),
         output_path=Path(args.output),
-        model_size=args.model_size,
         confidence=args.confidence,
         imgsz=args.imgsz,
     )
