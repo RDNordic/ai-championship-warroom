@@ -434,7 +434,22 @@ class KeywordTaskPlanner:
                 "ansett",
             ),
         ),
-        IntentRule(TaskFamily.CORRECTIONS, Operation.REVERSE, "voucher", ("reverse", "reverser")),
+        IntentRule(
+            TaskFamily.CORRECTIONS,
+            Operation.REVERSE,
+            "voucher",
+            (
+                "reverse voucher",
+                "reverse the voucher",
+                "reverser bilag",
+                "reverser bilaget",
+                "tilbakefør bilag",
+                "reverse posting",
+                "reverse entry",
+                "credit note voucher",
+                "storno",
+            ),
+        ),
     )
 
     def plan(self, prompt: str, attachments: list[AttachmentFile]) -> TaskPlan:
@@ -639,7 +654,7 @@ def _plan_from_extraction(
         entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
         fields_to_set = payload
 
-    if extraction.operation == Operation.DELETE and entity_type != "unknown":
+    if extraction.operation in (Operation.DELETE, Operation.REVERSE) and entity_type != "unknown":
         lookup = _lookup_for_extraction(extraction)
         entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
 
@@ -1164,7 +1179,9 @@ Important rules:
   - create credit note for an existing invoice
   - create travel expense report
   - delete travel expense report
-- Module activation and voucher reversal tasks are not yet implemented.
+  - reverse a voucher/posting (use operation=reverse, primary_entity_type=voucher)
+- For voucher reverse tasks, extract the voucher id or voucherNumber into the lookup field.
+- Module activation tasks are not yet implemented.
 - For department create tasks with multiple departments (e.g. "create departments X, Y, Z"),
   put all department names into the names list field, not just name.
 - For travel expenses, put employee references into employeeName and/or employeeEmail.

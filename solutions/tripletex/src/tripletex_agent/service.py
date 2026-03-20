@@ -37,6 +37,7 @@ from .workflows import (
     StubWorkflow,
     TravelExpenseCreateWorkflow,
     TravelExpenseDeleteWorkflow,
+    VoucherReverseWorkflow,
     WorkflowRegistry,
 )
 
@@ -282,6 +283,8 @@ def build_default_service() -> SolverService:
             DepartmentDeleteWorkflow(),
             ProjectDeleteWorkflow(),
             TravelExpenseDeleteWorkflow(),
+            # Corrections
+            VoucherReverseWorkflow(),
         ],
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )

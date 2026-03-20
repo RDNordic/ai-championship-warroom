@@ -791,6 +791,39 @@ class ProjectDeleteWorkflow(BaseWorkflow):
         )
 
 
+class VoucherReverseWorkflow(BaseWorkflow):
+    family = TaskFamily.CORRECTIONS
+    entity_type = "voucher"
+    supported_operations = (Operation.REVERSE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "voucher")
+        fields = plan.fields_to_set
+
+        voucher = await _find_single_voucher(client, lookup)
+        voucher_id = _extract_id(voucher)
+        if voucher_id is None:
+            raise WorkflowExecutionError("Matched voucher did not include an id")
+
+        reversal_date = _normalize_date(fields.get("date")) or date.today().isoformat()
+        response = await client.put(
+            f"/ledger/voucher/{voucher_id}/:reverse",
+            params={"date": reversal_date},
+        )
+        reversed_voucher = client.unwrap_value(response)
+
+        return WorkflowResult(
+            name="voucher_reverse",
+            intended_operations=["GET /ledger/voucher", "PUT /ledger/voucher/{id}/:reverse"],
+            resource_ids=[voucher_id],
+            details={
+                "entity": "voucher",
+                "sourceVoucherId": voucher_id,
+                "reversed": reversed_voucher,
+            },
+        )
+
+
 class TravelExpenseDeleteWorkflow(BaseWorkflow):
     family = TaskFamily.TRAVEL_EXPENSES
     entity_type = "travel_expense"
@@ -811,6 +844,44 @@ class TravelExpenseDeleteWorkflow(BaseWorkflow):
             resource_ids=[expense_id],
             details={"entity": "travel_expense", "deletedId": expense_id},
         )
+
+
+async def _find_single_voucher(
+    client: TripletexClient,
+    lookup: dict[str, Any],
+) -> dict[str, Any]:
+    voucher_id = _coerce_int(lookup.get("id"))
+    if voucher_id is not None:
+        payload = await client.get(
+            f"/ledger/voucher/{voucher_id}",
+            params={"fields": client.select_fields("id", "voucherNumber", "date", "description")},
+        )
+        voucher = client.unwrap_value(payload)
+        if isinstance(voucher, dict):
+            return voucher
+        raise WorkflowExecutionError(
+            f"Voucher lookup by id {voucher_id} did not return a voucher"
+        )
+
+    voucher_number = _stringify_lookup_value(lookup.get("voucherNumber") or lookup.get("number"))
+    if not voucher_number:
+        raise WorkflowExecutionError("Voucher lookup requires id or voucherNumber")
+
+    params = _compact_mapping(
+        {
+            "numberFrom": voucher_number,
+            "numberTo": voucher_number,
+            "count": 2,
+            "fields": client.select_fields("id", "voucherNumber", "date", "description"),
+        }
+    )
+    payload = await client.get("/ledger/voucher", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No voucher matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Voucher lookup was ambiguous for {lookup!r}")
+    return matches[0]
 
 
 async def _find_single_travel_expense(
