@@ -69,6 +69,8 @@ def run_inference(
             source=str(img_path),
             conf=confidence,
             imgsz=imgsz,
+            max_det=1000,
+            augment=True,
             verbose=False,
         )
 
@@ -100,7 +102,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="YOLOv8 grocery shelf detection")
     parser.add_argument("--input", type=str, required=True, help="Input image directory")
     parser.add_argument("--output", type=str, required=True, help="Output predictions JSON path")
-    parser.add_argument("--confidence", type=float, default=0.25, help="Confidence threshold")
+    parser.add_argument("--confidence", type=float, default=0.01, help="Confidence threshold")
     parser.add_argument("--imgsz", type=int, default=1280, help="Inference image size")
     args = parser.parse_args()
 
