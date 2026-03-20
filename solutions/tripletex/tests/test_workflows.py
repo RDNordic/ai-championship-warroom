@@ -582,11 +582,15 @@ async def test_travel_expense_create_workflow_with_default_employee() -> None:
             payload = json.loads(request.content.decode("utf-8"))
             assert payload["employee"] == {"id": 303}
             assert payload["title"] == "Business trip to Bergen"
-            assert payload["departureDateTime"] == "2026-03-15"
-            assert payload["returnDateTime"] == "2026-03-17"
+            assert payload["date"] == "2026-03-15"
             return httpx.Response(
                 201,
                 json={"value": {"id": 500, "title": "Business trip to Bergen"}},
+            )
+        if request.method == "GET" and request.url.path == "/v2/travelExpense/paymentType":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": 99, "description": "Privat utlegg"}]},
             )
         raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
 
@@ -618,7 +622,11 @@ async def test_travel_expense_create_workflow_with_default_employee() -> None:
     assert result.details["employeeId"] == 303
     assert result.details["expenseId"] == 500
     assert result.details["delivered"] is False
-    assert recorded == [("GET", "/v2/employee"), ("POST", "/v2/travelExpense")]
+    assert recorded == [
+        ("GET", "/v2/employee"),
+        ("POST", "/v2/travelExpense"),
+        ("GET", "/v2/travelExpense/paymentType"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -648,10 +656,16 @@ async def test_travel_expense_create_workflow_with_employee_lookup_and_costs() -
                 201,
                 json={"value": {"id": 500, "title": "Trip"}},
             )
+        if request.method == "GET" and request.url.path == "/v2/travelExpense/paymentType":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": 99, "description": "Privat utlegg"}]},
+            )
         if request.method == "POST" and request.url.path == "/v2/travelExpense/cost":
             payload = json.loads(request.content.decode("utf-8"))
             assert payload["travelExpense"] == {"id": 500}
-            assert payload["amountNOKInclVAT"] in [2000.0, 500.0]
+            assert payload["amountCurrencyIncVat"] in [2000.0, 500.0]
+            assert payload["paymentType"] == {"id": 99}
             return httpx.Response(
                 201,
                 json={"value": {"id": len(recorded) + 600}},
@@ -695,6 +709,7 @@ async def test_travel_expense_create_workflow_with_employee_lookup_and_costs() -
     assert recorded == [
         ("GET", "/v2/employee"),
         ("POST", "/v2/travelExpense"),
+        ("GET", "/v2/travelExpense/paymentType"),
         ("POST", "/v2/travelExpense/cost"),
         ("POST", "/v2/travelExpense/cost"),
     ]

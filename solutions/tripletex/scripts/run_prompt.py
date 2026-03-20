@@ -31,6 +31,7 @@ from tripletex_agent.workflows import (  # noqa: E402
     ProductCreateWorkflow,
     ProjectCreateWorkflow,
     StubWorkflow,
+    TravelExpenseCreateWorkflow,
     WorkflowRegistry,
 )
 from tripletex_agent.workflows.base import WorkflowExecutionError  # noqa: E402
@@ -47,6 +48,7 @@ def build_registry() -> WorkflowRegistry:
             InvoiceCreateWorkflow(),
             InvoicePaymentWorkflow(),
             InvoiceCreditNoteWorkflow(),
+            TravelExpenseCreateWorkflow(),
         ],
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )

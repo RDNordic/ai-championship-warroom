@@ -493,15 +493,13 @@ class TravelExpenseCreateWorkflow(BaseWorkflow):
 
         # Build parent travel expense body
         title = fields.get("title") or "Travel expense"
-        departure_date = _normalize_date(fields.get("departureDate")) or date.today().isoformat()
-        return_date = _normalize_date(fields.get("returnDate")) or departure_date
+        expense_date = _normalize_date(fields.get("departureDate")) or date.today().isoformat()
 
         body = _compact_mapping(
             {
                 "employee": {"id": employee_id},
                 "title": title,
-                "departureDateTime": departure_date,
-                "returnDateTime": return_date,
+                "date": expense_date,
                 "project": {"id": project_id} if project_id is not None else None,
                 "department": {"id": department_id} if department_id is not None else None,
             }
@@ -513,8 +511,18 @@ class TravelExpenseCreateWorkflow(BaseWorkflow):
         if expense_id is None:
             raise WorkflowExecutionError("Travel expense creation did not return an id")
 
-        intended_operations = ["GET /employee", "POST /travelExpense"]
+        intended_operations = ["GET /employee", "POST /travelExpense", "GET /travelExpense/paymentType"]
         child_ids: list[int] = []
+
+        # Look up default payment type for costs
+        payment_type_id: int | None = None
+        try:
+            pt_resp = await client.get("/travelExpense/paymentType", params={"count": 1})
+            pt_values = client.unwrap_values(pt_resp)
+            if pt_values:
+                payment_type_id = _extract_id(pt_values[0])
+        except Exception:
+            pass  # Will fail at cost creation if no payment type found
 
         # Add cost items
         costs = fields.get("costs")
@@ -525,10 +533,10 @@ class TravelExpenseCreateWorkflow(BaseWorkflow):
                 cost_body = _compact_mapping(
                     {
                         "travelExpense": {"id": expense_id},
-                        "description": cost_item.get("description"),
-                        "amountNOKInclVAT": _coerce_number(cost_item.get("amount")),
-                        "date": _normalize_date(cost_item.get("date")) or departure_date,
-                        "paymentType": cost_item.get("paymentType", "own_money"),
+                        "comments": cost_item.get("description", ""),
+                        "amountCurrencyIncVat": _coerce_number(cost_item.get("amount")),
+                        "date": _normalize_date(cost_item.get("date")) or expense_date,
+                        "paymentType": {"id": payment_type_id} if payment_type_id else None,
                     }
                 )
                 cost_response = await client.post("/travelExpense/cost", json_body=cost_body)
@@ -549,8 +557,7 @@ class TravelExpenseCreateWorkflow(BaseWorkflow):
                         "travelExpense": {"id": expense_id},
                         "rateTypeId": _coerce_int(mileage_item.get("rateTypeId")),
                         "km": _coerce_number(mileage_item.get("km")),
-                        "date": _normalize_date(mileage_item.get("date")) or departure_date,
-                        "description": mileage_item.get("description"),
+                        "date": _normalize_date(mileage_item.get("date")) or expense_date,
                     }
                 )
                 mileage_response = await client.post(
@@ -573,8 +580,7 @@ class TravelExpenseCreateWorkflow(BaseWorkflow):
                         "travelExpense": {"id": expense_id},
                         "rateTypeId": _coerce_int(per_diem_item.get("rateTypeId")),
                         "countDays": _coerce_number(per_diem_item.get("countDays")),
-                        "date": _normalize_date(per_diem_item.get("date")) or departure_date,
-                        "description": per_diem_item.get("description"),
+                        "date": _normalize_date(per_diem_item.get("date")) or expense_date,
                     }
                 )
                 per_diem_response = await client.post(
