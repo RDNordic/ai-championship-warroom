@@ -37,7 +37,7 @@ Verify: `python scripts/smoke_read_only.py`
 
 **Score: 2/30 tasks solved** (first submission baseline)
 
-### Working Workflows (8)
+### Working Workflows (9)
 | Workflow | Class | Status |
 |---|---|---|
 | Customer create | `CustomerCreateWorkflow` | Proven live |
@@ -48,9 +48,10 @@ Verify: `python scripts/smoke_read_only.py`
 | Invoice create+send | `InvoiceCreateWorkflow` | Proven, send semantics fixed |
 | Invoice payment | `InvoicePaymentWorkflow` | Live |
 | Invoice credit note | `InvoiceCreditNoteWorkflow` | Live |
+| Travel expense create | `TravelExpenseCreateWorkflow` | **Tests pass, NEEDS SANDBOX VALIDATION** |
 
 ### Not Implemented (routes to StubWorkflow)
-- Travel expenses (create, delete)
+- Travel expense delete
 - Employee update (roles, contact info)
 - Customer update
 - Entity deletions / corrections
@@ -64,12 +65,12 @@ Verify: `python scripts/smoke_read_only.py`
 
 ### Phase 1 — Quick Coverage Wins (Tier 1/2, highest ROI)
 
-**1. Travel expense create**
-- Already classifies correctly to `travel_expenses` family
-- Parent+child pattern: `POST /travelExpense` then child resources like `POST /travelExpense/cost` or `/travelExpense/mileageAllowance`
-- Check `PLAN.md` "Travel Expenses" section for endpoint list
-- Relevant endpoints: `/travelExpense`, `/travelExpense/cost`, `/travelExpense/mileageAllowance`, `/travelExpense/perDiemCompensation`, `/travelExpense/accommodationAllowance`
-- May need `/travelExpense/:deliver` for completion
+**1. Travel expense create** ✅ IMPLEMENTED (commit `89b03f6`, needs sandbox validation)
+- `TravelExpenseCreateWorkflow` added to `workflows/live.py`
+- Parent+child pattern: `POST /travelExpense` then `POST /travelExpense/cost`, `/mileageAllowance`, `/perDiemCompensation`
+- Planner extracts employee, title, dates, costs from prompts (keyword + OpenAI)
+- **BLOCKER: .env not created yet — needs TRIPLETEX_SESSION_TOKEN and OPENAI_API_KEY**
+- **FIRST THING NEXT SESSION: create .env, run smoke test, then `run_prompt.py --execute` to validate API fields**
 
 **2. Travel expense delete**
 - `GET /travelExpense` -> `DELETE /travelExpense/{id}`
