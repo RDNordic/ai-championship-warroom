@@ -58,10 +58,12 @@ class AppSettings:
     host: str
     port: int
     log_level: str
+    solve_event_log_path: Path
 
     @classmethod
     def load(cls) -> AppSettings:
         load_local_env()
+        configured_log_path = os.getenv("SOLVE_EVENT_LOG_PATH")
         return cls(
             tripletex_base_url=os.getenv("TRIPLETEX_BASE_URL"),
             tripletex_session_token=os.getenv("TRIPLETEX_SESSION_TOKEN"),
@@ -70,6 +72,9 @@ class AppSettings:
             host=os.getenv("HOST", "0.0.0.0"),
             port=int(os.getenv("PORT", "8000")),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
+            solve_event_log_path=Path(configured_log_path)
+            if configured_log_path
+            else PROJECT_ROOT / "logs" / "solve-events.jsonl",
         )
 
     def tripletex_credentials(self) -> TripletexCredentials:
