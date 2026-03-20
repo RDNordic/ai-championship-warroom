@@ -6,6 +6,8 @@ from .live import (
     DepartmentCreateWorkflow,
     EmployeeCreateWorkflow,
     InvoiceCreateWorkflow,
+    InvoiceCreditNoteWorkflow,
+    InvoicePaymentWorkflow,
     ProductCreateWorkflow,
     ProjectCreateWorkflow,
 )
@@ -17,7 +19,9 @@ __all__ = [
     "CustomerCreateWorkflow",
     "DepartmentCreateWorkflow",
     "EmployeeCreateWorkflow",
+    "InvoiceCreditNoteWorkflow",
     "InvoiceCreateWorkflow",
+    "InvoicePaymentWorkflow",
     "ProductCreateWorkflow",
     "ProjectCreateWorkflow",
     "StubWorkflow",

@@ -126,11 +126,20 @@ class InvoiceLineExtraction(BaseModel):
 class InvoiceExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    invoiceId: int | None = None
+    invoiceNumber: str | None = None
     customerName: str | None = None
     customerOrganizationNumber: str | None = None
     invoiceDate: str | None = None
     invoiceDueDate: str | None = None
     deliveryDate: str | None = None
+    paymentDate: str | None = None
+    paidAmount: float | None = None
+    paidAmountCurrency: float | None = None
+    paymentTypeId: int | None = None
+    paymentTypeDescription: str | None = None
+    creditNoteDate: str | None = None
+    creditNoteEmail: str | None = None
     comment: str | None = None
     invoiceComment: str | None = None
     line: InvoiceLineExtraction | None = None
@@ -181,9 +190,19 @@ class KeywordTaskPlanner:
     """A conservative keyword-based fallback used when LLM planning is unavailable."""
 
     _rules = (
-        IntentRule(TaskFamily.DEPARTMENTS, Operation.CREATE, "department", ("department", "avdeling")),
+        IntentRule(
+            TaskFamily.DEPARTMENTS,
+            Operation.CREATE,
+            "department",
+            ("department", "avdeling"),
+        ),
         IntentRule(TaskFamily.PROJECTS, Operation.CREATE, "project", ("project", "prosjekt")),
-        IntentRule(TaskFamily.INVOICING, Operation.REGISTER_PAYMENT, "invoice", ("payment", "betaling")),
+        IntentRule(
+            TaskFamily.INVOICING,
+            Operation.REGISTER_PAYMENT,
+            "invoice",
+            ("payment", "betaling"),
+        ),
         IntentRule(
             TaskFamily.INVOICING,
             Operation.CREATE_CREDIT_NOTE,
@@ -191,12 +210,32 @@ class KeywordTaskPlanner:
             ("credit note", "credit memo", "kreditnota"),
         ),
         IntentRule(TaskFamily.INVOICING, Operation.CREATE, "invoice", ("invoice", "faktura")),
-        IntentRule(TaskFamily.CUSTOMERS_PRODUCTS, Operation.CREATE, "customer", ("customer", "kunde")),
-        IntentRule(TaskFamily.CUSTOMERS_PRODUCTS, Operation.CREATE, "product", ("product", "produkt")),
-        IntentRule(TaskFamily.EMPLOYEES, Operation.UPDATE, "employee", ("update employee", "oppdater ansatt")),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.CREATE,
+            "customer",
+            ("customer", "kunde"),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.CREATE,
+            "product",
+            ("product", "produkt"),
+        ),
+        IntentRule(
+            TaskFamily.EMPLOYEES,
+            Operation.UPDATE,
+            "employee",
+            ("update employee", "oppdater ansatt"),
+        ),
         IntentRule(TaskFamily.EMPLOYEES, Operation.CREATE, "employee", ("employee", "ansatt")),
         IntentRule(TaskFamily.CORRECTIONS, Operation.REVERSE, "voucher", ("reverse", "reverser")),
-        IntentRule(TaskFamily.TRAVEL_EXPENSES, Operation.DELETE, "travel_expense", ("delete travel", "slett reise")),
+        IntentRule(
+            TaskFamily.TRAVEL_EXPENSES,
+            Operation.DELETE,
+            "travel_expense",
+            ("delete travel", "slett reise"),
+        ),
         IntentRule(
             TaskFamily.TRAVEL_EXPENSES,
             Operation.CREATE,
@@ -234,6 +273,7 @@ class KeywordTaskPlanner:
         completion_checks: list[CompletionCheck] = []
         entities_to_create: list[EntityPayload] = []
         entities_to_find: list[EntityReference] = []
+        fields_to_set: dict[str, object] = {}
 
         if operation == Operation.CREATE:
             entities_to_create.append(EntityPayload(entity_type=entity_type, fields=payload))
@@ -241,14 +281,29 @@ class KeywordTaskPlanner:
                 CompletionCheck(kind="created", entity_type=entity_type, expected_fields=["id"])
             )
         elif operation != Operation.UNKNOWN:
+            lookup = payload
+            if entity_type == "invoice" and operation in (
+                Operation.REGISTER_PAYMENT,
+                Operation.CREATE_CREDIT_NOTE,
+            ):
+                lookup, fields_to_set = _extract_invoice_action_components(prompt, operation)
             entities_to_find.append(EntityReference(entity_type=entity_type, lookup=payload))
+            if entity_type == "invoice" and operation in (
+                Operation.REGISTER_PAYMENT,
+                Operation.CREATE_CREDIT_NOTE,
+            ):
+                entities_to_find[-1] = EntityReference(entity_type=entity_type, lookup=lookup)
+            elif operation == Operation.UPDATE:
+                fields_to_set = payload
 
-        confidence = 0.7 if payload else 0.45
+        extracted_lookup = entities_to_find[0].lookup if entities_to_find else {}
+        confidence = 0.7 if payload or fields_to_set or extracted_lookup else 0.45
         return TaskPlan(
             task_family=family,
             operation=operation,
             entities_to_create=entities_to_create,
             entities_to_find=entities_to_find,
+            fields_to_set=fields_to_set,
             attachment_facts=attachment_facts,
             completion_checks=completion_checks,
             confidence=confidence,
@@ -366,6 +421,13 @@ def _plan_from_extraction(
         entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
         fields_to_set = payload
 
+    if extraction.operation in (Operation.REGISTER_PAYMENT, Operation.CREATE_CREDIT_NOTE):
+        if entity_type == "invoice":
+            lookup, fields_to_set = _invoice_lookup_and_fields_from_payload(
+                payload, extraction.operation
+            )
+            entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
+
     return TaskPlan(
         task_family=extraction.task_family,
         operation=extraction.operation,
@@ -435,8 +497,55 @@ def _payload_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
                 product_lookup["productNumber"] = product_number
             if product_lookup:
                 line_payload["productLookup"] = product_lookup
+
+        payment_type_lookup: dict[str, object] = {}
+        payment_type_id = invoice_payload.pop("paymentTypeId", None)
+        payment_type_description = invoice_payload.pop("paymentTypeDescription", None)
+        if payment_type_id is not None:
+            payment_type_lookup["id"] = payment_type_id
+        if payment_type_description is not None:
+            payment_type_lookup["description"] = payment_type_description
+        if payment_type_lookup:
+            invoice_payload["paymentTypeLookup"] = payment_type_lookup
         return invoice_payload
     return {}
+
+
+def _invoice_lookup_and_fields_from_payload(
+    payload: dict[str, object],
+    operation: Operation,
+) -> tuple[dict[str, object], dict[str, object]]:
+    lookup: dict[str, object] = {}
+    fields: dict[str, object] = {}
+
+    if "invoiceId" in payload:
+        lookup["id"] = payload["invoiceId"]
+    if "invoiceNumber" in payload:
+        lookup["invoiceNumber"] = payload["invoiceNumber"]
+    if "invoiceDate" in payload:
+        lookup["invoiceDate"] = payload["invoiceDate"]
+    if "customerLookup" in payload:
+        lookup["customerLookup"] = payload["customerLookup"]
+
+    if operation == Operation.REGISTER_PAYMENT:
+        if "paymentDate" in payload:
+            fields["paymentDate"] = payload["paymentDate"]
+        if "paidAmount" in payload:
+            fields["paidAmount"] = payload["paidAmount"]
+        if "paidAmountCurrency" in payload:
+            fields["paidAmountCurrency"] = payload["paidAmountCurrency"]
+        if "paymentTypeLookup" in payload:
+            fields["paymentTypeLookup"] = payload["paymentTypeLookup"]
+
+    if operation == Operation.CREATE_CREDIT_NOTE:
+        if "creditNoteDate" in payload:
+            fields["creditNoteDate"] = payload["creditNoteDate"]
+        if "comment" in payload:
+            fields["comment"] = payload["comment"]
+        if "creditNoteEmail" in payload:
+            fields["creditNoteEmail"] = payload["creditNoteEmail"]
+
+    return lookup, fields
 
 
 def _lookup_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
@@ -505,12 +614,20 @@ Important rules:
   - create department
   - create project linked to an existing customer
   - create invoice for an existing customer with one line item
-- Invoice payment, credit note, travel expense, correction, and module tasks are not yet implemented.
+  - register invoice payment
+  - create credit note for an existing invoice
+- Travel expense, correction, and module tasks are not yet implemented.
 - For people, split names into firstName and lastName when possible.
 - For projects, put customer references into customerName and/or customerOrganizationNumber.
-- For projects, put explicit project manager references into projectManagerName and/or projectManagerEmail.
+- For projects, put explicit project manager references into projectManagerName and/or
+  projectManagerEmail.
 - For invoices, put customer references into customerName and/or customerOrganizationNumber.
 - For invoice lines, put product references into productName and/or productNumber.
+- For invoice payment or credit note tasks, prefer invoiceNumber unless the prompt explicitly says
+  invoice id; extract invoiceId only when that wording is explicit.
+- For invoice payment tasks, put payment method hints into paymentTypeId and/or
+  paymentTypeDescription.
+- For credit note tasks, put the credit note date into creditNoteDate.
 - If a field is not present, leave it null.
 - Confidence should reflect how sure you are that the extraction is correct.
 """.strip()
@@ -691,6 +808,119 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     return payload
 
 
+def _extract_invoice_action_components(
+    prompt: str, operation: Operation
+) -> tuple[dict[str, object], dict[str, object]]:
+    lookup = _extract_invoice_lookup(prompt)
+    fields: dict[str, object] = {}
+
+    if operation == Operation.REGISTER_PAYMENT:
+        payment_date = _extract_named_value(
+            prompt,
+            [
+                r"(?:payment date|paid on|betalingsdato)\s+(?P<value>\d{4}-\d{2}-\d{2})",
+            ],
+        )
+        if payment_date:
+            fields["paymentDate"] = payment_date
+
+        payment_type = _extract_named_value(
+            prompt,
+            [
+                r"(?:payment type|payment method|betalingstype|betalingsmåte)\s+(?P<value>[^,\n]+)",
+            ],
+        )
+        if payment_type:
+            fields["paymentTypeLookup"] = {
+                "description": _strip_payment_type_suffixes(payment_type)
+            }
+
+        amount_match = re.search(
+            (
+                r"(?:paid amount|payment amount|amount|betalt beløp|beløp)\s+"
+                r"(?:på\s+|of\s+)?(?P<value>\d+(?:[.,]\d+)?)"
+            ),
+            prompt,
+            flags=re.IGNORECASE,
+        )
+        if amount_match is None:
+            amount_match = re.search(
+                r"(?:payment|betaling)\s+(?:of|på)\s+(?P<value>\d+(?:[.,]\d+)?)",
+                prompt,
+                flags=re.IGNORECASE,
+            )
+        if amount_match:
+            fields["paidAmount"] = _parse_decimal(amount_match.group("value"))
+
+        if "paymentTypeLookup" not in fields:
+            if re.search(r"\b(?:bank|bankkonto|bank account)\b", prompt, flags=re.IGNORECASE):
+                fields["paymentTypeLookup"] = {"query": "bank"}
+            elif re.search(r"\b(?:cash|kontant)\b", prompt, flags=re.IGNORECASE):
+                fields["paymentTypeLookup"] = {"query": "kontant"}
+
+    if operation == Operation.CREATE_CREDIT_NOTE:
+        credit_note_date = _extract_named_value(
+            prompt,
+            [
+                (
+                    r"(?:credit note date|credit memo date|kreditnotadato|date)\s+"
+                    r"(?P<value>\d{4}-\d{2}-\d{2})"
+                ),
+            ],
+        )
+        if credit_note_date:
+            fields["creditNoteDate"] = credit_note_date
+
+        comment = _extract_named_value(
+            prompt,
+            [
+                r"(?:comment|kommentar)\s+(?P<value>[^,\n]+)",
+            ],
+        )
+        if comment:
+            fields["comment"] = comment
+
+        email_match = _EMAIL_RE.search(prompt)
+        if email_match:
+            fields["creditNoteEmail"] = email_match.group("email")
+
+    return lookup, fields
+
+
+def _extract_invoice_lookup(prompt: str) -> dict[str, object]:
+    lookup: dict[str, object] = {}
+
+    invoice_id = _extract_named_value(
+        prompt,
+        [
+            r"(?:invoice id|fakturaid|faktura id)\s+(?P<value>\d+)",
+        ],
+    )
+    if invoice_id:
+        lookup["id"] = int(invoice_id)
+
+    invoice_number = _extract_named_value(
+        prompt,
+        [
+            r"(?:invoice number|fakturanummer)\s+(?P<value>\d+)",
+            r"(?:for|på|on)?\s*(?:invoice|faktura)\s+(?P<value>\d+)",
+        ],
+    )
+    if invoice_number:
+        lookup["invoiceNumber"] = invoice_number
+
+    invoice_date = _extract_named_value(
+        prompt,
+        [
+            r"(?:invoice date|fakturadato)\s+(?P<value>\d{4}-\d{2}-\d{2})",
+        ],
+    )
+    if invoice_date:
+        lookup["invoiceDate"] = invoice_date
+
+    return lookup
+
+
 def _extract_project_payload(prompt: str) -> dict[str, object]:
     payload: dict[str, object] = {}
     project_name = _extract_named_value(
@@ -716,7 +946,10 @@ def _extract_project_payload(prompt: str) -> dict[str, object]:
     project_manager_name = _extract_named_value(
         prompt,
         [
-            r"(?:project manager|prosjektleder)\s+(?:named|med navn|with name)\s+(?P<value>[^,\n]+)",
+            (
+                r"(?:project manager|prosjektleder)\s+"
+                r"(?:named|med navn|with name)\s+(?P<value>[^,\n]+)"
+            ),
             r"(?:project manager|prosjektleder)\s+(?P<value>[^,\n]+)",
         ],
     )
@@ -752,9 +985,12 @@ def _clean_extracted_value(value: str) -> str:
 
 
 def _strip_project_manager_clause(value: str) -> str:
-    cleaned = re.split(r"\b(?:project manager|prosjektleder)\b", value, maxsplit=1, flags=re.IGNORECASE)[
-        0
-    ]
+    cleaned = re.split(
+        r"\b(?:project manager|prosjektleder)\b",
+        value,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
     return _clean_extracted_value(cleaned)
 
 
@@ -774,7 +1010,10 @@ def _strip_product_suffixes(value: str) -> str:
 
 def _strip_invoice_suffixes(value: str) -> str:
     cleaned = re.split(
-        r"\b(?:with|med)\s+(?:product|produkt)\b|\b(?:product number|produktnummer|varenummer|price|pris|quantity|count|antall)\b",
+        (
+            r"\b(?:with|med)\s+(?:product|produkt)\b|"
+            r"\b(?:product number|produktnummer|varenummer|price|pris|quantity|count|antall)\b"
+        ),
         value,
         maxsplit=1,
         flags=re.IGNORECASE,
@@ -785,6 +1024,19 @@ def _strip_invoice_suffixes(value: str) -> str:
 def _strip_invoice_line_suffixes(value: str) -> str:
     cleaned = re.split(
         r"\b(?:product number|produktnummer|varenummer|price|pris|quantity|count|antall)\b",
+        value,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return _clean_extracted_value(cleaned)
+
+
+def _strip_payment_type_suffixes(value: str) -> str:
+    cleaned = re.split(
+        (
+            r"\b(?:paid amount|payment amount|amount|betalt beløp|beløp|"
+            r"payment date|betalingsdato|date)\b"
+        ),
         value,
         maxsplit=1,
         flags=re.IGNORECASE,
