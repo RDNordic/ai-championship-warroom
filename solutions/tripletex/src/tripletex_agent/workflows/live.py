@@ -864,6 +864,7 @@ async def _find_single_voucher(
     client: TripletexClient,
     lookup: dict[str, Any],
 ) -> dict[str, Any]:
+    # Path 1: direct voucher id
     voucher_id = _coerce_int(lookup.get("id"))
     if voucher_id is not None:
         payload = await client.get(
@@ -877,25 +878,82 @@ async def _find_single_voucher(
             f"Voucher lookup by id {voucher_id} did not return a voucher"
         )
 
+    # Path 2: voucher number
     voucher_number = _stringify_lookup_value(lookup.get("voucherNumber") or lookup.get("number"))
-    if not voucher_number:
-        raise WorkflowExecutionError("Voucher lookup requires id or voucherNumber")
+    if voucher_number:
+        params = _compact_mapping(
+            {
+                "numberFrom": voucher_number,
+                "numberTo": voucher_number,
+                "count": 2,
+                "fields": client.select_fields("id", "voucherNumber", "date", "description"),
+            }
+        )
+        payload = await client.get("/ledger/voucher", params=params)
+        matches = client.unwrap_values(payload)
+        if len(matches) == 0:
+            raise WorkflowExecutionError(f"No voucher matched lookup {lookup!r}")
+        if len(matches) > 1:
+            raise WorkflowExecutionError(f"Voucher lookup was ambiguous for {lookup!r}")
+        return matches[0]
 
-    params = _compact_mapping(
-        {
-            "numberFrom": voucher_number,
-            "numberTo": voucher_number,
-            "count": 2,
-            "fields": client.select_fields("id", "voucherNumber", "date", "description"),
-        }
-    )
-    payload = await client.get("/ledger/voucher", params=params)
-    matches = client.unwrap_values(payload)
-    if len(matches) == 0:
-        raise WorkflowExecutionError(f"No voucher matched lookup {lookup!r}")
-    if len(matches) > 1:
-        raise WorkflowExecutionError(f"Voucher lookup was ambiguous for {lookup!r}")
-    return matches[0]
+    # Path 3: customer name/org → find their most recent paid invoice → get payment voucher
+    customer_name = lookup.get("name") or lookup.get("customerName")
+    org_number = _normalize_org_number(lookup.get("organizationNumber"))
+    if customer_name or org_number:
+        customer_lookup: dict[str, Any] = {}
+        if customer_name:
+            customer_lookup["customerName"] = customer_name
+        if org_number:
+            customer_lookup["organizationNumber"] = org_number
+        customer = await _find_single_customer(client, customer_lookup)
+        customer_id = _extract_id(customer)
+        if customer_id is None:
+            raise WorkflowExecutionError("Matched customer did not include an id for voucher lookup")
+
+        # Find most recent invoice for this customer (paid ones have vouchers)
+        inv_payload = await client.get(
+            "/invoice",
+            params={
+                "customerId": customer_id,
+                "count": 1,
+                "sorting": "id desc",
+                "fields": client.select_fields(
+                    "id", "invoiceNumber", "voucher(id,voucherNumber,date)"
+                ),
+            },
+        )
+        invoices = client.unwrap_values(inv_payload)
+        if not invoices:
+            raise WorkflowExecutionError(
+                f"No invoice found for customer to reverse voucher for {customer_name!r}"
+            )
+        invoice = invoices[0]
+        voucher = invoice.get("voucher") if isinstance(invoice, dict) else None
+        if isinstance(voucher, dict) and voucher.get("id"):
+            return voucher
+
+        # Fallback: search ledger vouchers by invoice number
+        inv_number = invoice.get("invoiceNumber") if isinstance(invoice, dict) else None
+        if inv_number:
+            v_payload = await client.get(
+                "/ledger/voucher",
+                params={
+                    "numberFrom": str(inv_number),
+                    "numberTo": str(inv_number),
+                    "count": 1,
+                    "fields": client.select_fields("id", "voucherNumber", "date"),
+                },
+            )
+            vouchers = client.unwrap_values(v_payload)
+            if vouchers:
+                return vouchers[0]
+
+        raise WorkflowExecutionError(
+            f"Could not find payment voucher for customer {customer_name!r}"
+        )
+
+    raise WorkflowExecutionError("Voucher lookup requires id, voucherNumber, or customer name")
 
 
 async def _find_single_travel_expense(
