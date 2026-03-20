@@ -5,9 +5,6 @@ data/
 *.pt
 *.onnx
 
-# Submission zip
-submission.zip
-
 # Training outputs
 runs/
 predictions.json
