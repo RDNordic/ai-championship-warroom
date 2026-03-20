@@ -70,7 +70,7 @@ Disk (JPEG) → cv2.imread() → BGR uint8
 1. **Run 1 — Baseline YOLOv8L** (50 epochs, original 248 images): val mAP50=0.646, score=0.7039
 2. **Inference tweaks** (`conf=0.01`, TTA `augment=True`, `max_det=1000`): score 0.7039 → **0.7175**
 3. **Copy-paste augmentation script** (`scripts/augment_copypaste.py`): GrabCut foreground extraction from 320 individual product images, inverse-frequency sampling for rare categories, 248 synthetic images with 10 pastes each
-4. **Run 2 — Augmented training** (50 epochs, 496 images): val mAP50=0.799, cls_loss=0.726 — large improvement over Run 1. Eval score TBD.
+4. **Run 2 — Augmented training** (50 epochs, 496 images): val mAP50=0.799, cls_loss=0.726 — large improvement over Run 1. Score=**0.8329**.
 5. **RGB channel investigation**: concluded not worth changing (see above)
 
 ### To Do Next (priority order)
