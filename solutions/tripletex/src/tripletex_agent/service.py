@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
+from contextlib import nullcontext
+from dataclasses import dataclass
+from uuid import uuid4
 
 from .client import TripletexClient
 from .config import AppSettings
 from .models import SolveRequest, SolveResponse, TripletexCredentials
 from .planner import Planner, build_default_planner
+from .runtime_context import bind_runtime_context
+from .solve_logging import SolveEventLogger, SolveRequestContext
 from .task_plan import TaskFamily
 from .workflows import (
     CustomerCreateWorkflow,
     DepartmentCreateWorkflow,
     EmployeeCreateWorkflow,
     InvoiceCreateWorkflow,
+    InvoiceCreditNoteWorkflow,
+    InvoicePaymentWorkflow,
     ProductCreateWorkflow,
     ProjectCreateWorkflow,
     StubWorkflow,
@@ -23,6 +31,14 @@ from .workflows import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _SolveTrace:
+    """Resolved trace metadata used through the lifetime of one solve call."""
+
+    trace_id: str
+    context: SolveRequestContext
 
 
 class SolverService:
@@ -34,29 +50,138 @@ class SolverService:
         planner: Planner,
         workflows: WorkflowRegistry,
         client_factory: Callable[[TripletexCredentials], TripletexClient],
+        event_logger: SolveEventLogger | None = None,
     ) -> None:
         self._planner = planner
         self._workflows = workflows
         self._client_factory = client_factory
+        self._event_logger = event_logger
 
-    async def solve(self, request: SolveRequest) -> SolveResponse:
-        plan = await asyncio.to_thread(self._planner.plan, request.prompt, request.files)
-        workflow = self._workflows.for_plan(plan)
-
-        async with self._client_factory(request.tripletex_credentials) as client:
-            result = await workflow.execute(plan=plan, client=client)
-
+    async def solve(
+        self,
+        request: SolveRequest,
+        *,
+        context: SolveRequestContext | None = None,
+    ) -> SolveResponse:
+        trace = _resolve_trace(context)
+        self._record_received(request=request, trace=trace)
         logger.info(
-            "Solved request with scaffold workflow",
-            extra={
-                "task_family": plan.task_family.value,
-                "operation": plan.operation.value,
-                "workflow": result.name,
-                "intended_operations": result.intended_operations,
-            },
+            "Received solve request trace_id=%s prompt=%r attachments=%s base_url=%s client=%s",
+            trace.trace_id,
+            request.prompt,
+            [attachment.filename for attachment in request.files],
+            request.tripletex_credentials.base_url,
+            trace.context.client_host,
+        )
+        plan = None
+        workflow_name = None
+        try:
+            runtime_context = (
+                bind_runtime_context(
+                    request_context=trace.context,
+                    event_logger=self._event_logger,
+                )
+                if self._event_logger is not None
+                else nullcontext()
+            )
+            with runtime_context:
+                plan = await asyncio.to_thread(self._planner.plan, request.prompt, request.files)
+                workflow = self._workflows.for_plan(plan)
+                workflow_name = workflow.__class__.__name__
+                self._record_planned(plan=plan, workflow_name=workflow_name, trace=trace)
+                logger.info(
+                    "Planned solve trace_id=%s workflow=%s plan=%s",
+                    trace.trace_id,
+                    workflow_name,
+                    json.dumps(plan.model_dump(), ensure_ascii=False, default=str),
+                )
+
+                async with self._client_factory(request.tripletex_credentials) as client:
+                    result = await workflow.execute(plan=plan, client=client)
+        except Exception as exc:
+            self._record_failed(error=exc, trace=trace, plan=plan, workflow_name=workflow_name)
+            logger.exception(
+                "Solve request failed trace_id=%s prompt=%r",
+                trace.trace_id,
+                request.prompt,
+            )
+            raise
+
+        self._record_completed(
+            plan=plan,
+            workflow_name=workflow_name,
+            result=result,
+            trace=trace,
+        )
+        logger.info(
+            (
+                "Solved request trace_id=%s task_family=%s operation=%s workflow=%s "
+                "operations=%s resources=%s details=%s"
+            ),
+            trace.trace_id,
+            plan.task_family.value,
+            plan.operation.value,
+            result.name,
+            result.intended_operations,
+            result.resource_ids,
+            json.dumps(result.details, ensure_ascii=False, default=str),
         )
 
         return SolveResponse(status="completed")
+
+    def _record_received(self, *, request: SolveRequest, trace: _SolveTrace) -> None:
+        if self._event_logger is None:
+            return
+        self._event_logger.record_received(request=request, context=trace.context)
+
+    def _record_planned(
+        self,
+        *,
+        plan,
+        workflow_name: str,
+        trace: _SolveTrace,
+    ) -> None:
+        if self._event_logger is None:
+            return
+        self._event_logger.record_planned(
+            plan=plan,
+            workflow_name=workflow_name,
+            context=trace.context,
+        )
+
+    def _record_completed(
+        self,
+        *,
+        plan,
+        workflow_name: str,
+        result,
+        trace: _SolveTrace,
+    ) -> None:
+        if self._event_logger is None:
+            return
+        self._event_logger.record_completed(
+            plan=plan,
+            workflow_name=workflow_name,
+            result=result,
+            context=trace.context,
+        )
+
+    def _record_failed(
+        self,
+        *,
+        error: Exception,
+        trace: _SolveTrace,
+        plan=None,
+        workflow_name: str | None = None,
+    ) -> None:
+        if self._event_logger is None:
+            return
+        self._event_logger.record_failed(
+            error=error,
+            context=trace.context,
+            plan=plan,
+            workflow_name=workflow_name,
+        )
 
 
 def build_default_service() -> SolverService:
@@ -69,6 +194,8 @@ def build_default_service() -> SolverService:
             DepartmentCreateWorkflow(),
             ProjectCreateWorkflow(),
             InvoiceCreateWorkflow(),
+            InvoicePaymentWorkflow(),
+            InvoiceCreditNoteWorkflow(),
         ],
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )
@@ -77,4 +204,13 @@ def build_default_service() -> SolverService:
         planner=build_default_planner(settings),
         workflows=workflows,
         client_factory=TripletexClient.from_credentials,
+        event_logger=SolveEventLogger(settings.solve_event_log_path),
     )
+
+
+def _resolve_trace(context: SolveRequestContext | None) -> _SolveTrace:
+    if context is not None:
+        return _SolveTrace(trace_id=context.trace_id, context=context)
+
+    generated_context = SolveRequestContext(trace_id=str(uuid4()))
+    return _SolveTrace(trace_id=generated_context.trace_id, context=generated_context)

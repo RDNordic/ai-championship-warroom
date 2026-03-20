@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import time
 from typing import Any
 
 import httpx
 
 from .models import TripletexCredentials
+from .runtime_context import current_event_logger, current_request_context
 
 
 class TripletexAPIError(RuntimeError):
@@ -45,14 +47,14 @@ class TripletexClient:
         credentials: TripletexCredentials,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
-    ) -> "TripletexClient":
+    ) -> TripletexClient:
         return cls(
             base_url=credentials.base_url,
             session_token=credentials.basic_auth_password(),
             transport=transport,
         )
 
-    async def __aenter__(self) -> "TripletexClient":
+    async def __aenter__(self) -> TripletexClient:
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -81,7 +83,7 @@ class TripletexClient:
 
     @staticmethod
     def _default_headers(session_token: str) -> dict[str, str]:
-        raw = f"0:{session_token}".encode("utf-8")
+        raw = f"0:{session_token}".encode()
         encoded = base64.b64encode(raw).decode("ascii")
         return {
             "Authorization": f"Basic {encoded}",
@@ -148,8 +150,20 @@ class TripletexClient:
         json_body: Any | None = None,
         expected_status: tuple[int, ...] = (200,),
     ) -> Any:
+        started_at = time.perf_counter()
         response = await self._client.request(method, path, params=params, json=json_body)
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
         payload = self._decode_response(response)
+        self._record_call(
+            method=method,
+            path=path,
+            params=params,
+            json_body=json_body,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+            expected_status=expected_status,
+            response_payload=payload,
+        )
 
         if response.status_code not in expected_status:
             raise TripletexAPIError(
@@ -170,3 +184,44 @@ class TripletexClient:
             return response.json()
 
         return response.text
+
+    def _record_call(
+        self,
+        *,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None,
+        json_body: Any | None,
+        status_code: int,
+        duration_ms: int,
+        expected_status: tuple[int, ...],
+        response_payload: Any | None,
+    ) -> None:
+        request_context = current_request_context()
+        event_logger = current_event_logger()
+        if request_context is None or event_logger is None:
+            return
+
+        event_logger.record_tripletex_call(
+            context=request_context,
+            method=method,
+            path=path,
+            params=_jsonable_payload(params),
+            json_body=_jsonable_payload(json_body),
+            status_code=status_code,
+            duration_ms=duration_ms,
+            expected_status=expected_status,
+            response_payload=_jsonable_payload(response_payload),
+        )
+
+
+def _jsonable_payload(payload: Any) -> Any:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        return {str(key): _jsonable_payload(value) for key, value in payload.items()}
+    if isinstance(payload, (list, tuple)):
+        return [_jsonable_payload(value) for value in payload]
+    if isinstance(payload, (str, int, float, bool)):
+        return payload
+    return str(payload)
