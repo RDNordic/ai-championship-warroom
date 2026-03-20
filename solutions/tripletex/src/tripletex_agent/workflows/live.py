@@ -1,0 +1,1004 @@
+"""First live Tripletex workflows for the real implementation phase."""
+
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta
+from typing import Any
+
+from ..client import TripletexAPIError, TripletexClient
+from ..task_plan import Operation, TaskFamily, TaskPlan
+from .base import BaseWorkflow, WorkflowExecutionError, WorkflowResult
+
+_DEFAULT_INVOICE_BANK_ACCOUNT_NUMBER = "12345678903"
+_DEFAULT_INVOICE_DUE_DAYS = 14
+_DEFAULT_INVOICE_LOOKUP_DATE_FROM = "2000-01-01"
+_DEFAULT_INVOICE_LOOKUP_DATE_TO = "2100-01-01"
+_DEFAULT_EMPLOYEE_USER_TYPE = "NO_ACCESS"
+
+
+def _compact_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in mapping.items() if value is not None}
+
+
+def _compact_address(mapping: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not mapping:
+        return None
+    compacted = _compact_mapping(mapping)
+    return compacted or None
+
+
+def _require_payload(plan: TaskPlan, entity_type: str) -> dict[str, Any]:
+    payload = plan.primary_payload(entity_type)
+    if payload is None:
+        raise WorkflowExecutionError(f"Expected payload for entity type {entity_type}")
+    return payload.fields
+
+
+def _require_reference(plan: TaskPlan, entity_type: str) -> dict[str, Any]:
+    reference = plan.primary_reference(entity_type)
+    if reference is None:
+        raise WorkflowExecutionError(f"Expected reference for entity type {entity_type}")
+    return reference.lookup
+
+
+class CustomerCreateWorkflow(BaseWorkflow):
+    family = TaskFamily.CUSTOMERS_PRODUCTS
+    entity_type = "customer"
+    supported_operations = (Operation.CREATE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        fields = _require_payload(plan, "customer")
+        name = fields.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise WorkflowExecutionError("Customer creation requires a name")
+
+        body = _compact_mapping(
+            {
+                "name": name.strip(),
+                "organizationNumber": _normalize_org_number(fields.get("organizationNumber")),
+                "email": fields.get("email"),
+                "invoiceEmail": fields.get("invoiceEmail"),
+                "phoneNumber": fields.get("phoneNumber"),
+                "phoneNumberMobile": fields.get("phoneNumberMobile"),
+                "description": fields.get("description"),
+                "language": fields.get("language"),
+                "postalAddress": _compact_address(_as_dict(fields.get("postalAddress"))),
+                "physicalAddress": _compact_address(_as_dict(fields.get("physicalAddress"))),
+                "isCustomer": True,
+            }
+        )
+
+        response = await client.post("/customer", json_body=body)
+        created = client.unwrap_value(response)
+        created_id = _extract_id(created)
+
+        return WorkflowResult(
+            name="customer_create",
+            intended_operations=["POST /customer"],
+            resource_ids=[created_id] if created_id is not None else [],
+            details={"entity": "customer", "created": created},
+        )
+
+
+class ProductCreateWorkflow(BaseWorkflow):
+    family = TaskFamily.CUSTOMERS_PRODUCTS
+    entity_type = "product"
+    supported_operations = (Operation.CREATE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        fields = _require_payload(plan, "product")
+        name = fields.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise WorkflowExecutionError("Product creation requires a name")
+
+        body = _compact_mapping(
+            {
+                "name": name.strip(),
+                "number": fields.get("number"),
+                "description": fields.get("description"),
+                "orderLineDescription": fields.get("orderLineDescription"),
+                "priceExcludingVatCurrency": fields.get("priceExcludingVatCurrency"),
+                "costExcludingVatCurrency": fields.get("costExcludingVatCurrency"),
+                "isInactive": fields.get("isInactive"),
+                "isStockItem": fields.get("isStockItem"),
+            }
+        )
+
+        response = await client.post("/product", json_body=body)
+        created = client.unwrap_value(response)
+        created_id = _extract_id(created)
+
+        return WorkflowResult(
+            name="product_create",
+            intended_operations=["POST /product"],
+            resource_ids=[created_id] if created_id is not None else [],
+            details={"entity": "product", "created": created},
+        )
+
+
+class InvoiceCreateWorkflow(BaseWorkflow):
+    family = TaskFamily.INVOICING
+    entity_type = "invoice"
+    supported_operations = (Operation.CREATE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        fields = _require_payload(plan, "invoice")
+        send_to_customer = plan.action_semantics.send_to_customer is True
+
+        customer_lookup = _as_dict(fields.get("customerLookup"))
+        if not customer_lookup:
+            raise WorkflowExecutionError("Invoice creation requires a customer reference")
+        customer = await _find_single_customer(client, customer_lookup)
+        customer_id = _extract_id(customer)
+        if customer_id is None:
+            raise WorkflowExecutionError("Matched customer did not include an id")
+
+        line_fields = _as_dict(fields.get("line")) or {}
+        order_line = await _build_invoice_order_line(client, line_fields)
+
+        invoice_date = _normalize_date(fields.get("invoiceDate")) or date.today().isoformat()
+        due_date = _normalize_date(fields.get("invoiceDueDate")) or _add_days(
+            invoice_date, _DEFAULT_INVOICE_DUE_DAYS
+        )
+        delivery_date = _normalize_date(fields.get("deliveryDate")) or invoice_date
+
+        bank_account_id: int | None = None
+        bank_account_was_updated = False
+        if send_to_customer:
+            bank_account, bank_account_was_updated = await _ensure_invoice_bank_account_configured(
+                client
+            )
+            bank_account_id = _extract_id(bank_account)
+
+        body = _compact_mapping(
+            {
+                "invoiceDate": invoice_date,
+                "invoiceDueDate": due_date,
+                "comment": fields.get("comment"),
+                "customer": {"id": customer_id},
+                "orders": [
+                    _compact_mapping(
+                        {
+                            "customer": {"id": customer_id},
+                            "orderDate": invoice_date,
+                            "deliveryDate": delivery_date,
+                            "invoiceComment": fields.get("invoiceComment"),
+                            "orderLines": [order_line],
+                        }
+                    )
+                ],
+            }
+        )
+
+        response = await client.post(
+            "/invoice",
+            params={"sendToCustomer": send_to_customer},
+            json_body=body,
+        )
+        created = client.unwrap_value(response)
+        created_id = _extract_id(created)
+
+        intended_operations = ["GET /customer", "POST /invoice"]
+        if _as_dict(line_fields.get("productLookup")):
+            intended_operations.insert(1, "GET /product")
+        if send_to_customer:
+            ledger_index = 1 if "GET /product" not in intended_operations else 2
+            intended_operations.insert(ledger_index, "GET /ledger/account")
+        if bank_account_was_updated:
+            intended_operations.insert(len(intended_operations) - 1, "PUT /ledger/account/{id}")
+
+        return WorkflowResult(
+            name="invoice_create",
+            intended_operations=intended_operations,
+            resource_ids=[created_id] if created_id is not None else [],
+            details={
+                "entity": "invoice",
+                "customerId": customer_id,
+                "invoiceId": created_id,
+                "sendToCustomer": send_to_customer,
+                "invoiceBankAccountId": bank_account_id,
+                "invoiceBankAccountUpdated": bank_account_was_updated,
+                "created": created,
+            },
+        )
+
+
+class InvoicePaymentWorkflow(BaseWorkflow):
+    family = TaskFamily.INVOICING
+    entity_type = "invoice"
+    supported_operations = (Operation.REGISTER_PAYMENT,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "invoice")
+        fields = plan.fields_to_set
+
+        invoice = await _find_single_invoice(client, lookup)
+        invoice_id = _extract_id(invoice)
+        if invoice_id is None:
+            raise WorkflowExecutionError("Matched invoice did not include an id")
+
+        payment_date = _normalize_date(fields.get("paymentDate")) or date.today().isoformat()
+        paid_amount = _coerce_number(fields.get("paidAmount"))
+        if paid_amount is None:
+            paid_amount = _coerce_number(invoice.get("amountOutstanding"))
+        if paid_amount is None:
+            paid_amount = _coerce_number(invoice.get("amount"))
+        if paid_amount is None or paid_amount <= 0:
+            raise WorkflowExecutionError("Invoice payment requires a positive paid amount")
+
+        payment_type_lookup = _as_dict(fields.get("paymentTypeLookup"))
+        payment_type = await _find_invoice_payment_type(client, payment_type_lookup)
+        payment_type_id = _extract_id(payment_type)
+        if payment_type_id is None:
+            raise WorkflowExecutionError("Matched payment type did not include an id")
+
+        response = await client.put(
+            f"/invoice/{invoice_id}/:payment",
+            params=_compact_mapping(
+                {
+                    "paymentDate": payment_date,
+                    "paymentTypeId": payment_type_id,
+                    "paidAmount": paid_amount,
+                    "paidAmountCurrency": _coerce_number(fields.get("paidAmountCurrency")),
+                }
+            ),
+        )
+        updated = client.unwrap_value(response)
+
+        return WorkflowResult(
+            name="invoice_payment",
+            intended_operations=[
+                _invoice_lookup_operation(lookup),
+                "GET /invoice/paymentType",
+                "PUT /invoice/{id}/:payment",
+            ],
+            resource_ids=[invoice_id],
+            details={
+                "entity": "invoice",
+                "invoiceId": invoice_id,
+                "invoiceNumber": invoice.get("invoiceNumber"),
+                "paymentTypeId": payment_type_id,
+                "paidAmount": paid_amount,
+                "updated": updated,
+            },
+        )
+
+
+class InvoiceCreditNoteWorkflow(BaseWorkflow):
+    family = TaskFamily.INVOICING
+    entity_type = "invoice"
+    supported_operations = (Operation.CREATE_CREDIT_NOTE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "invoice")
+        fields = plan.fields_to_set
+
+        invoice = await _find_single_invoice(client, lookup)
+        invoice_id = _extract_id(invoice)
+        if invoice_id is None:
+            raise WorkflowExecutionError("Matched invoice did not include an id")
+        if invoice.get("isCreditNote") is True:
+            raise WorkflowExecutionError("Cannot create a credit note from a credit note")
+
+        credit_note_date = _normalize_date(fields.get("creditNoteDate")) or date.today().isoformat()
+        response = await client.put(
+            f"/invoice/{invoice_id}/:createCreditNote",
+            params=_compact_mapping(
+                {
+                    "date": credit_note_date,
+                    "comment": fields.get("comment"),
+                    "creditNoteEmail": fields.get("creditNoteEmail"),
+                    "sendToCustomer": False,
+                }
+            ),
+        )
+        created = client.unwrap_value(response)
+        credit_note_id = _extract_id(created)
+
+        return WorkflowResult(
+            name="invoice_credit_note",
+            intended_operations=[
+                _invoice_lookup_operation(lookup),
+                "PUT /invoice/{id}/:createCreditNote",
+            ],
+            resource_ids=[credit_note_id] if credit_note_id is not None else [],
+            details={
+                "entity": "invoice",
+                "sourceInvoiceId": invoice_id,
+                "sourceInvoiceNumber": invoice.get("invoiceNumber"),
+                "creditNoteId": credit_note_id,
+                "created": created,
+            },
+        )
+
+
+class EmployeeCreateWorkflow(BaseWorkflow):
+    family = TaskFamily.EMPLOYEES
+    entity_type = "employee"
+    supported_operations = (Operation.CREATE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        fields = _require_payload(plan, "employee")
+        first_name = fields.get("firstName")
+        last_name = fields.get("lastName")
+        if not isinstance(first_name, str) or not first_name.strip():
+            raise WorkflowExecutionError("Employee creation requires firstName")
+        if not isinstance(last_name, str) or not last_name.strip():
+            raise WorkflowExecutionError("Employee creation requires lastName")
+
+        user_type = fields.get("userType")
+        normalized_user_type = (
+            user_type.strip().upper()
+            if isinstance(user_type, str) and user_type.strip()
+            else _DEFAULT_EMPLOYEE_USER_TYPE
+        )
+        if normalized_user_type not in {"STANDARD", "EXTENDED", "NO_ACCESS"}:
+            raise WorkflowExecutionError(
+                f"Employee creation received unsupported userType {normalized_user_type!r}"
+            )
+        department = await _resolve_employee_department(client, fields)
+        department_id = _extract_id(department)
+        if department_id is None:
+            raise WorkflowExecutionError("Matched department did not include an id")
+
+        body = _compact_mapping(
+            {
+                "firstName": first_name.strip(),
+                "lastName": last_name.strip(),
+                "email": fields.get("email"),
+                "employeeNumber": fields.get("employeeNumber"),
+                "phoneNumberMobile": fields.get("phoneNumberMobile"),
+                "comments": fields.get("comments"),
+                "address": _compact_address(_as_dict(fields.get("address"))),
+                "userType": normalized_user_type,
+                "department": {"id": department_id},
+            }
+        )
+
+        response = await client.post("/employee", json_body=body)
+        created = client.unwrap_value(response)
+        created_id = _extract_id(created)
+
+        return WorkflowResult(
+            name="employee_create",
+            intended_operations=["GET /department", "POST /employee"],
+            resource_ids=[created_id] if created_id is not None else [],
+            details={
+                "entity": "employee",
+                "departmentId": department_id,
+                "userType": normalized_user_type,
+                "created": created,
+            },
+        )
+
+
+class DepartmentCreateWorkflow(BaseWorkflow):
+    family = TaskFamily.DEPARTMENTS
+    entity_type = "department"
+    supported_operations = (Operation.CREATE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        fields = _require_payload(plan, "department")
+        name = fields.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise WorkflowExecutionError("Department creation requires a name")
+
+        body = _compact_mapping(
+            {
+                "name": name.strip(),
+                "departmentNumber": fields.get("departmentNumber"),
+            }
+        )
+
+        response = await client.post("/department", json_body=body)
+        created = client.unwrap_value(response)
+        created_id = _extract_id(created)
+
+        return WorkflowResult(
+            name="department_create",
+            intended_operations=["POST /department"],
+            resource_ids=[created_id] if created_id is not None else [],
+            details={"entity": "department", "created": created},
+        )
+
+
+class ProjectCreateWorkflow(BaseWorkflow):
+    family = TaskFamily.PROJECTS
+    entity_type = "project"
+    supported_operations = (Operation.CREATE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        fields = _require_payload(plan, "project")
+        name = fields.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise WorkflowExecutionError("Project creation requires a name")
+
+        customer_lookup = _as_dict(fields.get("customerLookup"))
+        if not customer_lookup:
+            raise WorkflowExecutionError(
+                "Project creation requires customerName or customerOrganizationNumber"
+            )
+        customer = await _find_single_customer(client, customer_lookup)
+        customer_id = _extract_id(customer)
+        if customer_id is None:
+            raise WorkflowExecutionError("Matched customer did not include an id")
+        project_manager_lookup = _as_dict(fields.get("projectManagerLookup"))
+        project_manager = await _resolve_project_manager(client, project_manager_lookup)
+        project_manager_id = _extract_id(project_manager)
+        if project_manager_id is None:
+            raise WorkflowExecutionError("Matched project manager did not include an id")
+
+        body = _compact_mapping(
+            {
+                "name": name.strip(),
+                "number": fields.get("number"),
+                "description": fields.get("description"),
+                "startDate": fields.get("startDate") or date.today().isoformat(),
+                "endDate": fields.get("endDate"),
+                "isInternal": fields.get("isInternal"),
+                "isOffer": fields.get("isOffer"),
+                "customer": {"id": customer_id},
+                "projectManager": {"id": project_manager_id},
+            }
+        )
+
+        response = await client.post("/project", json_body=body)
+        created = client.unwrap_value(response)
+        created_id = _extract_id(created)
+
+        return WorkflowResult(
+            name="project_create",
+            intended_operations=["GET /customer", "POST /project"],
+            resource_ids=[created_id] if created_id is not None else [],
+            details={
+                "entity": "project",
+                "customerId": customer_id,
+                "projectManagerId": project_manager_id,
+                "created": created,
+            },
+        )
+
+
+async def _find_single_customer(
+    client: TripletexClient, lookup: dict[str, Any]
+) -> dict[str, Any]:
+    params = _compact_mapping(
+        {
+            "customerName": lookup.get("customerName") or lookup.get("name"),
+            "organizationNumber": _normalize_org_number(lookup.get("organizationNumber")),
+            "email": lookup.get("email"),
+            "count": 2,
+            "fields": client.select_fields("id", "name", "organizationNumber", "email"),
+        }
+    )
+    if not params or set(params) <= {"count", "fields"}:
+        raise WorkflowExecutionError("Customer lookup requires name, organization number, or email")
+
+    payload = await client.get("/customer", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No customer matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Customer lookup was ambiguous for {lookup!r}")
+    return matches[0]
+
+
+async def _find_single_product(
+    client: TripletexClient, lookup: dict[str, Any]
+) -> dict[str, Any]:
+    params = _compact_mapping(
+        {
+            "name": lookup.get("name"),
+            "count": 2,
+            "sorting": "name",
+            "fields": client.select_fields(
+                "id",
+                "name",
+                "number",
+                "priceExcludingVatCurrency",
+            ),
+        }
+    )
+    product_number = lookup.get("productNumber") or lookup.get("number")
+    if product_number is not None:
+        params["productNumber"] = [product_number]
+    if lookup.get("id") is not None:
+        params["ids"] = str(lookup["id"])
+
+    if not params or set(params) <= {"count", "sorting", "fields"}:
+        raise WorkflowExecutionError("Product lookup requires id, name, or product number")
+
+    payload = await client.get("/product", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No product matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Product lookup was ambiguous for {lookup!r}")
+    return matches[0]
+
+
+async def _find_single_invoice(
+    client: TripletexClient,
+    lookup: dict[str, Any],
+) -> dict[str, Any]:
+    invoice_id = _coerce_int(lookup.get("id"))
+    if invoice_id is not None:
+        try:
+            payload = await client.get(
+                f"/invoice/{invoice_id}",
+                params={
+                    "fields": client.select_fields(
+                        "id",
+                        "invoiceNumber",
+                        "invoiceDate",
+                        "amount",
+                        "amountOutstanding",
+                        "isCreditNote",
+                        "isCredited",
+                    )
+                },
+            )
+        except TripletexAPIError as exc:
+            if exc.status_code != 404 or "invoiceNumber" in lookup:
+                raise
+            lookup = {**lookup, "invoiceNumber": str(invoice_id)}
+        else:
+            invoice = client.unwrap_value(payload)
+            if isinstance(invoice, dict):
+                return invoice
+            raise WorkflowExecutionError(
+                f"Invoice lookup by id {invoice_id} did not return an invoice"
+            )
+
+    params = _compact_mapping(
+        {
+            "invoiceDateFrom": _invoice_date_from_lookup(lookup),
+            "invoiceDateTo": _invoice_date_to_lookup(lookup),
+            "invoiceNumber": _stringify_lookup_value(lookup.get("invoiceNumber")),
+            "count": 2,
+            "fields": client.select_fields(
+                "id",
+                "invoiceNumber",
+                "invoiceDate",
+                "amount",
+                "amountOutstanding",
+                "isCreditNote",
+                "isCredited",
+            ),
+        }
+    )
+
+    customer_lookup = _as_dict(lookup.get("customerLookup"))
+    if customer_lookup:
+        customer = await _find_single_customer(client, customer_lookup)
+        customer_id = _extract_id(customer)
+        if customer_id is None:
+            raise WorkflowExecutionError("Matched customer did not include an id")
+        params["customerId"] = customer_id
+
+    if "invoiceNumber" not in params and "customerId" not in params:
+        raise WorkflowExecutionError("Invoice lookup requires id, invoiceNumber, or customerLookup")
+
+    payload = await client.get("/invoice", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No invoice matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Invoice lookup was ambiguous for {lookup!r}")
+    return matches[0]
+
+
+async def _find_invoice_payment_type(
+    client: TripletexClient,
+    lookup: dict[str, Any] | None,
+) -> dict[str, Any]:
+    fields = client.select_fields(
+        "id",
+        "description",
+        "displayName",
+        "sequence",
+        "currencyCode",
+        "debitAccount(number,name)",
+    )
+    payment_type_id = _coerce_int(lookup.get("id")) if lookup else None
+    if payment_type_id is not None:
+        payload = await client.get(
+            f"/invoice/paymentType/{payment_type_id}",
+            params={"fields": fields},
+        )
+        payment_type = client.unwrap_value(payload)
+        if isinstance(payment_type, dict):
+            return payment_type
+        raise WorkflowExecutionError(
+            f"Invoice payment type lookup by id {payment_type_id} did not return a payment type"
+        )
+
+    params = _compact_mapping(
+        {
+            "description": lookup.get("description") if lookup else None,
+            "query": lookup.get("query") if lookup else None,
+            "count": 10 if not lookup else 2,
+            "sorting": "sequence,id",
+            "fields": fields,
+        }
+    )
+
+    payload = await client.get("/invoice/paymentType", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No invoice payment type matched lookup {lookup!r}")
+
+    if lookup:
+        exact_matches = _filter_payment_types(matches, lookup)
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+        if len(exact_matches) > 1:
+            raise WorkflowExecutionError(
+                f"Invoice payment type lookup was ambiguous for {lookup!r}"
+            )
+        if len(matches) == 1:
+            return matches[0]
+        raise WorkflowExecutionError(
+            f"Invoice payment type lookup was ambiguous for {lookup!r}"
+        )
+
+    return _pick_default_payment_type(matches)
+
+
+async def _resolve_project_manager(
+    client: TripletexClient, lookup: dict[str, Any] | None
+) -> dict[str, Any]:
+    if lookup:
+        return await _find_single_employee(client, lookup, require_assignable=True)
+    return await _find_default_project_manager(client)
+
+
+async def _resolve_employee_department(
+    client: TripletexClient,
+    fields: dict[str, Any],
+) -> dict[str, Any]:
+    department_lookup = _as_dict(fields.get("department"))
+    department_id = _coerce_int(fields.get("departmentId"))
+    if department_lookup is None and department_id is not None:
+        department_lookup = {"id": department_id}
+    if department_lookup:
+        return await _find_single_department(client, department_lookup)
+    return await _find_default_department(client)
+
+
+async def _find_default_department(client: TripletexClient) -> dict[str, Any]:
+    payload = await client.get(
+        "/department",
+        params={
+            "count": 1,
+            "sorting": "id",
+            "fields": client.select_fields("id", "name", "departmentNumber"),
+        },
+    )
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError("No default department was available for employee creation")
+    return matches[0]
+
+
+async def _find_single_department(
+    client: TripletexClient,
+    lookup: dict[str, Any],
+) -> dict[str, Any]:
+    params = _compact_mapping(
+        {
+            "id": lookup.get("id"),
+            "name": lookup.get("name"),
+            "departmentNumber": lookup.get("departmentNumber") or lookup.get("number"),
+            "count": 2,
+            "sorting": "id",
+            "fields": client.select_fields("id", "name", "departmentNumber"),
+        }
+    )
+    if not params or set(params) <= {"count", "sorting", "fields"}:
+        raise WorkflowExecutionError("Department lookup requires id, name, or departmentNumber")
+
+    payload = await client.get("/department", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No department matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Department lookup was ambiguous for {lookup!r}")
+    return matches[0]
+
+
+async def _find_default_project_manager(client: TripletexClient) -> dict[str, Any]:
+    payload = await client.get(
+        "/employee",
+        params={
+            "assignableProjectManagers": True,
+            "count": 1,
+            "sorting": "id",
+            "fields": client.select_fields(
+                "id",
+                "firstName",
+                "lastName",
+                "displayName",
+                "employeeNumber",
+                "email",
+            ),
+        },
+    )
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError("No assignable project manager was available")
+    return matches[0]
+
+
+async def _find_single_employee(
+    client: TripletexClient,
+    lookup: dict[str, Any],
+    *,
+    require_assignable: bool = False,
+) -> dict[str, Any]:
+    params = _compact_mapping(
+        {
+            "id": lookup.get("id"),
+            "firstName": lookup.get("firstName"),
+            "lastName": lookup.get("lastName"),
+            "employeeNumber": lookup.get("employeeNumber") or lookup.get("number"),
+            "email": lookup.get("email"),
+            "assignableProjectManagers": True if require_assignable else None,
+            "count": 2,
+            "sorting": "id",
+            "fields": client.select_fields(
+                "id",
+                "firstName",
+                "lastName",
+                "displayName",
+                "employeeNumber",
+                "email",
+            ),
+        }
+    )
+    if not params or set(params) <= {"assignableProjectManagers", "count", "sorting", "fields"}:
+        raise WorkflowExecutionError(
+            "Employee lookup requires id, firstName/lastName, employeeNumber, or email"
+        )
+
+    payload = await client.get("/employee", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No employee matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Employee lookup was ambiguous for {lookup!r}")
+    return matches[0]
+
+
+async def _build_invoice_order_line(
+    client: TripletexClient, line_fields: dict[str, Any]
+) -> dict[str, Any]:
+    if not line_fields:
+        raise WorkflowExecutionError("Invoice creation requires at least one line item")
+
+    product_lookup = _as_dict(line_fields.get("productLookup"))
+    product_id: int | None = None
+    if product_lookup:
+        product = await _find_single_product(client, product_lookup)
+        product_id = _extract_id(product)
+        if product_id is None:
+            raise WorkflowExecutionError("Matched product did not include an id")
+
+    description = line_fields.get("description")
+    unit_price = line_fields.get("unitPriceExcludingVatCurrency")
+    count = line_fields.get("count")
+    normalized_count = count if isinstance(count, (int, float)) else 1
+
+    if product_id is None and not isinstance(description, str):
+        raise WorkflowExecutionError(
+            "Invoice line requires either a product reference or a description"
+        )
+    if product_id is None and not isinstance(unit_price, (int, float)):
+        raise WorkflowExecutionError(
+            "Invoice line without a product reference requires a unit price"
+        )
+
+    return _compact_mapping(
+        {
+            "product": {"id": product_id} if product_id is not None else None,
+            "description": description.strip() if isinstance(description, str) else None,
+            "count": normalized_count,
+            "unitPriceExcludingVatCurrency": unit_price,
+        }
+    )
+
+
+async def _ensure_invoice_bank_account_configured(
+    client: TripletexClient,
+) -> tuple[dict[str, Any], bool]:
+    payload = await client.get(
+        "/ledger/account",
+        params={
+            "isBankAccount": True,
+            "count": 10,
+            "sorting": "number",
+            "fields": client.select_fields(
+                "id",
+                "number",
+                "name",
+                "isBankAccount",
+                "isInvoiceAccount",
+                "bankAccountNumber",
+            ),
+        },
+    )
+    accounts = client.unwrap_values(payload)
+    invoice_accounts = [
+        account
+        for account in accounts
+        if isinstance(account, dict) and account.get("isInvoiceAccount")
+    ]
+    if not invoice_accounts:
+        raise WorkflowExecutionError("No invoice bank account was available")
+
+    account = invoice_accounts[0]
+    existing_number = account.get("bankAccountNumber")
+    if isinstance(existing_number, str) and existing_number.strip():
+        return account, False
+
+    account_id = _extract_id(account)
+    if account_id is None:
+        raise WorkflowExecutionError("Invoice bank account did not include an id")
+
+    updated = await client.put(
+        f"/ledger/account/{account_id}",
+        json_body={"bankAccountNumber": _DEFAULT_INVOICE_BANK_ACCOUNT_NUMBER},
+    )
+    unwrapped = client.unwrap_value(updated)
+    if isinstance(unwrapped, dict):
+        return unwrapped, True
+    raise WorkflowExecutionError("Invoice bank account update did not return an account payload")
+
+
+def _extract_id(payload: Any) -> int | None:
+    if isinstance(payload, dict):
+        value = payload.get("id")
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _normalize_org_number(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    digits = "".join(ch for ch in value if ch.isdigit())
+    return digits or None
+
+
+def _as_dict(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _coerce_number(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.replace(",", "."))
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_date(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return None
+
+
+def _add_days(iso_date: str, days: int) -> str:
+    base = datetime.strptime(iso_date, "%Y-%m-%d").date()
+    return (base + timedelta(days=days)).isoformat()
+
+
+def _invoice_date_from_lookup(lookup: dict[str, Any]) -> str:
+    explicit_from = _normalize_date(lookup.get("invoiceDateFrom"))
+    if explicit_from is not None:
+        return explicit_from
+
+    exact_date = _normalize_date(lookup.get("invoiceDate"))
+    if exact_date is not None:
+        return exact_date
+
+    return _DEFAULT_INVOICE_LOOKUP_DATE_FROM
+
+
+def _invoice_date_to_lookup(lookup: dict[str, Any]) -> str:
+    explicit_to = _normalize_date(lookup.get("invoiceDateTo"))
+    if explicit_to is not None:
+        return explicit_to
+
+    exact_date = _normalize_date(lookup.get("invoiceDate"))
+    if exact_date is not None:
+        return _add_days(exact_date, 1)
+
+    return _DEFAULT_INVOICE_LOOKUP_DATE_TO
+
+
+def _stringify_lookup_value(value: Any) -> str | None:
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _invoice_lookup_operation(lookup: dict[str, Any]) -> str:
+    return "GET /invoice/{id}" if _coerce_int(lookup.get("id")) is not None else "GET /invoice"
+
+
+def _filter_payment_types(
+    payment_types: list[Any],
+    lookup: dict[str, Any],
+) -> list[dict[str, Any]]:
+    normalized_description = _normalize_lookup_text(lookup.get("description"))
+    normalized_query = _normalize_lookup_text(lookup.get("query"))
+    matches: list[dict[str, Any]] = []
+
+    for payment_type in payment_types:
+        if not isinstance(payment_type, dict):
+            continue
+        description = _normalize_lookup_text(payment_type.get("description"))
+        display_name = _normalize_lookup_text(payment_type.get("displayName"))
+        if normalized_description and normalized_description in {description, display_name}:
+            matches.append(payment_type)
+            continue
+        if normalized_query and normalized_query in {description, display_name}:
+            matches.append(payment_type)
+
+    return matches
+
+
+def _pick_default_payment_type(payment_types: list[Any]) -> dict[str, Any]:
+    candidates = [payment_type for payment_type in payment_types if isinstance(payment_type, dict)]
+    if not candidates:
+        raise WorkflowExecutionError("No invoice payment types were available")
+
+    for payment_type in candidates:
+        text = " ".join(
+            part
+            for part in (
+                _normalize_lookup_text(payment_type.get("description")),
+                _normalize_lookup_text(payment_type.get("displayName")),
+                _normalize_lookup_text(_nested_value(payment_type, "debitAccount", "name")),
+                _normalize_lookup_text(_nested_value(payment_type, "debitAccount", "number")),
+            )
+            if part
+        )
+        if "bank" in text:
+            return payment_type
+
+    return candidates[0]
+
+
+def _normalize_lookup_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.lower().split())
+
+
+def _nested_value(mapping: Any, *keys: str) -> Any:
+    current = mapping
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current

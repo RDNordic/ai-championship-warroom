@@ -6,6 +6,36 @@
 
 ---
 
+## Companion Docs
+
+- Implementation plan: `solutions/tripletex/PLAN.md`
+- Session handoff: `solutions/tripletex/SESSION_HANDOFF.md`
+- Submission checklist: `solutions/tripletex/SUBMISSION_CHECKLIST.md`
+- Assignment notes and examples: `solutions/tripletex/docs.md`
+
+---
+
+## Scaffold Status
+
+- Python project scaffold created under `solutions/tripletex/`
+- FastAPI app entrypoint: `src/tripletex_agent/app.py`
+- Structured planner layer in place, with OpenAI-backed extraction when `OPENAI_API_KEY` is set
+- Real write workflows implemented for:
+  - customer creation
+  - product creation
+  - employee creation
+  - department creation
+  - project creation linked to an existing customer
+  - invoice creation
+  - invoice payment
+  - invoice credit note
+- Public `/solve` has been exercised end to end over HTTPS with sandbox credentials
+- First competition submission has moved the baseline to `2 / 30` tasks solved
+- Travel expense, correction, and module workflows are still pending
+- Local `.env` loading and a read-only sandbox smoke script are available
+
+---
+
 ## What We're Building
 
 A publicly accessible HTTPS `/solve` endpoint that:
@@ -161,8 +191,84 @@ Prompt (multilingual)
 ### Run Locally
 
 ```bash
-pip install fastapi uvicorn requests anthropic
-uvicorn main:app --host 0.0.0.0 --port 8000
+cd solutions/tripletex
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000
+```
+
+### Local Secrets
+
+Copy `.env.example` to `.env` and fill in your local values:
+
+```bash
+cp .env.example .env
+```
+
+The project loads `.env` automatically for local development. `.env` is ignored by git.
+
+### Submission Trace Log
+
+Incoming `/solve` requests are appended to:
+
+```text
+solutions/tripletex/logs/solve-events.jsonl
+```
+
+Each JSONL record includes a `trace_id`, prompt, attachment metadata, selected workflow, and final outcome. The Tripletex session token is not written to this log.
+
+Event types currently written:
+
+- `received`
+- `planned`
+- `tripletex_call`
+- `completed`
+- `failed`
+
+Use the inspection helper to review one submission or mine repeated user/task prompt shapes:
+
+```bash
+cd solutions/tripletex
+python scripts/inspect_solve_logs.py recent --limit 20
+python scripts/inspect_solve_logs.py trace <trace_id>
+python scripts/inspect_solve_logs.py patterns --top 20
+python scripts/inspect_solve_logs.py patterns --outcome failed --top 20
+```
+
+`patterns` normalizes names, emails, dates, UUIDs, and numeric IDs so repeated task shapes are easier to spot when we tune the planner against real incoming prompts.
+
+You can override the path with:
+
+```bash
+SOLVE_EVENT_LOG_PATH=/absolute/path/to/solve-events.jsonl
+```
+
+### Read-Only Sandbox Smoke Test
+
+Before enabling write workflows, verify the sandbox credentials with a harmless GET:
+
+```bash
+cd solutions/tripletex
+python scripts/smoke_read_only.py
+```
+
+This checks Basic auth against the sandbox and prints a minimal summary without exposing secrets.
+
+### Plan Or Execute A Prompt Locally
+
+Use the local runner to inspect the generated task plan:
+
+```bash
+cd solutions/tripletex
+python scripts/run_prompt.py "Opprett en kunde med navn ACME AS og e-post finance@acme.test"
+```
+
+Execute the selected live workflow against the sandbox:
+
+```bash
+cd solutions/tripletex
+python scripts/run_prompt.py --execute "Opprett en kunde med navn ACME AS og e-post finance@acme.test"
 ```
 
 ### Expose via HTTPS
