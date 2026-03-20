@@ -15,24 +15,26 @@ def test_app_settings_loads_from_environment(monkeypatch) -> None:
 
     assert settings.tripletex_base_url == "https://kkpqfuj-amager.tripletex.dev/v2"
     assert settings.tripletex_session_token == "secret-token"
-    assert settings.openai_model == "gpt-5-mini"
+    assert settings.planner_model == "claude-haiku-4-5-20251001"
     assert settings.enable_api_call_plan is False
-    assert settings.api_call_plan_model == "gpt-5-mini"
     assert settings.port == 9000
 
 
 def test_tripletex_credentials_require_presence(monkeypatch) -> None:
     monkeypatch.delenv("TRIPLETEX_BASE_URL", raising=False)
     monkeypatch.delenv("TRIPLETEX_SESSION_TOKEN", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "placeholder")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder")
 
     settings = AppSettings(
         tripletex_base_url=None,
         tripletex_session_token=None,
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        openai_model="gpt-5-mini",
+        planner_model="claude-haiku-4-5-20251001",
+        enable_keyword_fallback=True,
         enable_api_call_plan=False,
-        api_call_plan_model="gpt-5-mini",
+        api_call_plan_model="claude-haiku-4-5-20251001",
+        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+        llm_executor_model="claude-haiku-4-5-20251001",
+        enable_llm_executor=False,
         host="0.0.0.0",
         port=8000,
         log_level="INFO",

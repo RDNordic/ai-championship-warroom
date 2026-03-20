@@ -14,6 +14,7 @@ from .api_call_plan import ApiCallPlan
 from .api_call_planner import ApiCallPlanner, build_default_api_call_planner
 from .client import TripletexClient
 from .config import AppSettings
+from .llm_executor import LLMApiExecutor
 from .models import SolveRequest, SolveResponse, TripletexCredentials
 from .planner import Planner, build_default_planner
 from .runtime_context import bind_runtime_context
@@ -54,12 +55,14 @@ class SolverService:
         client_factory: Callable[[TripletexCredentials], TripletexClient],
         event_logger: SolveEventLogger | None = None,
         api_call_planner: ApiCallPlanner | None = None,
+        llm_executor: LLMApiExecutor | None = None,
     ) -> None:
         self._planner = planner
         self._workflows = workflows
         self._client_factory = client_factory
         self._event_logger = event_logger
         self._api_call_planner = api_call_planner
+        self._llm_executor = llm_executor
 
     async def solve(
         self,
@@ -108,7 +111,19 @@ class SolverService:
                 )
 
                 async with self._client_factory(request.tripletex_credentials) as client:
-                    result = await workflow.execute(plan=plan, client=client)
+                    if isinstance(workflow, StubWorkflow) and self._llm_executor:
+                        logger.info(
+                            "StubWorkflow selected — delegating to LLM executor trace_id=%s",
+                            trace.trace_id,
+                        )
+                        result = await self._llm_executor.execute(
+                            prompt=request.prompt,
+                            attachments=request.files,
+                            plan=plan,
+                            tripletex_client=client,
+                        )
+                    else:
+                        result = await workflow.execute(plan=plan, client=client)
         except Exception as exc:
             self._record_failed(error=exc, trace=trace, plan=plan, workflow_name=workflow_name)
             logger.exception(
@@ -267,13 +282,33 @@ def build_default_service() -> SolverService:
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )
 
+    llm_executor = _build_llm_executor(settings)
+
     return SolverService(
         planner=build_default_planner(settings),
         workflows=workflows,
         client_factory=TripletexClient.from_credentials,
         event_logger=SolveEventLogger(settings.solve_event_log_path),
         api_call_planner=build_default_api_call_planner(settings),
+        llm_executor=llm_executor,
     )
+
+
+def _build_llm_executor(settings: AppSettings) -> LLMApiExecutor | None:
+    if not settings.enable_llm_executor or not settings.anthropic_api_key:
+        logger.info("LLM executor disabled (enable_llm_executor=%s, key_set=%s)",
+                     settings.enable_llm_executor, bool(settings.anthropic_api_key))
+        return None
+    try:
+        executor = LLMApiExecutor(
+            api_key=settings.anthropic_api_key,
+            model=settings.llm_executor_model,
+        )
+        logger.info("LLM executor enabled: model=%s", settings.llm_executor_model)
+        return executor
+    except Exception as exc:
+        logger.warning("Failed to initialize LLM executor: %s", exc)
+        return None
 
 
 def _resolve_trace(context: SolveRequestContext | None) -> _SolveTrace:

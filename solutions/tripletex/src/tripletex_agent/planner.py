@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,9 +26,9 @@ from .task_plan import (
 )
 
 try:
-    from openai import OpenAI
+    import anthropic
 except ImportError:  # pragma: no cover - optional at import time
-    OpenAI = None
+    anthropic = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,46 @@ class IntentRule:
     operation: Operation
     entity_type: str
     keywords: tuple[str, ...]
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models for validating the new LLM JSON output
+# ---------------------------------------------------------------------------
+
+_VALID_TASK_TYPES = Literal[
+    "create_employee",
+    "create_customer",
+    "create_product",
+    "create_department",
+    "create_project",
+    "create_invoice",
+    "register_payment",
+    "create_credit_note",
+    "unknown",
+]
+
+
+class LLMInvoiceLine(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    description: str | None = None
+    productName: str | None = None
+    productNumber: str | None = None
+    quantity: float | None = None
+    unitPriceExcludingVat: float | None = None
+    unitPriceIncludingVat: float | None = None
+    vatCode: str | None = None
+    discount: float | None = None
+
+
+class LLMExtraction(BaseModel):
+    """Validates the top-level structure of the LLM JSON response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task: _VALID_TASK_TYPES
+    confidence: float = Field(ge=0.0, le=1.0)
+    params: dict[str, object] = Field(default_factory=dict)
 
 
 class AddressExtraction(BaseModel):
@@ -193,6 +235,19 @@ class KeywordTaskPlanner:
     """A conservative keyword-based fallback used when LLM planning is unavailable."""
 
     _rules = (
+        # Travel expenses first — prompts often contain "ansatt"/"kunde" substrings
+        IntentRule(
+            TaskFamily.TRAVEL_EXPENSES,
+            Operation.DELETE,
+            "travel_expense",
+            ("delete travel", "slett reise"),
+        ),
+        IntentRule(
+            TaskFamily.TRAVEL_EXPENSES,
+            Operation.CREATE,
+            "travel_expense",
+            ("travel expense", "expense report", "reiseregning", "reiseutlegg"),
+        ),
         IntentRule(
             TaskFamily.DEPARTMENTS,
             Operation.CREATE,
@@ -232,6 +287,19 @@ class KeywordTaskPlanner:
                 "betal faktura",
                 "betale faktura",
                 "innbetaling",
+                # Portuguese
+                "pagamento",
+                "pagar fatura",
+                # Spanish
+                "pago",
+                "pagar factura",
+                "registrar pago",
+                # French
+                "paiement",
+                "enregistrer le paiement",
+                # German
+                "zahlung",
+                "zahlung registrieren",
             ),
         ),
         IntentRule(
@@ -246,6 +314,18 @@ class KeywordTaskPlanner:
                 "kreditnota",
                 "krediter",
                 "kreditere",
+                # Portuguese
+                "nota de crédito",
+                "nota de credito",
+                # Spanish
+                "nota de crédito",
+                "nota de credito",
+                # French
+                "note de crédit",
+                "note de credit",
+                "avoir",
+                # German
+                "gutschrift",
             ),
         ),
         IntentRule(
@@ -313,18 +393,6 @@ class KeywordTaskPlanner:
             ),
         ),
         IntentRule(TaskFamily.CORRECTIONS, Operation.REVERSE, "voucher", ("reverse", "reverser")),
-        IntentRule(
-            TaskFamily.TRAVEL_EXPENSES,
-            Operation.DELETE,
-            "travel_expense",
-            ("delete travel", "slett reise"),
-        ),
-        IntentRule(
-            TaskFamily.TRAVEL_EXPENSES,
-            Operation.CREATE,
-            "travel_expense",
-            ("travel expense", "expense report", "reiseregning", "reiseutlegg"),
-        ),
     )
 
     def plan(self, prompt: str, attachments: list[AttachmentFile]) -> TaskPlan:
@@ -421,15 +489,18 @@ class KeywordTaskPlanner:
         return {}
 
 
-class OpenAIPlanner:
-    """Structured extraction planner backed by the OpenAI API."""
+class AnthropicPlanner:
+    """JSON-based extraction planner backed by the Anthropic API."""
 
     def __init__(self, *, api_key: str, model: str) -> None:
-        if OpenAI is None:  # pragma: no cover - depends on installed dependencies
-            raise RuntimeError("openai package is required for OpenAIPlanner")
+        if anthropic is None:  # pragma: no cover - depends on installed dependencies
+            raise RuntimeError("anthropic package is required for AnthropicPlanner")
 
-        self._client = OpenAI(api_key=api_key)
+        self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
+        # Eagerly load and cache the system prompt at construction time.
+        # This ensures we fail fast at startup if the file is missing.
+        self._system_prompt = _load_system_prompt()
 
     def plan(self, prompt: str, attachments: list[AttachmentFile]) -> TaskPlan:
         attachment_lines = "\n".join(
@@ -439,26 +510,35 @@ class OpenAIPlanner:
             f"\nAttachments:\n{attachment_lines}" if attachment_lines else "\nAttachments:\n- none"
         )
 
-        response = self._client.responses.parse(
+        response = self._client.messages.create(
             model=self._model,
-            input=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        "Convert this Tripletex task prompt into the structured schema.\n"
-                        "Only extract facts explicitly stated or strongly implied.\n\n"
-                        f"Prompt:\n{prompt}\n"
-                        f"{attachment_section}"
-                    ),
-                },
+            max_tokens=1024,
+            system=self._system_prompt,
+            messages=[
+                {"role": "user", "content": f"{prompt}\n{attachment_section}"},
+                # Prefill to force JSON output
+                {"role": "assistant", "content": "{"},
             ],
-            text_format=PromptExtraction,
+            temperature=0.1,
         )
-        extraction = response.output_parsed
-        if extraction is None:
+
+        # Reconstruct the full JSON (we prefilled with "{")
+        raw_text = "{" + response.content[0].text
+        logger.info("LLM planner raw response: %s", raw_text[:500])
+
+        try:
+            data = json.loads(raw_text)
+        except json.JSONDecodeError:
+            logger.warning("LLM returned invalid JSON: %s", raw_text[:200])
             return TaskPlan.unknown(attachment_facts=_attachment_facts(attachments))
-        return _plan_from_extraction(extraction, attachments)
+
+        try:
+            validated = LLMExtraction.model_validate(data)
+        except Exception as exc:
+            logger.warning("LLM output failed validation: %s", exc)
+            return TaskPlan.unknown(attachment_facts=_attachment_facts(attachments))
+
+        return _plan_from_llm_json(validated.model_dump(), attachments)
 
 
 class FallbackPlanner:
@@ -476,8 +556,23 @@ class FallbackPlanner:
             return self._fallback.plan(prompt, attachments)
 
         if plan.task_family == TaskFamily.UNKNOWN:
-            logger.info("Primary planner returned unknown; using keyword fallback")
-            return self._fallback.plan(prompt, attachments)
+            # If the LLM explicitly returned unknown (confidence=0), it means
+            # the task is genuinely outside our supported set (e.g. supplier
+            # invoices, vouchers). Trust the LLM — don't let the keyword
+            # planner misclassify it. Only fall back if the LLM had nonzero
+            # confidence (meaning it tried but couldn't determine the type).
+            if plan.confidence > 0:
+                logger.info(
+                    "Primary planner returned unknown with confidence=%.2f; "
+                    "trying keyword fallback",
+                    plan.confidence,
+                )
+                return self._fallback.plan(prompt, attachments)
+            logger.info(
+                "Primary planner explicitly returned unknown (confidence=0); "
+                "trusting LLM — task is outside supported set"
+            )
+            return plan
 
         fallback_plan = self._fallback.plan(prompt, attachments)
         return _merge_with_fallback_plan(plan, fallback_plan)
@@ -485,14 +580,26 @@ class FallbackPlanner:
 
 def build_default_planner(settings: AppSettings) -> Planner:
     fallback = KeywordTaskPlanner()
-    if settings.openai_api_key:
+    if settings.anthropic_api_key:
         try:
-            return FallbackPlanner(
-                primary=OpenAIPlanner(api_key=settings.openai_api_key, model=settings.openai_model),
-                fallback=fallback,
+            llm_planner = AnthropicPlanner(
+                api_key=settings.anthropic_api_key, model=settings.planner_model
             )
-        except Exception:
+            logger.info("LLM planner initialized: model=%s", settings.planner_model)
+        except Exception as exc:
+            logger.error(
+                "Failed to initialize LLM planner, falling back to keyword-only: %s", exc
+            )
             return fallback
+
+        if settings.enable_keyword_fallback:
+            logger.info("Keyword fallback enabled — LLM primary + keyword merge")
+            return FallbackPlanner(primary=llm_planner, fallback=fallback)
+
+        logger.info("Keyword fallback disabled — LLM-only planner")
+        return llm_planner
+
+    logger.warning("No ANTHROPIC_API_KEY set — using keyword-only planner")
     return fallback
 
 
@@ -997,49 +1104,307 @@ def _build_generic_plan(
     )
 
 
-_SYSTEM_PROMPT = """
-You are a Tripletex task extractor for an accounting automation service.
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+_SYSTEM_PROMPT_FILE = _PROMPTS_DIR / "planner_system.md"
 
-You read a user prompt that may be written in Norwegian Bokmal, Nynorsk, English, Spanish,
-Portuguese, German, or French.
 
-Your job is to convert the prompt into a strict structured object for the current implementation.
+def _load_system_prompt() -> str:
+    """Load the planner system prompt from the external config file.
 
-Important rules:
-- Only extract facts that are explicitly stated or strongly implied.
-- Use Tripletex-style field names when possible.
-- If the prompt is outside the currently supported slice, return unknown.
-- The currently supported live implementation slice is:
-  - create customer
-  - create product
-  - create employee
-  - create department
-  - create project linked to an existing customer
-  - create invoice for an existing customer with one line item
-  - register invoice payment
-  - create credit note for an existing invoice
-- Travel expense, correction, and module tasks are not yet implemented.
-- For people, split names into firstName and lastName when possible.
-- For projects, put customer references into customerName and/or customerOrganizationNumber.
-- For projects, put explicit project manager references into projectManagerName and/or
-  projectManagerEmail.
-- For invoices, put customer references into customerName and/or customerOrganizationNumber.
-- For invoice lines, put product references into productName and/or productNumber.
-- For invoice create tasks, phrases like "invoice is for", "fakturaen gjelder", "la facture
-  concerne", "la factura es para", "a fatura e para", or "die Rechnung betrifft" describe the
-  free-text line description unless the prompt explicitly names a product.
-- For invoice create tasks, set sendToCustomer=true only when the prompt explicitly asks to send
-  the invoice now. Leave it null when the prompt only asks to create or issue the invoice.
-- Do not put amount or VAT wording into comment or invoiceComment unless the prompt explicitly
-  asks for a comment.
-- For invoice payment or credit note tasks, prefer invoiceNumber unless the prompt explicitly says
-  invoice id; extract invoiceId only when that wording is explicit.
-- For invoice payment tasks, put payment method hints into paymentTypeId and/or
-  paymentTypeDescription.
-- For credit note tasks, put the credit note date into creditNoteDate.
-- If a field is not present, leave it null.
-- Confidence should reflect how sure you are that the extraction is correct.
-""".strip()
+    Raises FileNotFoundError loudly so deployment issues are caught immediately.
+    """
+    if not _SYSTEM_PROMPT_FILE.exists():
+        logger.error(
+            "System prompt file NOT FOUND at %s — check .dockerignore and Docker build",
+            _SYSTEM_PROMPT_FILE,
+        )
+        raise FileNotFoundError(
+            f"Planner system prompt not found: {_SYSTEM_PROMPT_FILE}. "
+            f"Ensure .dockerignore does not exclude it."
+        )
+    content = _SYSTEM_PROMPT_FILE.read_text(encoding="utf-8").strip()
+    if len(content) < 100:
+        logger.error(
+            "System prompt file is suspiciously short (%d chars) at %s",
+            len(content),
+            _SYSTEM_PROMPT_FILE,
+        )
+        raise ValueError(f"Planner system prompt is too short ({len(content)} chars)")
+    logger.info("Loaded planner system prompt: %d chars from %s", len(content), _SYSTEM_PROMPT_FILE)
+    return content
+
+
+# ---------------------------------------------------------------------------
+# LLM JSON → TaskPlan conversion
+# ---------------------------------------------------------------------------
+
+_TASK_TYPE_MAP: dict[str, tuple[TaskFamily, Operation, str]] = {
+    "create_employee": (TaskFamily.EMPLOYEES, Operation.CREATE, "employee"),
+    "create_customer": (TaskFamily.CUSTOMERS_PRODUCTS, Operation.CREATE, "customer"),
+    "create_product": (TaskFamily.CUSTOMERS_PRODUCTS, Operation.CREATE, "product"),
+    "create_department": (TaskFamily.DEPARTMENTS, Operation.CREATE, "department"),
+    "create_project": (TaskFamily.PROJECTS, Operation.CREATE, "project"),
+    "create_invoice": (TaskFamily.INVOICING, Operation.CREATE, "invoice"),
+    "register_payment": (TaskFamily.INVOICING, Operation.REGISTER_PAYMENT, "invoice"),
+    "create_credit_note": (TaskFamily.INVOICING, Operation.CREATE_CREDIT_NOTE, "invoice"),
+}
+
+
+def _strip_nulls(d: dict[str, object]) -> dict[str, object]:
+    """Remove keys with None/null values from a dict (shallow)."""
+    return {k: v for k, v in d.items() if v is not None}
+
+
+def _plan_from_llm_json(data: dict, attachments: list[AttachmentFile]) -> TaskPlan:
+    """Convert the new LLM JSON format into an internal TaskPlan."""
+    attachment_facts = _attachment_facts(attachments)
+    task_type = data.get("task", "unknown")
+    confidence = float(data.get("confidence", 0.0))
+    params = data.get("params") or {}
+
+    if task_type not in _TASK_TYPE_MAP:
+        return TaskPlan.unknown(attachment_facts=attachment_facts)
+
+    family, operation, entity_type = _TASK_TYPE_MAP[task_type]
+
+    # Dispatch to task-specific converters
+    if task_type == "register_payment":
+        return _convert_payment_plan(params, confidence, attachment_facts)
+    if task_type == "create_credit_note":
+        return _convert_credit_note_plan(params, confidence, attachment_facts)
+
+    # All remaining are CREATE operations
+    action_semantics = ActionSemantics()
+    if task_type == "create_employee":
+        payload = _convert_employee_params(params)
+    elif task_type == "create_customer":
+        payload = _convert_customer_params(params)
+    elif task_type == "create_product":
+        payload = _convert_product_params(params)
+    elif task_type == "create_department":
+        payload = _convert_department_params(params)
+    elif task_type == "create_project":
+        payload = _convert_project_params(params)
+    elif task_type == "create_invoice":
+        payload = _convert_invoice_create_params(params)
+        action_semantics = ActionSemantics(send_to_customer=params.get("sendToCustomer"))
+    else:
+        payload = _strip_nulls(params)
+
+    entities_to_create = [EntityPayload(entity_type=entity_type, fields=payload)]
+    completion_checks: list[CompletionCheck] = [
+        CompletionCheck(kind="created", entity_type=entity_type, expected_fields=["id"])
+    ]
+    if task_type == "create_invoice" and action_semantics.send_to_customer is True:
+        completion_checks.append(
+            CompletionCheck(kind="sent_to_customer", entity_type="invoice")
+        )
+
+    return TaskPlan(
+        task_family=family,
+        operation=operation,
+        entities_to_create=entities_to_create,
+        entities_to_find=[],
+        fields_to_set={},
+        attachment_facts=attachment_facts,
+        completion_checks=completion_checks,
+        action_semantics=action_semantics,
+        confidence=confidence,
+    )
+
+
+def _convert_employee_params(params: dict) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key in ("firstName", "lastName", "email", "phoneNumberMobile", "employeeNumber"):
+        if params.get(key) is not None:
+            result[key] = params[key]
+    # The prompt uses "comment" but the workflow reads "comments"
+    if params.get("comment") is not None:
+        result["comments"] = params["comment"]
+    return result
+
+
+def _convert_customer_params(params: dict) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key in ("name", "email", "phoneNumber", "organizationNumber", "invoiceEmail"):
+        if params.get(key) is not None:
+            result[key] = params[key]
+    return result
+
+
+def _convert_product_params(params: dict) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key in ("name", "number", "description"):
+        if params.get(key) is not None:
+            result[key] = params[key]
+    # Rename to match workflow field names
+    if params.get("priceExcludingVat") is not None:
+        result["priceExcludingVatCurrency"] = params["priceExcludingVat"]
+    if params.get("costExcludingVat") is not None:
+        result["costExcludingVatCurrency"] = params["costExcludingVat"]
+    return result
+
+
+def _convert_department_params(params: dict) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key in ("name", "departmentNumber"):
+        if params.get(key) is not None:
+            result[key] = params[key]
+    return result
+
+
+def _convert_project_params(params: dict) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key in ("name", "number", "description", "startDate", "endDate"):
+        if params.get(key) is not None:
+            result[key] = params[key]
+
+    # Build customerLookup from flat fields
+    customer_lookup: dict[str, object] = {}
+    if params.get("customerName") is not None:
+        customer_lookup["customerName"] = params["customerName"]
+    if params.get("customerOrganizationNumber") is not None:
+        customer_lookup["organizationNumber"] = params["customerOrganizationNumber"]
+    if customer_lookup:
+        result["customerLookup"] = customer_lookup
+
+    # Build projectManagerLookup from flat fields
+    pm_lookup: dict[str, object] = {}
+    pm_name = params.get("projectManagerName")
+    if pm_name is not None:
+        parts = pm_name.split()
+        if parts:
+            pm_lookup["firstName"] = parts[0]
+        if len(parts) > 1:
+            pm_lookup["lastName"] = " ".join(parts[1:])
+    if params.get("projectManagerEmail") is not None:
+        pm_lookup["email"] = params["projectManagerEmail"]
+    if pm_lookup:
+        result["projectManagerLookup"] = pm_lookup
+
+    return result
+
+
+def _convert_invoice_create_params(params: dict) -> dict[str, object]:
+    result: dict[str, object] = {}
+
+    # Build customerLookup
+    customer_lookup: dict[str, object] = {}
+    if params.get("customerName") is not None:
+        customer_lookup["customerName"] = params["customerName"]
+    if params.get("customerOrganizationNumber") is not None:
+        customer_lookup["organizationNumber"] = params["customerOrganizationNumber"]
+    if customer_lookup:
+        result["customerLookup"] = customer_lookup
+
+    for key in ("invoiceDate", "invoiceDueDate", "invoiceComment", "comment"):
+        if params.get(key) is not None:
+            result[key] = params[key]
+
+    # Convert lines[0] → line (workflow only supports single line)
+    lines = params.get("lines")
+    if isinstance(lines, list) and lines:
+        src_line = lines[0]
+        line: dict[str, object] = {}
+
+        if src_line.get("description") is not None:
+            line["description"] = src_line["description"]
+
+        # Build productLookup from flat fields
+        product_lookup: dict[str, object] = {}
+        if src_line.get("productName") is not None:
+            product_lookup["name"] = src_line["productName"]
+        if src_line.get("productNumber") is not None:
+            product_lookup["productNumber"] = src_line["productNumber"]
+        if product_lookup:
+            line["productLookup"] = product_lookup
+
+        # Rename quantity → count, unitPriceExcludingVat → unitPriceExcludingVatCurrency
+        if src_line.get("quantity") is not None:
+            line["count"] = src_line["quantity"]
+        if src_line.get("unitPriceExcludingVat") is not None:
+            line["unitPriceExcludingVatCurrency"] = src_line["unitPriceExcludingVat"]
+
+        if line:
+            result["line"] = line
+
+    return result
+
+
+def _build_invoice_lookup_from_params(params: dict) -> dict[str, object]:
+    """Build an invoice lookup dict from the LLM params (shared by payment + credit note)."""
+    lookup: dict[str, object] = {}
+    if params.get("invoiceNumber") is not None:
+        lookup["invoiceNumber"] = str(params["invoiceNumber"])
+    if params.get("invoiceId") is not None:
+        lookup["id"] = int(params["invoiceId"])
+
+    customer_lookup: dict[str, object] = {}
+    if params.get("customerName") is not None:
+        customer_lookup["customerName"] = params["customerName"]
+    if params.get("customerOrganizationNumber") is not None:
+        customer_lookup["organizationNumber"] = params["customerOrganizationNumber"]
+    if customer_lookup:
+        lookup["customerLookup"] = customer_lookup
+
+    return lookup
+
+
+def _convert_payment_plan(
+    params: dict, confidence: float, attachment_facts: list[AttachmentFact]
+) -> TaskPlan:
+    lookup = _build_invoice_lookup_from_params(params)
+    fields: dict[str, object] = {}
+
+    if params.get("amount") is not None:
+        fields["paidAmount"] = params["amount"]
+    if params.get("paymentDate") is not None:
+        fields["paymentDate"] = params["paymentDate"]
+
+    payment_type_lookup: dict[str, object] = {}
+    if params.get("paymentTypeId") is not None:
+        payment_type_lookup["id"] = params["paymentTypeId"]
+    if params.get("paymentTypeDescription") is not None:
+        payment_type_lookup["description"] = params["paymentTypeDescription"]
+    if payment_type_lookup:
+        fields["paymentTypeLookup"] = payment_type_lookup
+
+    return TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.REGISTER_PAYMENT,
+        entities_to_create=[],
+        entities_to_find=[EntityReference(entity_type="invoice", lookup=lookup)],
+        fields_to_set=fields,
+        attachment_facts=attachment_facts,
+        completion_checks=[],
+        action_semantics=ActionSemantics(),
+        confidence=confidence,
+    )
+
+
+def _convert_credit_note_plan(
+    params: dict, confidence: float, attachment_facts: list[AttachmentFact]
+) -> TaskPlan:
+    lookup = _build_invoice_lookup_from_params(params)
+    fields: dict[str, object] = {}
+
+    if params.get("creditNoteDate") is not None:
+        fields["creditNoteDate"] = params["creditNoteDate"]
+    if params.get("comment") is not None:
+        fields["comment"] = params["comment"]
+
+    return TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.CREATE_CREDIT_NOTE,
+        entities_to_create=[],
+        entities_to_find=[EntityReference(entity_type="invoice", lookup=lookup)],
+        fields_to_set=fields,
+        attachment_facts=attachment_facts,
+        completion_checks=[],
+        action_semantics=ActionSemantics(),
+        confidence=confidence,
+    )
+
 
 _EMAIL_RE = re.compile(r"(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})", re.IGNORECASE)
 _ORG_RE = re.compile(r"\b(?P<org>\d{3}\s?\d{3}\s?\d{3})\b")
@@ -1085,11 +1450,11 @@ def _extract_customer_payload(prompt: str) -> dict[str, object]:
         prompt,
         [
             (
-                r"(?:customer|kunde|company|selskap)\s+"
+                r"(?:customer|kunden?|company|selskap)\s+"
                 r"(?:named|med navn|with name|som heter|called)\s+(?P<value>[^,\n]+)"
             ),
             (
-                r"(?:opprett|registrer|lag|legg til)\s+(?:en\s+)?kunde"
+                r"(?:opprett|registrer|lag|legg til)\s+(?:en\s+)?kunden?"
                 r"(?:\s+(?:med navn|som heter))?\s+(?P<value>[^,\n]+)"
             ),
             (
@@ -1732,13 +2097,27 @@ def _extract_invoice_line_description(prompt: str) -> str | None:
 
 
 def _search_invoice_amount_excluding_vat(prompt: str) -> re.Match[str] | None:
+    normalized = _normalize_prompt_text(prompt)
+    # Try with currency after amount: "32600 NOK excluding vat" or "32600 kr eksklusiv mva"
+    match = re.search(
+        (
+            r"(?:for|de|por|uber|pa|på)\s+(?P<value>\d+(?:[.,]\d+)?)\s*(?:nok|kr)\b"
+            r"(?:\s*(?:excluding vat|ex\.?\s*vat|excl\.?\s*vat|eksklusiv mva|ekskl\.?\s*mva|"
+            r"hors tva|sin iva|sem iva|uten mva|utan mva|ohne mwst))"
+        ),
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match
+    # Try with currency before amount: "NOK 32600 excluding vat" or "kr 32600"
     return re.search(
         (
-            r"(?:for|de|por|uber)\s+(?P<value>\d+(?:[.,]\d+)?)\s*nok\b"
-            r"(?:\s*(?:excluding vat|ex vat|hors tva|sin iva|sem iva|uten mva|utan mva|"
-            r"ohne mwst))"
+            r"(?:nok|kr)\s+(?P<value>\d+(?:[.,]\d+)?)"
+            r"(?:\s*(?:excluding vat|ex\.?\s*vat|excl\.?\s*vat|eksklusiv mva|ekskl\.?\s*mva|"
+            r"hors tva|sin iva|sem iva|uten mva|utan mva|ohne mwst))"
         ),
-        _normalize_prompt_text(prompt),
+        normalized,
         flags=re.IGNORECASE,
     )
 
@@ -1764,7 +2143,7 @@ def _strip_customer_suffixes(value: str) -> str:
         value,
         [
             (
-                r"\b(?:and|og)\s+(?:e-?post|email|invoice email|billing email|"
+                r"\b(?:and|og|med|with)\s+(?:e-?post|email|invoice email|billing email|"
                 r"faktura(?:e-?post| email)|organization number|organisasjonsnummer|orgnr|"
                 r"phone|telefon|mobile|mobil(?:nummer)?|language|språk|description|beskrivelse)\b"
             ),
