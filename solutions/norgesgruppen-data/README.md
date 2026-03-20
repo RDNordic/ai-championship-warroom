@@ -357,6 +357,64 @@ if __name__ == "__main__":
 
 ---
 
+## Training Runs
+
+### Run Summary Table
+
+| Run | Model | Data | Epochs | Val mAP50 | Val cls_loss | Det mAP@0.5 | Cls mAP@0.5 | **Score** | Still improving? |
+|-----|-------|------|--------|-----------|-------------|-------------|-------------|-----------|------------------|
+| 1 — Baseline | YOLOv8L | Original (248 img) | 50 | 0.646 | 1.002 | 0.781 | 0.570 | **0.7175** | Yes |
+| 2 — Augmented | YOLOv8L | Augmented (496 img) | 50 | 0.799 | 0.726 | — | — | **TBD** | Yes |
+
+> Scores in the table use inference tweaks: `conf=0.01`, `augment=True` (TTA), `max_det=1000`.
+> Run 1 baseline without inference tweaks scored 0.7039.
+
+### Run 1 — Baseline (2026-03-20)
+
+- **Config:** YOLOv8L, 50 epochs, batch 4, imgsz 1280, original 248 images (80/20 split)
+- **Final val metrics:** mAP50=0.646, mAP50-95=0.446, cls_loss=1.002
+- **Local eval (with inference tweaks):** det_mAP=0.781, cls_mAP=0.570, score=**0.7175**
+- **Observation:** Model still improving at epoch 50 — losses and mAP both trending favourably
+- **Weights:** `runs/detect/train/weights/best.pt`
+
+```bash
+uv run python scripts/train.py --model-size l --epochs 50 --batch 4 --imgsz 1280
+```
+
+### Run 2 — Copy-Paste Augmented (2026-03-20)
+
+- **Config:** YOLOv8L, 50 epochs, batch 4, imgsz 1280, augmented 496 images (248 original + 248 synthetic)
+- **Final val metrics:** mAP50=0.799, mAP50-95=0.594, cls_loss=0.726
+- **Local eval:** TBD (run eval after training completes)
+- **Observation:** Significant improvement over Run 1 on all val metrics. cls_loss dropped from 1.002 to 0.726 (+27%), mAP50 jumped from 0.646 to 0.799 (+24%). Model still improving at epoch 50.
+- **Weights:** `runs/detect/train_aug/weights/best.pt`
+
+**What changed from Run 1:**
+- Added offline copy-paste augmentation using 320 individual product reference images (from `data/individ/`)
+- GrabCut foreground extraction + alpha-blended pasting onto shelf images
+- Inverse-frequency sampling: rare categories (74 with <5 annotations) pasted more often
+- 10 products pasted per augmented image, sized to match real annotation bbox distribution
+
+```bash
+# Step 1: Generate augmented data
+uv run python scripts/augment_copypaste.py --num-augmented 248 --pastes-per-image 10
+
+# Step 2: Train on augmented data
+uv run python scripts/train.py --augmented --model-size l --epochs 50 --batch 4 --imgsz 1280 --name train_aug
+```
+
+### Inference Tweaks (applied to all runs at eval time)
+
+Applied in `submission/run.py`, these improved Run 1 from 0.7039 to 0.7175:
+
+| Tweak | Before | After | Effect |
+|-------|--------|-------|--------|
+| `conf` | 0.25 | 0.01 | Let COCOeval do its own thresholding — main driver of improvement |
+| `augment` (TTA) | False | True | Multi-scale + flip inference ensemble — small cls boost |
+| `max_det` | 300 | 1000 | Handle dense shelves (avg 92 products/image, max 235) |
+
+---
+
 ## Open Questions
 
 - [ ] **Who downloads the data?** Needs `app.ainm.no` login. ~924 MB total. Do this now.

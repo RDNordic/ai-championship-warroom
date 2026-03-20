@@ -5,8 +5,8 @@ data/
 *.pt
 *.onnx
 
-# Training outputs
-runs/
+# Training outputs — keep figures/logs, ignore weights
+runs/**/weights/
 predictions.json
 
 # Python
