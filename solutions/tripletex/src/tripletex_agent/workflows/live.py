@@ -132,8 +132,22 @@ class InvoiceCreateWorkflow(BaseWorkflow):
         if customer_id is None:
             raise WorkflowExecutionError("Matched customer did not include an id")
 
-        line_fields = _as_dict(fields.get("line")) or {}
-        order_line = await _build_invoice_order_line(client, line_fields)
+        # Support both single line and multi-line invoices
+        lines_raw = fields.get("lines")
+        if isinstance(lines_raw, list) and lines_raw:
+            line_fields_list = [_as_dict(l) or {} for l in lines_raw]
+        else:
+            single = _as_dict(fields.get("line")) or {}
+            line_fields_list = [single]
+
+        needs_vat = any(
+            _coerce_number(lf.get("vatPercent")) is not None for lf in line_fields_list
+        )
+        vat_types = await _fetch_vat_types(client) if needs_vat else []
+        order_lines = [
+            await _build_invoice_order_line(client, lf, vat_types=vat_types)
+            for lf in line_fields_list
+        ]
 
         invoice_date = _normalize_date(fields.get("invoiceDate")) or date.today().isoformat()
         due_date = _normalize_date(fields.get("invoiceDueDate")) or _add_days(
@@ -162,7 +176,7 @@ class InvoiceCreateWorkflow(BaseWorkflow):
                             "orderDate": invoice_date,
                             "deliveryDate": delivery_date,
                             "invoiceComment": fields.get("invoiceComment"),
-                            "orderLines": [order_line],
+                            "orderLines": order_lines,
                         }
                     )
                 ],
@@ -178,7 +192,7 @@ class InvoiceCreateWorkflow(BaseWorkflow):
         created_id = _extract_id(created)
 
         intended_operations = ["GET /customer", "POST /invoice"]
-        if _as_dict(line_fields.get("productLookup")):
+        if any(_as_dict(lf.get("productLookup")) for lf in line_fields_list):
             intended_operations.insert(1, "GET /product")
         if send_to_customer:
             ledger_index = 1 if "GET /product" not in intended_operations else 2
@@ -1290,8 +1304,39 @@ async def _find_single_employee(
     return matches[0]
 
 
+async def _fetch_vat_types(client: TripletexClient) -> list[dict[str, Any]]:
+    """Fetch available VAT types from the Tripletex environment."""
+    try:
+        payload = await client.get(
+            "/vat",
+            params={
+                "count": 20,
+                "fields": client.select_fields("id", "number", "name", "percentage"),
+            },
+        )
+        return client.unwrap_values(payload)
+    except Exception:
+        return []
+
+
+def _resolve_vat_type_id(
+    vat_types: list[dict[str, Any]], vat_percent: float | None
+) -> int | None:
+    if vat_percent is None or not vat_types:
+        return None
+    # Match by percentage field (e.g. 25.0 → id for 25% VAT type)
+    for vt in vat_types:
+        pct = vt.get("percentage")
+        if isinstance(pct, (int, float)) and abs(float(pct) - vat_percent) < 0.1:
+            return _extract_id(vt)
+    return None
+
+
 async def _build_invoice_order_line(
-    client: TripletexClient, line_fields: dict[str, Any]
+    client: TripletexClient,
+    line_fields: dict[str, Any],
+    *,
+    vat_types: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if not line_fields:
         raise WorkflowExecutionError("Invoice creation requires at least one line item")
@@ -1318,12 +1363,18 @@ async def _build_invoice_order_line(
             "Invoice line without a product reference requires a unit price"
         )
 
+    vat_type_id: int | None = None
+    vat_percent = _coerce_number(line_fields.get("vatPercent"))
+    if vat_percent is not None and vat_types:
+        vat_type_id = _resolve_vat_type_id(vat_types, vat_percent)
+
     return _compact_mapping(
         {
             "product": {"id": product_id} if product_id is not None else None,
             "description": description.strip() if isinstance(description, str) else None,
             "count": normalized_count,
             "unitPriceExcludingVatCurrency": unit_price,
+            "vatType": {"id": vat_type_id} if vat_type_id is not None else None,
         }
     )
 

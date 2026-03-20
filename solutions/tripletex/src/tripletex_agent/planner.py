@@ -154,6 +154,7 @@ class InvoiceLineExtraction(BaseModel):
     description: str | None = None
     count: float | None = None
     unitPriceExcludingVatCurrency: float | None = None
+    vatPercent: float | None = None  # e.g. 25.0, 15.0, 0.0
 
 
 class InvoiceExtraction(BaseModel):
@@ -176,7 +177,8 @@ class InvoiceExtraction(BaseModel):
     comment: str | None = None
     invoiceComment: str | None = None
     sendToCustomer: bool | None = None
-    line: InvoiceLineExtraction | None = None
+    line: InvoiceLineExtraction | None = None  # single-line (legacy)
+    lines: list[InvoiceLineExtraction] | None = None  # multi-line
 
 
 class LookupExtraction(BaseModel):
@@ -759,6 +761,22 @@ def _payload_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
             if product_lookup:
                 line_payload["productLookup"] = product_lookup
 
+        # Multi-line: normalise each line the same way
+        lines_payload = invoice_payload.get("lines")
+        if isinstance(lines_payload, list):
+            for lp in lines_payload:
+                if not isinstance(lp, dict):
+                    continue
+                ml_product_lookup: dict[str, object] = {}
+                ml_product_name = lp.pop("productName", None)
+                ml_product_number = lp.pop("productNumber", None)
+                if ml_product_name is not None:
+                    ml_product_lookup["name"] = ml_product_name
+                if ml_product_number is not None:
+                    ml_product_lookup["productNumber"] = ml_product_number
+                if ml_product_lookup:
+                    lp["productLookup"] = ml_product_lookup
+
         payment_type_lookup: dict[str, object] = {}
         payment_type_id = invoice_payload.pop("paymentTypeId", None)
         payment_type_description = invoice_payload.pop("paymentTypeDescription", None)
@@ -1196,6 +1214,11 @@ Important rules:
   projectManagerEmail.
 - For invoices, put customer references into customerName and/or customerOrganizationNumber.
 - For invoice lines, put product references into productName and/or productNumber.
+- For invoice create tasks with a single line, put it in the line field.
+- For invoice create tasks with multiple lines (e.g. "tre produktlinjer", "three product lines",
+  "plusieurs lignes"), put ALL lines in the lines list instead of line. Leave line null.
+- For each invoice line, put product references into productName and/or productNumber,
+  and put the VAT percentage (e.g. 25.0, 15.0, 0.0) into vatPercent.
 - For invoice create tasks, phrases like "invoice is for", "fakturaen gjelder", "la facture
   concerne", "la factura es para", "a fatura e para", or "die Rechnung betrifft" describe the
   free-text line description unless the prompt explicitly names a product.
