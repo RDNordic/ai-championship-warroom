@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 
 from .client import TripletexClient
+from .config import AppSettings
 from .models import SolveRequest, SolveResponse, TripletexCredentials
-from .planner import TaskPlanner
+from .planner import Planner, build_default_planner
 from .task_plan import TaskFamily
-from .workflows import StubWorkflow, WorkflowRegistry
+from .workflows import (
+    CustomerCreateWorkflow,
+    DepartmentCreateWorkflow,
+    EmployeeCreateWorkflow,
+    InvoiceCreateWorkflow,
+    ProductCreateWorkflow,
+    ProjectCreateWorkflow,
+    StubWorkflow,
+    WorkflowRegistry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +31,7 @@ class SolverService:
     def __init__(
         self,
         *,
-        planner: TaskPlanner,
+        planner: Planner,
         workflows: WorkflowRegistry,
         client_factory: Callable[[TripletexCredentials], TripletexClient],
     ) -> None:
@@ -29,7 +40,7 @@ class SolverService:
         self._client_factory = client_factory
 
     async def solve(self, request: SolveRequest) -> SolveResponse:
-        plan = self._planner.plan(request.prompt, request.files)
+        plan = await asyncio.to_thread(self._planner.plan, request.prompt, request.files)
         workflow = self._workflows.for_plan(plan)
 
         async with self._client_factory(request.tripletex_credentials) as client:
@@ -49,21 +60,21 @@ class SolverService:
 
 
 def build_default_service() -> SolverService:
+    settings = AppSettings.load()
     workflows = WorkflowRegistry(
         workflows=[
-            StubWorkflow(TaskFamily.EMPLOYEES),
-            StubWorkflow(TaskFamily.CUSTOMERS_PRODUCTS),
-            StubWorkflow(TaskFamily.INVOICING),
-            StubWorkflow(TaskFamily.TRAVEL_EXPENSES),
-            StubWorkflow(TaskFamily.PROJECTS),
-            StubWorkflow(TaskFamily.CORRECTIONS),
-            StubWorkflow(TaskFamily.DEPARTMENTS),
+            CustomerCreateWorkflow(),
+            ProductCreateWorkflow(),
+            EmployeeCreateWorkflow(),
+            DepartmentCreateWorkflow(),
+            ProjectCreateWorkflow(),
+            InvoiceCreateWorkflow(),
         ],
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )
 
     return SolverService(
-        planner=TaskPlanner(),
+        planner=build_default_planner(settings),
         workflows=workflows,
         client_factory=TripletexClient.from_credentials,
     )

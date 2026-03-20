@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request
 
+from .config import load_local_env
 from .models import HealthResponse, SolveRequest, SolveResponse
 from .service import SolverService, build_default_service
 
 
 def create_app(service: SolverService | None = None) -> FastAPI:
+    load_local_env()
     app = FastAPI(title="Tripletex AI Accounting Agent", version="0.1.0")
     app.state.solver_service = service or build_default_service()
 

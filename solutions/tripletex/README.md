@@ -17,8 +17,14 @@
 
 - Python project scaffold created under `solutions/tripletex/`
 - FastAPI app entrypoint: `src/tripletex_agent/app.py`
-- Initial planner/client/workflow skeleton in place
-- Current workflows are stubbed and do not yet perform real Tripletex writes
+- Structured planner layer in place, with OpenAI-backed extraction when `OPENAI_API_KEY` is set
+- First real write workflows implemented for:
+  - customer creation
+  - employee creation
+  - department creation
+  - project creation linked to an existing customer
+- Product, invoice, travel expense, correction, and module workflows are still pending
+- Local `.env` loading and a read-only sandbox smoke script are available
 
 ---
 
@@ -182,6 +188,43 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000
+```
+
+### Local Secrets
+
+Copy `.env.example` to `.env` and fill in your local values:
+
+```bash
+cp .env.example .env
+```
+
+The project loads `.env` automatically for local development. `.env` is ignored by git.
+
+### Read-Only Sandbox Smoke Test
+
+Before enabling write workflows, verify the sandbox credentials with a harmless GET:
+
+```bash
+cd solutions/tripletex
+python scripts/smoke_read_only.py
+```
+
+This checks Basic auth against the sandbox and prints a minimal summary without exposing secrets.
+
+### Plan Or Execute A Prompt Locally
+
+Use the local runner to inspect the generated task plan:
+
+```bash
+cd solutions/tripletex
+python scripts/run_prompt.py "Opprett en kunde med navn ACME AS og e-post finance@acme.test"
+```
+
+Execute the selected live workflow against the sandbox:
+
+```bash
+cd solutions/tripletex
+python scripts/run_prompt.py --execute "Opprett en kunde med navn ACME AS og e-post finance@acme.test"
 ```
 
 ### Expose via HTTPS
