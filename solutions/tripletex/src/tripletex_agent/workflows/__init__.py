@@ -18,6 +18,7 @@ from .live import (
     ProjectDeleteWorkflow,
     TravelExpenseCreateWorkflow,
     TravelExpenseDeleteWorkflow,
+    VoucherReverseWorkflow,
 )
 from .registry import WorkflowRegistry
 from .stub import StubWorkflow
@@ -41,6 +42,7 @@ __all__ = [
     "StubWorkflow",
     "TravelExpenseCreateWorkflow",
     "TravelExpenseDeleteWorkflow",
+    "VoucherReverseWorkflow",
     "WorkflowExecutionError",
     "WorkflowRegistry",
     "WorkflowResult",
