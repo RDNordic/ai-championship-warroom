@@ -18,12 +18,16 @@
 - Python project scaffold created under `solutions/tripletex/`
 - FastAPI app entrypoint: `src/tripletex_agent/app.py`
 - Structured planner layer in place, with OpenAI-backed extraction when `OPENAI_API_KEY` is set
-- First real write workflows implemented for:
+- Real write workflows implemented for:
   - customer creation
+  - product creation
   - employee creation
   - department creation
   - project creation linked to an existing customer
-- Product, invoice, travel expense, correction, and module workflows are still pending
+  - invoice creation
+  - invoice payment
+  - invoice credit note
+- Travel expense, correction, and module workflows are still pending
 - Local `.env` loading and a read-only sandbox smoke script are available
 
 ---

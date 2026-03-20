@@ -10,17 +10,13 @@ Tripletex now has live end-to-end coverage for the full baseline invoicing slice
 
 This checkpoint confirmed invoice creation through the normal `scripts/run_prompt.py --execute ...` path and added deterministic payment and credit note workflows that are validated in the sandbox.
 
-Repository scope for the next session stays inside `solutions/tripletex/` unless the owner explicitly asks for something broader.
-
 ## Handoff Contract
 
 - Current objective:
   - Stabilize the Tripletex baseline after the invoicing slice.
 - Exact artifact reference:
-  - Working tree in `solutions/tripletex/` on `2026-03-20` after live sandbox validation and focused tests.
-  - Archived prior handoffs:
-    - `solutions/tripletex/session_archive/2026-03-20-invoice-create-checkpoint.md`
-    - `solutions/tripletex/session_archive/2026-03-20-validated-invoicing-checkpoint.md`
+  - Working tree on `2026-03-20` after live sandbox validation and focused tests.
+  - Archived prior handoff: `solutions/tripletex/session_archive/2026-03-20-invoice-create-checkpoint.md`
 - What is proven:
   - `scripts/run_prompt.py` successfully created invoice `#3`, paid invoice `#3`, created invoice `#4`, and created credit note `#5` for invoice `#4`.
   - Focused tests pass for planner and live workflows, including the numeric invoice-id fallback case.
@@ -34,7 +30,6 @@ Repository scope for the next session stays inside `solutions/tripletex/` unless
 
 - `solutions/tripletex/session_archive/2026-03-20-scaffold-checkpoint.md`
 - `solutions/tripletex/session_archive/2026-03-20-invoice-create-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-validated-invoicing-checkpoint.md`
 
 ## Latest Work
 
@@ -128,15 +123,14 @@ Repository scope for the next session stays inside `solutions/tripletex/` unless
 
 ## Next Steps
 
-1. Try connecting the current Tripletex solver to the competition sandbox properly and get a first result with the code we have now.
-2. Live-validate employee creation through `scripts/run_prompt.py`.
-3. Implement the first travel expense workflow slice.
-4. Implement correction workflows.
-5. Expand multilingual planner coverage for invoice payment and credit note phrasing.
-6. Prepare deployment for the public `/solve` endpoint once the next live slice is stable.
+1. Live-validate employee creation through `scripts/run_prompt.py`.
+2. Implement the first travel expense workflow slice.
+3. Implement correction workflows.
+4. Expand multilingual planner coverage for invoice payment and credit note phrasing.
+5. Prepare deployment for the public `/solve` endpoint once the next live slice is stable.
 
 ## Restart Prompt
 
 ```text
-Read solutions/tripletex/PLAN.md and solutions/tripletex/SESSION_HANDOFF.md. Stay scoped to solutions/tripletex/. First, try connecting the current solver to the competition sandbox properly and get a first result with the implemented baseline. Then live-validate employee creation through scripts/run_prompt.py and continue with the first travel expense workflow slice. Preserve session history by archiving the current handoff in solutions/tripletex/session_archive/ before replacing SESSION_HANDOFF.md again.
+Read solutions/tripletex/PLAN.md and solutions/tripletex/SESSION_HANDOFF.md. Resume from the validated invoicing checkpoint: live-validate employee creation through scripts/run_prompt.py, then implement the first travel expense workflow slice. Preserve session history by archiving the current handoff in solutions/tripletex/session_archive/ before replacing SESSION_HANDOFF.md again.
 ```

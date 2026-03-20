@@ -23,6 +23,40 @@ def test_planner_detects_invoice_payment() -> None:
     assert plan.task_family == TaskFamily.INVOICING
     assert plan.operation == Operation.REGISTER_PAYMENT
     assert plan.entities_to_find[0].entity_type == "invoice"
+    assert plan.entities_to_find[0].lookup == {"invoiceNumber": "1001"}
+
+
+def test_planner_extracts_invoice_payment_payload() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        (
+            "Register payment for invoice 1001 payment date 2026-03-20 "
+            "payment type Betalt til bank amount 1250"
+        ),
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.INVOICING
+    assert plan.entities_to_find[0].lookup == {"invoiceNumber": "1001"}
+    assert plan.fields_to_set["paymentDate"] == "2026-03-20"
+    assert plan.fields_to_set["paidAmount"] == 1250.0
+    assert plan.fields_to_set["paymentTypeLookup"] == {"description": "Betalt til bank"}
+
+
+def test_planner_extracts_credit_note_payload() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        "Create credit note for invoice 1001 date 2026-03-20 comment Customer cancellation",
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.INVOICING
+    assert plan.operation == Operation.CREATE_CREDIT_NOTE
+    assert plan.entities_to_find[0].lookup == {"invoiceNumber": "1001"}
+    assert plan.fields_to_set["creditNoteDate"] == "2026-03-20"
+    assert plan.fields_to_set["comment"] == "Customer cancellation"
 
 
 def test_planner_extracts_product_payload() -> None:

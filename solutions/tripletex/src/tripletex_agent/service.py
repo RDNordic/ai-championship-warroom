@@ -16,6 +16,8 @@ from .workflows import (
     DepartmentCreateWorkflow,
     EmployeeCreateWorkflow,
     InvoiceCreateWorkflow,
+    InvoiceCreditNoteWorkflow,
+    InvoicePaymentWorkflow,
     ProductCreateWorkflow,
     ProjectCreateWorkflow,
     StubWorkflow,
@@ -69,6 +71,8 @@ def build_default_service() -> SolverService:
             DepartmentCreateWorkflow(),
             ProjectCreateWorkflow(),
             InvoiceCreateWorkflow(),
+            InvoicePaymentWorkflow(),
+            InvoiceCreditNoteWorkflow(),
         ],
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )
