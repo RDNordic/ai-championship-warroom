@@ -23,6 +23,17 @@
 - [x] Round 2 final overwrite submitted after using the full `50 / 50` query budget
 - [x] Round 2 completed and scored
 - [x] Round 2 full analysis exported locally for all 5 seeds
+- [x] Round 3 active round confirmed
+- [x] Round 3 team budget checked
+- [x] Round 3 existing submissions checked before overwrite
+- [x] Round 3 baseline submitted for seeds 0-4 using the updated conservative prior
+- [x] Round 3 full 45-query coverage pass completed across all 5 seeds
+- [x] Round 3 final 3 repeat queries used via the scripted workflow
+- [x] Round 3 improved observation-based submission accepted for seeds 0-4
+- [x] Round 3 completed and scored
+- [x] Round 3 full analysis exported locally for all 5 seeds
+- [x] Round 5 active round confirmed
+- [x] Round 5 baseline submitted for seeds 0-4 using the updated conservative prior
 
 ## Immediate Priorities
 
@@ -37,10 +48,16 @@
 - [x] Identify the highest-value repeat-query targets after first full coverage pass
 - [x] Wait for scoring and capture round results
 - [x] Pull `/analysis/{round_id}/{seed_index}` when available
-- [ ] Convert round-1 findings into the next-round starting policy
+- [x] Convert round-1 findings into the next-round starting policy
 - [x] Fix repeat-query payload handling so repeat `/simulate` calls target the intended viewport
 - [x] Run the read-only poller through scoring / next-round transition
-- [ ] Convert round-2 analysis into concrete prior and observation-weight updates before the next active round
+- [x] Convert round-2 analysis into concrete prior and observation-weight updates before the next active round
+- [x] Wait for round-3 scoring and capture round results
+- [x] Pull `/analysis/{round_id}/{seed_index}` for round 3 when available
+- [ ] Run the round-5 full 45-query coverage pass across all 5 seeds
+- [ ] Use the remaining round-5 repeat queries after the first coverage pass
+- [ ] Submit the round-5 observation-based overwrite for seeds 0-4
+- [ ] Export round-5 `/analysis/{round_id}/{seed_index}` when available
 
 ## Query Discipline
 
@@ -65,7 +82,7 @@
 - Improved submission status: observation-based overwrite accepted for all 5 seeds
 - Saved simulation artifacts: `48`
 - Round 2 ID: `76909e29-f664-4b2f-b16b-61b7507277e9`
-- Round 2 status: `active`
+- Round 2 status: `completed`
 - Round 2 baseline submission status: prior-only tensor accepted for all 5 seeds
 - Round 2 improved submission status: observation-based overwrite accepted for all 5 seeds
 - Round 2 submissions: `5`
@@ -79,6 +96,32 @@
 - Round 2 rank: `95 / 153`
 - Round 2 analysis status: exported for all 5 seeds
 - Round 2 analysis finding: model over-predicted settlements materially (`pred class 1 = 534` vs `truth class 1 = 155`)
+- Round 2 offline replay finding: the old policy replays at `42.6351` / `40.8117` on rounds 1 / 2 after observations, while the updated conservative policy replays at `52.4455` / `52.9291`
+- Round 3 ID: `f1dac9a9-5cf1-49a9-8f17-d6cb5d5ba5cb`
+- Round 3 status: `completed`
+- Round 3 round number: `3`
+- Round 3 baseline submission status: accepted for seeds `0-4`
+- Round 3 improved submission status: accepted for seeds `0-4`
+- Round 3 improved submit timestamps (UTC): `2026-03-20T00:46:16.496832+00:00` to `2026-03-20T00:46:24.791168+00:00`
+- Round 3 final score: `29.2383`
+- Round 3 seed scores: `30.3371, 28.4992, 29.0390, 30.0836, 28.2327`
+- Round 3 rank: `63 / 100`
+- Round 3 final query usage: `48 / 50`
+- Round 3 close time (UTC): `2026-03-20T02:53:20.948277+00:00`
+- Round 3 analysis status: exported for all 5 seeds
+- Round 3 repeat-target finding: the scripted dynamic-score heuristic returned `0` for all selected repeat targets, so the last `2` queries should only be spent if a better manual hotspot heuristic is defined
+- Round 4 ID: `8e839974-b13b-407b-a5e7-fc749d877195`
+- Round 4 status: `completed`
+- Round 4 submissions: `0`
+- Round 4 final score: `null` (missed round)
+- Round 5 ID: `fd3c92ff-3178-4dc9-8d9b-acf389b3982b`
+- Round 5 status: `active`
+- Round 5 round number: `5`
+- Round 5 baseline submission status: accepted for seeds `0-4`
+- Round 5 submissions: `5`
+- Round 5 query budget now: `0 / 50` used
+- Round 5 queries remaining: `50`
+- Round 5 close time (UTC): `2026-03-20T08:48:10.400305+00:00`
 
 ## Working Rules
 
@@ -103,6 +146,12 @@
 - Round 2 extra repeat summary: `solutions/astar-island/artifacts/round_76909e29-f664-4b2f-b16b-61b7507277e9/extra_repeat_summary.json`
 - Round 2 improved tensors: `solutions/astar-island/artifacts/round_76909e29-f664-4b2f-b16b-61b7507277e9/improved_prediction_seed_*.json`
 - Round 2 exported analysis: `solutions/astar-island/artifacts/round_76909e29-f664-4b2f-b16b-61b7507277e9/analysis/`
+- Round 3 baseline artifacts: `solutions/astar-island/artifacts/round_f1dac9a9-5cf1-49a9-8f17-d6cb5d5ba5cb/`
+- Round 3 coverage + repeat samples: `solutions/astar-island/artifacts/round_f1dac9a9-5cf1-49a9-8f17-d6cb5d5ba5cb/simulate/`
+- Round 3 cycle summary: `solutions/astar-island/artifacts/round_f1dac9a9-5cf1-49a9-8f17-d6cb5d5ba5cb/observation_cycle_summary.json`
+- Round 3 improved tensors: `solutions/astar-island/artifacts/round_f1dac9a9-5cf1-49a9-8f17-d6cb5d5ba5cb/improved_prediction_seed_*.json`
+- Round 3 exported analysis: `solutions/astar-island/artifacts/round_f1dac9a9-5cf1-49a9-8f17-d6cb5d5ba5cb/analysis/`
+- Round 5 baseline artifacts: `solutions/astar-island/artifacts/round_fd3c92ff-3178-4dc9-8d9b-acf389b3982b/`
 
 ## Fresh Context Start Prompt
 
@@ -137,8 +186,8 @@ Then give a concise handoff summary.
 
 ## Handoff Contract
 
-- Current objective: turn round-2 analysis into a safer round-3 starting policy before the next active round opens.
-- Exact artifact reference: `solutions/astar-island/artifacts/round_76909e29-f664-4b2f-b16b-61b7507277e9/`
-- What is proven: token workflow works; round 1 scored `42.623` with rank `39/117`; `/analysis` is available for all 5 round-1 and round-2 seeds; round 2 baseline, improved submission, and final overwrite were all accepted for all 5 seeds; round 2 query budget was fully used at `50 / 50`; repeat `/simulate` calls must send `viewport_x/viewport_y/viewport_w/viewport_h`, and the local workflow has been fixed accordingly; round 2 still underperformed round 1 (`40.8117` vs `42.623`) despite the cleaner execution.
-- What is assumed: the next improvement should come from reducing settlement-heavy bias in priors and/or observation weighting rather than from further query-routing changes alone.
-- Next highest-priority task: quantify a conservative prior update for plains and near-settlement cells before the next round, then re-check whether a new active round exists.
+- Current objective: execute round 5 from the safe baseline now that round 3 is scored and exported.
+- Exact artifact reference: `solutions/astar-island/artifacts/round_fd3c92ff-3178-4dc9-8d9b-acf389b3982b/`
+- What is proven: round 3 is completed with score `29.2383`, rank `63 / 100`, and exported `/analysis` for all 5 seeds; round 4 was missed entirely (`0` submissions); round 5 is active and already has baseline predictions on file for seeds `0-4`; the conservative policy update remains implemented in `model.py` and `run_observation_cycle.py`; the local token workflow still works.
+- What is assumed: the updated conservative prior is still the safest starting point for round 5; round-5 performance should improve only after spending the query budget on scripted coverage and repeats rather than by further prior-only tweaks alone.
+- Next highest-priority task: run the round-5 observation cycle immediately from the current baseline, then watch for scoring and export `/analysis` when round 5 completes.

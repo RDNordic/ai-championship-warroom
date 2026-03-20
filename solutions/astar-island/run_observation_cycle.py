@@ -22,7 +22,12 @@ VIEWPORTS = [
 ]
 
 REPEAT_QUERIES = 3
-PRIOR_STRENGTH = 2.0
+PRIOR_STRENGTH = 4.0
+OBSERVATION_CLASS_WEIGHTS = [1.0, 0.45, 0.45, 0.45, 1.0, 1.0]
+COLLAPSE_DYNAMIC_RATE_THRESHOLD = 0.01
+COLLAPSE_DYNAMIC_SCALE = 0.12
+COLLAPSE_REALLOCATION = {0: 0.85, 4: 0.15}
+COLLAPSE_OBSERVATION_CLASS_WEIGHTS = [1.0, 0.10, 0.10, 0.10, 1.0, 1.0]
 
 
 def round_artifact_dir(round_id: str) -> Path:
@@ -103,6 +108,32 @@ def coverage_observations(round_id: str, seeds_count: int) -> list[dict[str, Any
     return observations
 
 
+def observation_stats(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    terrain_counts: dict[int, int] = {}
+    total_cells = 0
+    dynamic_cells = 0
+
+    for obs in observations:
+        for row in obs["grid"]:
+            for code in row:
+                terrain_counts[code] = terrain_counts.get(code, 0) + 1
+                total_cells += 1
+                if code in DYNAMIC_CODES:
+                    dynamic_cells += 1
+
+    dynamic_rate = (dynamic_cells / total_cells) if total_cells else 0.0
+    return {
+        "total_cells": total_cells,
+        "dynamic_cells": dynamic_cells,
+        "dynamic_rate": dynamic_rate,
+        "terrain_counts": terrain_counts,
+    }
+
+
+def collapse_mode_for_stats(stats: dict[str, Any]) -> bool:
+    return stats["dynamic_rate"] <= COLLAPSE_DYNAMIC_RATE_THRESHOLD
+
+
 def viewport_dynamic_score(obs: dict[str, Any]) -> float:
     grid = obs["grid"]
     dynamic_cells = sum(1 for row in grid for code in row if code in DYNAMIC_CODES)
@@ -138,10 +169,35 @@ def repeat_observations(round_id: str, targets: list[dict[str, Any]]) -> list[di
     return repeats
 
 
+def apply_collapse_damping(prediction: list[list[list[float]]]) -> list[list[list[float]]]:
+    for y, row in enumerate(prediction):
+        for x, cell in enumerate(row):
+            updated = cell[:]
+            removed_mass = 0.0
+            for class_index in (1, 2, 3):
+                original = updated[class_index]
+                updated[class_index] = original * COLLAPSE_DYNAMIC_SCALE
+                removed_mass += original - updated[class_index]
+
+            for class_index, share in COLLAPSE_REALLOCATION.items():
+                updated[class_index] += removed_mass * share
+
+            prediction[y][x] = normalize_cell(updated)
+
+    return prediction
+
+
 def combine_prior_with_observations(
-    initial_state: dict[str, Any], observations: list[dict[str, Any]]
+    initial_state: dict[str, Any],
+    observations: list[dict[str, Any]],
+    collapse_mode: bool = False,
 ) -> list[list[list[float]]]:
     prediction = build_prior_prediction(initial_state)
+    observation_weights = OBSERVATION_CLASS_WEIGHTS
+
+    if collapse_mode:
+        prediction = apply_collapse_damping(prediction)
+        observation_weights = COLLAPSE_OBSERVATION_CLASS_WEIGHTS
 
     for obs in observations:
         viewport = obs["viewport"]
@@ -151,7 +207,8 @@ def combine_prior_with_observations(
                 y = viewport["y"] + dy
                 x = viewport["x"] + dx
                 counts = [PRIOR_STRENGTH * p for p in prediction[y][x]]
-                counts[map_code_to_class_index(code)] += 1.0
+                class_index = map_code_to_class_index(code)
+                counts[class_index] += observation_weights[class_index]
                 prediction[y][x] = normalize_cell(counts)
 
     return prediction
@@ -161,12 +218,16 @@ def summarize_cycle(
     round_id: str,
     coverage: list[dict[str, Any]],
     repeats: list[dict[str, Any]],
+    coverage_stats: dict[str, Any],
+    collapse_mode: bool,
     submit_results: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "round_id": round_id,
         "coverage_queries": len(coverage),
         "repeat_queries": len(repeats),
+        "coverage_stats": coverage_stats,
+        "collapse_mode": collapse_mode,
         "repeat_targets": [
             {
                 "seed_index": item["seed_index"],
@@ -193,7 +254,9 @@ def main() -> None:
 
     seeds_count = detail["seeds_count"]
     coverage = coverage_observations(round_id, seeds_count)
-    repeat_targets = choose_repeat_targets(coverage, REPEAT_QUERIES)
+    coverage_stats = observation_stats(coverage)
+    collapse_mode = collapse_mode_for_stats(coverage_stats)
+    repeat_targets = [] if collapse_mode else choose_repeat_targets(coverage, REPEAT_QUERIES)
     repeats = repeat_observations(round_id, repeat_targets)
 
     by_seed: dict[int, list[dict[str, Any]]] = {seed: [] for seed in range(seeds_count)}
@@ -202,7 +265,11 @@ def main() -> None:
 
     predictions: list[list[list[list[float]]]] = []
     for seed_index, initial_state in enumerate(detail["initial_states"]):
-        prediction = combine_prior_with_observations(initial_state, by_seed[seed_index])
+        prediction = combine_prior_with_observations(
+            initial_state,
+            by_seed[seed_index],
+            collapse_mode=collapse_mode,
+        )
         validate_prediction(prediction, detail["map_height"], detail["map_width"])
         predictions.append(prediction)
         dump_json(round_artifact_dir(round_id) / f"improved_prediction_seed_{seed_index}.json", prediction)
@@ -220,7 +287,7 @@ def main() -> None:
         )
         submit_results.append(response)
 
-    summary = summarize_cycle(round_id, coverage, repeats, submit_results)
+    summary = summarize_cycle(round_id, coverage, repeats, coverage_stats, collapse_mode, submit_results)
     dump_json(round_artifact_dir(round_id) / "observation_cycle_summary.json", summary)
     print(json.dumps(summary, indent=2, ensure_ascii=True))
 
