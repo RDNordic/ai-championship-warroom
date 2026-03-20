@@ -208,6 +208,42 @@ cp .env.example .env
 
 The project loads `.env` automatically for local development. `.env` is ignored by git.
 
+### Submission Trace Log
+
+Incoming `/solve` requests are appended to:
+
+```text
+solutions/tripletex/logs/solve-events.jsonl
+```
+
+Each JSONL record includes a `trace_id`, prompt, attachment metadata, selected workflow, and final outcome. The Tripletex session token is not written to this log.
+
+Event types currently written:
+
+- `received`
+- `planned`
+- `tripletex_call`
+- `completed`
+- `failed`
+
+Use the inspection helper to review one submission or mine repeated user/task prompt shapes:
+
+```bash
+cd solutions/tripletex
+python scripts/inspect_solve_logs.py recent --limit 20
+python scripts/inspect_solve_logs.py trace <trace_id>
+python scripts/inspect_solve_logs.py patterns --top 20
+python scripts/inspect_solve_logs.py patterns --outcome failed --top 20
+```
+
+`patterns` normalizes names, emails, dates, UUIDs, and numeric IDs so repeated task shapes are easier to spot when we tune the planner against real incoming prompts.
+
+You can override the path with:
+
+```bash
+SOLVE_EVENT_LOG_PATH=/absolute/path/to/solve-events.jsonl
+```
+
 ### Read-Only Sandbox Smoke Test
 
 Before enabling write workflows, verify the sandbox credentials with a harmless GET:
