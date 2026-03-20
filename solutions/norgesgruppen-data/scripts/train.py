@@ -219,6 +219,8 @@ def main() -> None:
                         help="Validation set fraction (default: 0.2)")
     parser.add_argument("--resume", action="store_true",
                         help="Resume training from last checkpoint")
+    parser.add_argument("--augmented", action="store_true",
+                        help="Use augmented data from data/train_augmented/")
     parser.add_argument("--project", type=str, default="runs/detect",
                         help="Project directory for outputs")
     parser.add_argument("--name", type=str, default="train",
@@ -226,11 +228,18 @@ def main() -> None:
     args = parser.parse_args()
 
     project_dir = Path(__file__).resolve().parent.parent
-    annotations_path = project_dir / "data" / "train" / "annotations.json"
-    images_dir = project_dir / "data" / "train" / "images"
+
+    if args.augmented:
+        annotations_path = project_dir / "data" / "train_augmented" / "annotations.json"
+        images_dir = project_dir / "data" / "train_augmented" / "images"
+    else:
+        annotations_path = project_dir / "data" / "train" / "annotations.json"
+        images_dir = project_dir / "data" / "train" / "images"
 
     if not annotations_path.exists():
-        print(f"ERROR: annotations.json not found at {annotations_path}")
+        print(f"ERROR: annotations not found at {annotations_path}")
+        if args.augmented:
+            print("Run: python scripts/augment_copypaste.py")
         raise SystemExit(1)
 
     # Step 1: Convert COCO → YOLO format with train/val split
