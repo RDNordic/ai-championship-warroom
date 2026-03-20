@@ -61,10 +61,9 @@ class CustomerCreateWorkflow(BaseWorkflow):
                 "phoneNumber": fields.get("phoneNumber"),
                 "phoneNumberMobile": fields.get("phoneNumberMobile"),
                 "description": fields.get("description"),
-                "language": fields.get("language"),
+                "language": _normalize_language(fields.get("language")),
                 "postalAddress": _compact_address(_as_dict(fields.get("postalAddress"))),
                 "physicalAddress": _compact_address(_as_dict(fields.get("physicalAddress"))),
-                "isCustomer": True,
             }
         )
 
@@ -379,26 +378,38 @@ class DepartmentCreateWorkflow(BaseWorkflow):
 
     async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
         fields = _require_payload(plan, "department")
-        name = fields.get("name")
-        if not isinstance(name, str) or not name.strip():
+
+        # Support both single name and multi-department name lists
+        names_list = fields.get("names")
+        single_name = fields.get("name")
+        if isinstance(names_list, list) and names_list:
+            dept_names = [str(n).strip() for n in names_list if str(n).strip()]
+        elif isinstance(single_name, str) and single_name.strip():
+            dept_names = [single_name.strip()]
+        else:
             raise WorkflowExecutionError("Department creation requires a name")
 
-        body = _compact_mapping(
-            {
-                "name": name.strip(),
-                "departmentNumber": fields.get("departmentNumber"),
-            }
-        )
-
-        response = await client.post("/department", json_body=body)
-        created = client.unwrap_value(response)
-        created_id = _extract_id(created)
+        created_ids: list[int] = []
+        all_created: list[Any] = []
+        for dept_name in dept_names:
+            body = _compact_mapping(
+                {
+                    "name": dept_name,
+                    "departmentNumber": fields.get("departmentNumber"),
+                }
+            )
+            response = await client.post("/department", json_body=body)
+            created = client.unwrap_value(response)
+            created_id = _extract_id(created)
+            if created_id is not None:
+                created_ids.append(created_id)
+            all_created.append(created)
 
         return WorkflowResult(
             name="department_create",
-            intended_operations=["POST /department"],
-            resource_ids=[created_id] if created_id is not None else [],
-            details={"entity": "department", "created": created},
+            intended_operations=["POST /department"] * len(dept_names),
+            resource_ids=created_ids,
+            details={"entity": "department", "count": len(dept_names), "created": all_created},
         )
 
 
@@ -658,7 +669,7 @@ class CustomerUpdateWorkflow(BaseWorkflow):
                 "phoneNumber": fields.get("phoneNumber"),
                 "phoneNumberMobile": fields.get("phoneNumberMobile"),
                 "description": fields.get("description"),
-                "language": fields.get("language"),
+                "language": _normalize_language(fields.get("language")),
                 "postalAddress": _compact_address(_as_dict(fields.get("postalAddress"))),
                 "physicalAddress": _compact_address(_as_dict(fields.get("physicalAddress"))),
             }
@@ -1298,6 +1309,18 @@ def _extract_id(payload: Any) -> int | None:
         value = payload.get("id")
         if isinstance(value, int):
             return value
+    return None
+
+
+def _normalize_language(value: Any) -> str | None:
+    """Normalise a language hint to a Tripletex-accepted code (NO or EN)."""
+    if not isinstance(value, str):
+        return None
+    upper = value.strip().upper()
+    if upper in {"NO", "NB", "NN", "NOR"}:
+        return "NO"
+    if upper in {"EN", "ENG", "ENGLISH"}:
+        return "EN"
     return None
 
 

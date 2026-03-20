@@ -86,6 +86,7 @@ class DepartmentExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
+    names: list[str] | None = None  # for multi-department prompts
     departmentNumber: str | None = None
 
 
@@ -1164,6 +1165,8 @@ Important rules:
   - create travel expense report
   - delete travel expense report
 - Module activation and voucher reversal tasks are not yet implemented.
+- For department create tasks with multiple departments (e.g. "create departments X, Y, Z"),
+  put all department names into the names list field, not just name.
 - For travel expenses, put employee references into employeeName and/or employeeEmail.
 - For travel expenses, put cost items into the costs array with description, amount, and date.
 - For travel expenses, put mileage items into the mileageAllowances array with km, date, and
