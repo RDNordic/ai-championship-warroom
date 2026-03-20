@@ -148,6 +148,33 @@ def test_normalize_prompt_shape_masks_variable_slots() -> None:
     )
 
 
+def test_normalize_prompt_shape_preserves_org_language_vat_and_send_intent() -> None:
+    normalized = normalize_prompt_shape(
+        "Create and send an invoice to customer ACME AS organization number 123 456 789 "
+        "email finance@acme.test language English for 8750 NOK excluding VAT."
+    )
+
+    assert "send" in normalized
+    assert "for customer <value>" in normalized
+    assert "organization number <orgnum>" in normalized
+    assert "email <email>" in normalized
+    assert "language <language>" in normalized
+    assert "excluding vat" in normalized
+
+
+def test_normalize_prompt_shape_keeps_logged_french_invoice_send_semantics_visible() -> None:
+    normalized = normalize_prompt_shape(
+        "Créez et envoyez une facture au client Lumière SARL "
+        "(nº org. 827689114) de 8750 NOK hors TVA. "
+        "La facture concerne Maintenance."
+    )
+
+    assert "send" in normalized
+    assert "for customer <value>" in normalized
+    assert "organization number <orgnum>" in normalized
+    assert "excluding vat" in normalized
+
+
 def test_summarize_trace_counts_api_errors_and_resources() -> None:
     grouped = group_events_by_trace(_sample_events())
 

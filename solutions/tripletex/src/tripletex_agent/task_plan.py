@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class TaskFamily(str, Enum):
+class TaskFamily(StrEnum):
     EMPLOYEES = "employees"
     CUSTOMERS_PRODUCTS = "customers_products"
     INVOICING = "invoicing"
@@ -19,7 +19,7 @@ class TaskFamily(str, Enum):
     UNKNOWN = "unknown"
 
 
-class Operation(str, Enum):
+class Operation(StrEnum):
     CREATE = "create"
     UPDATE = "update"
     DELETE = "delete"
@@ -67,6 +67,14 @@ class CompletionCheck(BaseModel):
     expected_fields: list[str] = Field(default_factory=list)
 
 
+class ActionSemantics(BaseModel):
+    """Workflow-relevant action flags extracted from the prompt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    send_to_customer: bool | None = None
+
+
 class TaskPlan(BaseModel):
     """Constrained intermediate representation between LLM and workflows."""
 
@@ -80,6 +88,7 @@ class TaskPlan(BaseModel):
     links_between_entities: list[dict[str, Any]] = Field(default_factory=list)
     attachment_facts: list[AttachmentFact] = Field(default_factory=list)
     completion_checks: list[CompletionCheck] = Field(default_factory=list)
+    action_semantics: ActionSemantics = Field(default_factory=ActionSemantics)
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)
 
     def primary_entity_type(self) -> str | None:
@@ -102,7 +111,7 @@ class TaskPlan(BaseModel):
         return None
 
     @classmethod
-    def unknown(cls, *, attachment_facts: list[AttachmentFact] | None = None) -> "TaskPlan":
+    def unknown(cls, *, attachment_facts: list[AttachmentFact] | None = None) -> TaskPlan:
         return cls(
             task_family=TaskFamily.UNKNOWN,
             operation=Operation.UNKNOWN,

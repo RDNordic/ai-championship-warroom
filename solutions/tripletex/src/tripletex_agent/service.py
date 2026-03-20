@@ -10,13 +10,15 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from uuid import uuid4
 
+from .api_call_plan import ApiCallPlan
+from .api_call_planner import ApiCallPlanner, build_default_api_call_planner
 from .client import TripletexClient
 from .config import AppSettings
 from .models import SolveRequest, SolveResponse, TripletexCredentials
 from .planner import Planner, build_default_planner
 from .runtime_context import bind_runtime_context
 from .solve_logging import SolveEventLogger, SolveRequestContext
-from .task_plan import TaskFamily
+from .task_plan import TaskFamily, TaskPlan
 from .workflows import (
     CustomerCreateWorkflow,
     DepartmentCreateWorkflow,
@@ -51,11 +53,13 @@ class SolverService:
         workflows: WorkflowRegistry,
         client_factory: Callable[[TripletexCredentials], TripletexClient],
         event_logger: SolveEventLogger | None = None,
+        api_call_planner: ApiCallPlanner | None = None,
     ) -> None:
         self._planner = planner
         self._workflows = workflows
         self._client_factory = client_factory
         self._event_logger = event_logger
+        self._api_call_planner = api_call_planner
 
     async def solve(
         self,
@@ -89,6 +93,13 @@ class SolverService:
                 workflow = self._workflows.for_plan(plan)
                 workflow_name = workflow.__class__.__name__
                 self._record_planned(plan=plan, workflow_name=workflow_name, trace=trace)
+                self._maybe_record_api_call_plan(
+                    request=request,
+                    plan=plan,
+                    workflow=workflow,
+                    workflow_name=workflow_name,
+                    trace=trace,
+                )
                 logger.info(
                     "Planned solve trace_id=%s workflow=%s plan=%s",
                     trace.trace_id,
@@ -166,6 +177,23 @@ class SolverService:
             context=trace.context,
         )
 
+    def _record_api_call_plan(
+        self,
+        *,
+        base_plan,
+        workflow_name: str,
+        api_call_plan: ApiCallPlan,
+        trace: _SolveTrace,
+    ) -> None:
+        if self._event_logger is None:
+            return
+        self._event_logger.record_api_call_plan(
+            base_plan=base_plan,
+            workflow_name=workflow_name,
+            api_call_plan=api_call_plan,
+            context=trace.context,
+        )
+
     def _record_failed(
         self,
         *,
@@ -181,6 +209,45 @@ class SolverService:
             context=trace.context,
             plan=plan,
             workflow_name=workflow_name,
+        )
+
+    def _maybe_record_api_call_plan(
+        self,
+        *,
+        request: SolveRequest,
+        plan: TaskPlan,
+        workflow,
+        workflow_name: str,
+        trace: _SolveTrace,
+    ) -> None:
+        if self._api_call_planner is None:
+            return
+        if not isinstance(workflow, StubWorkflow):
+            return
+        try:
+            api_call_plan = self._api_call_planner.plan(request.prompt, request.files, plan)
+        except Exception as exc:
+            logger.warning(
+                "ApiCallPlan dry-run planning failed trace_id=%s workflow=%s: %s",
+                trace.trace_id,
+                workflow_name,
+                exc,
+            )
+            return
+        if api_call_plan is None:
+            return
+        self._record_api_call_plan(
+            base_plan=plan,
+            workflow_name=workflow_name,
+            api_call_plan=api_call_plan,
+            trace=trace,
+        )
+        logger.info(
+            "Recorded ApiCallPlan dry-run trace_id=%s workflow=%s steps=%s confidence=%.2f",
+            trace.trace_id,
+            workflow_name,
+            len(api_call_plan.steps),
+            api_call_plan.confidence,
         )
 
 
@@ -205,6 +272,7 @@ def build_default_service() -> SolverService:
         workflows=workflows,
         client_factory=TripletexClient.from_credentials,
         event_logger=SolveEventLogger(settings.solve_event_log_path),
+        api_call_planner=build_default_api_call_planner(settings),
     )
 
 

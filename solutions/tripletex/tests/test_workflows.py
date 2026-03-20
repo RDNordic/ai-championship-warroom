@@ -8,6 +8,7 @@ import pytest
 
 from tripletex_agent.client import TripletexClient
 from tripletex_agent.task_plan import (
+    ActionSemantics,
     EntityPayload,
     EntityReference,
     Operation,
@@ -161,7 +162,58 @@ async def test_employee_create_workflow_resolves_default_department_and_sets_use
 
 
 @pytest.mark.asyncio
-async def test_invoice_create_workflow_configures_bank_account_and_posts_invoice() -> None:
+async def test_invoice_create_workflow_posts_invoice_without_bank_account_mutation_by_default(
+) -> None:
+    recorded: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/v2/customer":
+            return httpx.Response(200, json={"values": [{"id": 555, "name": "ACME AS"}]})
+        if request.method == "POST" and request.url.path == "/v2/invoice":
+            assert request.url.params["sendToCustomer"] == "false"
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["customer"] == {"id": 555}
+            assert payload["orders"][0]["orderLines"][0]["description"] == "Maintenance"
+            assert payload["orders"][0]["orderLines"][0]["unitPriceExcludingVatCurrency"] == 8750.0
+            return httpx.Response(200, json={"value": {"id": 909, "invoiceNumber": 1}})
+        raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+    workflow = InvoiceCreateWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="invoice",
+                fields={
+                    "customerLookup": {"customerName": "ACME AS"},
+                    "line": {
+                        "description": "Maintenance",
+                        "unitPriceExcludingVatCurrency": 8750.0,
+                    },
+                },
+            )
+        ],
+        confidence=0.9,
+    )
+
+    async with TripletexClient(
+        base_url="https://example.test/v2",
+        session_token="token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await workflow.execute(plan=plan, client=client)
+
+    assert result.resource_ids == [909]
+    assert result.details["sendToCustomer"] is False
+    assert result.details["invoiceBankAccountUpdated"] is False
+    assert recorded == [("GET", "/v2/customer"), ("POST", "/v2/invoice")]
+
+
+@pytest.mark.asyncio
+async def test_invoice_create_workflow_configures_bank_account_and_sends_invoice_when_requested(
+) -> None:
     recorded: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -200,7 +252,7 @@ async def test_invoice_create_workflow_configures_bank_account_and_posts_invoice
                 },
             )
         if request.method == "POST" and request.url.path == "/v2/invoice":
-            assert request.url.params["sendToCustomer"] == "false"
+            assert request.url.params["sendToCustomer"] == "true"
             payload = json.loads(request.content.decode("utf-8"))
             assert payload["customer"] == {"id": 555}
             assert payload["invoiceDate"] == date.today().isoformat()
@@ -229,6 +281,7 @@ async def test_invoice_create_workflow_configures_bank_account_and_posts_invoice
                 },
             )
         ],
+        action_semantics=ActionSemantics(send_to_customer=True),
         confidence=0.9,
     )
 
@@ -240,6 +293,9 @@ async def test_invoice_create_workflow_configures_bank_account_and_posts_invoice
         result = await workflow.execute(plan=plan, client=client)
 
     assert result.resource_ids == [909]
+    assert result.details["sendToCustomer"] is True
+    assert result.details["invoiceBankAccountId"] == 11
+    assert result.details["invoiceBankAccountUpdated"] is True
     assert recorded == [
         ("GET", "/v2/customer"),
         ("GET", "/v2/product"),

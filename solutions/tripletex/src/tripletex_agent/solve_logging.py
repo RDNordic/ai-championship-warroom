@@ -14,6 +14,7 @@ from .models import SolveRequest
 from .task_plan import TaskPlan
 
 if TYPE_CHECKING:
+    from .api_call_plan import ApiCallPlan
     from .workflows.base import WorkflowResult
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,26 @@ class SolveEventLogger:
                 "operation": plan.operation.value,
                 "workflow": workflow_name,
                 "result": result.model_dump(mode="json"),
+                "request_meta": _context_payload(context),
+            }
+        )
+
+    def record_api_call_plan(
+        self,
+        *,
+        base_plan: TaskPlan,
+        workflow_name: str,
+        api_call_plan: ApiCallPlan,
+        context: SolveRequestContext,
+    ) -> None:
+        self._append(
+            {
+                "event": "api_call_plan",
+                "trace_id": context.trace_id,
+                "task_family": base_plan.task_family.value,
+                "operation": base_plan.operation.value,
+                "workflow": workflow_name,
+                "api_call_plan": api_call_plan.model_dump(mode="json"),
                 "request_meta": _context_payload(context),
             }
         )

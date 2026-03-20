@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .config import AppSettings
 from .models import AttachmentFile
 from .task_plan import (
+    ActionSemantics,
     AttachmentFact,
     CompletionCheck,
     EntityPayload,
@@ -142,6 +144,7 @@ class InvoiceExtraction(BaseModel):
     creditNoteEmail: str | None = None
     comment: str | None = None
     invoiceComment: str | None = None
+    sendToCustomer: bool | None = None
     line: InvoiceLineExtraction | None = None
 
 
@@ -249,7 +252,17 @@ class KeywordTaskPlanner:
             TaskFamily.INVOICING,
             Operation.CREATE,
             "invoice",
-            ("invoice", "faktura", "issue invoice", "send invoice", "utsted faktura"),
+            (
+                "invoice",
+                "faktura",
+                "facture",
+                "factura",
+                "fatura",
+                "rechnung",
+                "issue invoice",
+                "send invoice",
+                "utsted faktura",
+            ),
         ),
         IntentRule(
             TaskFamily.CUSTOMERS_PRODUCTS,
@@ -344,11 +357,23 @@ class KeywordTaskPlanner:
         entities_to_create: list[EntityPayload] = []
         entities_to_find: list[EntityReference] = []
         fields_to_set: dict[str, object] = {}
+        action_semantics = _extract_action_semantics(
+            prompt=prompt,
+            entity_type=entity_type,
+            operation=operation,
+        )
 
         if operation == Operation.CREATE:
             entities_to_create.append(EntityPayload(entity_type=entity_type, fields=payload))
             completion_checks.append(
                 CompletionCheck(kind="created", entity_type=entity_type, expected_fields=["id"])
+            )
+            completion_checks.extend(
+                _action_completion_checks(
+                    entity_type=entity_type,
+                    operation=operation,
+                    action_semantics=action_semantics,
+                )
             )
         elif operation != Operation.UNKNOWN:
             lookup = payload
@@ -376,6 +401,7 @@ class KeywordTaskPlanner:
             fields_to_set=fields_to_set,
             attachment_facts=attachment_facts,
             completion_checks=completion_checks,
+            action_semantics=action_semantics,
             confidence=confidence,
         )
 
@@ -479,6 +505,7 @@ def _plan_from_extraction(
     entities_to_create: list[EntityPayload] = []
     entities_to_find: list[EntityReference] = []
     fields_to_set: dict[str, object] = {}
+    action_semantics = _action_semantics_for_extraction(extraction)
 
     payload = _payload_for_extraction(extraction)
 
@@ -486,6 +513,13 @@ def _plan_from_extraction(
         entities_to_create.append(EntityPayload(entity_type=entity_type, fields=payload))
         completion_checks.append(
             CompletionCheck(kind="created", entity_type=entity_type, expected_fields=["id"])
+        )
+        completion_checks.extend(
+            _action_completion_checks(
+                entity_type=entity_type,
+                operation=extraction.operation,
+                action_semantics=action_semantics,
+            )
         )
 
     if extraction.operation == Operation.UPDATE and entity_type != "unknown":
@@ -508,6 +542,7 @@ def _plan_from_extraction(
         fields_to_set=fields_to_set,
         attachment_facts=attachment_facts,
         completion_checks=completion_checks,
+        action_semantics=action_semantics,
         confidence=extraction.confidence,
     )
 
@@ -548,6 +583,7 @@ def _payload_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
         return extraction.product.model_dump(exclude_none=True)
     if extraction.primary_entity_type == "invoice" and extraction.invoice is not None:
         invoice_payload = extraction.invoice.model_dump(exclude_none=True)
+        invoice_payload.pop("sendToCustomer", None)
         customer_lookup: dict[str, object] = {}
         customer_name = invoice_payload.pop("customerName", None)
         customer_org = invoice_payload.pop("customerOrganizationNumber", None)
@@ -581,6 +617,12 @@ def _payload_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
             invoice_payload["paymentTypeLookup"] = payment_type_lookup
         return invoice_payload
     return {}
+
+
+def _action_semantics_for_extraction(extraction: PromptExtraction) -> ActionSemantics:
+    if extraction.primary_entity_type == "invoice" and extraction.invoice is not None:
+        return ActionSemantics(send_to_customer=extraction.invoice.sendToCustomer)
+    return ActionSemantics()
 
 
 def _invoice_lookup_and_fields_from_payload(
@@ -618,6 +660,32 @@ def _invoice_lookup_and_fields_from_payload(
             fields["creditNoteEmail"] = payload["creditNoteEmail"]
 
     return lookup, fields
+
+
+def _extract_action_semantics(
+    *,
+    prompt: str,
+    entity_type: str,
+    operation: Operation,
+) -> ActionSemantics:
+    if entity_type == "invoice" and operation == Operation.CREATE:
+        return ActionSemantics(send_to_customer=_extract_send_to_customer_intent(prompt))
+    return ActionSemantics()
+
+
+def _action_completion_checks(
+    *,
+    entity_type: str,
+    operation: Operation,
+    action_semantics: ActionSemantics,
+) -> list[CompletionCheck]:
+    if (
+        entity_type == "invoice"
+        and operation == Operation.CREATE
+        and action_semantics.send_to_customer is True
+    ):
+        return [CompletionCheck(kind="sent_to_customer", entity_type="invoice")]
+    return []
 
 
 def _lookup_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
@@ -673,6 +741,20 @@ def _merge_with_fallback_plan(primary: TaskPlan, fallback: TaskPlan) -> TaskPlan
     if fallback.fields_to_set:
         update["fields_to_set"] = _merge_mappings(merged.fields_to_set, fallback.fields_to_set)
 
+    merged_action_semantics = _merge_action_semantics(
+        merged.action_semantics,
+        fallback.action_semantics,
+    )
+    if merged_action_semantics != merged.action_semantics:
+        update["action_semantics"] = merged_action_semantics
+
+    merged_completion_checks = _merge_completion_checks(
+        merged.completion_checks,
+        fallback.completion_checks,
+    )
+    if merged_completion_checks != merged.completion_checks:
+        update["completion_checks"] = merged_completion_checks
+
     return merged.model_copy(update=update) if update else merged
 
 
@@ -695,6 +777,30 @@ def _sanitize_plan(plan: TaskPlan) -> TaskPlan:
         update["fields_to_set"] = _sanitize_mapping(plan.fields_to_set)
 
     return plan.model_copy(update=update) if update else plan
+
+
+def _merge_action_semantics(
+    primary: ActionSemantics,
+    fallback: ActionSemantics,
+) -> ActionSemantics:
+    send_to_customer = primary.send_to_customer
+    if fallback.send_to_customer is not None:
+        send_to_customer = fallback.send_to_customer
+    return ActionSemantics(send_to_customer=send_to_customer)
+
+
+def _merge_completion_checks(
+    primary: list[CompletionCheck],
+    fallback: list[CompletionCheck],
+) -> list[CompletionCheck]:
+    merged = list(primary)
+    seen = {(check.kind, check.entity_type, tuple(check.expected_fields)) for check in merged}
+    for check in fallback:
+        signature = (check.kind, check.entity_type, tuple(check.expected_fields))
+        if signature not in seen:
+            merged.append(check)
+            seen.add(signature)
+    return merged
 
 
 def _sanitize_mapping(mapping: dict[str, object]) -> dict[str, object]:
@@ -793,6 +899,8 @@ def _prune_conflicting_fields(
     fallback: dict[str, object],
     merged: dict[str, object],
 ) -> dict[str, object]:
+    updated = merged
+
     product_lookup = merged.get("productLookup")
     description = merged.get("description")
     if (
@@ -805,10 +913,57 @@ def _prune_conflicting_fields(
         if isinstance(product_name, str) and _normalize_text(product_name) == _normalize_text(
             description
         ):
-            merged = dict(merged)
-            merged.pop("productLookup", None)
+            updated = dict(updated)
+            updated.pop("productLookup", None)
 
-    return merged
+    line = updated.get("line")
+    if isinstance(line, dict):
+        for comment_key in ("comment", "invoiceComment"):
+            comment_value = updated.get(comment_key)
+            if (
+                isinstance(comment_value, str)
+                and comment_key not in fallback
+                and _is_redundant_invoice_amount_comment(comment_value, line)
+            ):
+                if updated is merged:
+                    updated = dict(updated)
+                updated.pop(comment_key, None)
+
+    return updated
+
+
+def _is_redundant_invoice_amount_comment(comment: str, line: dict[str, object]) -> bool:
+    amount = _extract_invoice_amount_phrase_value(comment)
+    unit_price = line.get("unitPriceExcludingVatCurrency")
+    if amount is None or not isinstance(unit_price, (int, float)):
+        return False
+
+    count = line.get("count")
+    normalized_count = float(count) if isinstance(count, (int, float)) else 1.0
+    normalized_unit_price = float(unit_price)
+    return _numbers_match(normalized_unit_price, amount) or _numbers_match(
+        normalized_unit_price * normalized_count,
+        amount,
+    )
+
+
+def _extract_invoice_amount_phrase_value(value: str) -> float | None:
+    match = re.fullmatch(
+        (
+            r"(?P<amount>\d+(?:[.,]\d+)?)\s*nok\b"
+            r"(?:\s*(?:excluding vat|ex vat|hors tva|sin iva|sem iva|uten mva|utan mva|"
+            r"ohne mwst))?"
+        ),
+        _normalize_prompt_text(_clean_extracted_value(value)),
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    return _parse_decimal(match.group("amount"))
+
+
+def _numbers_match(left: float, right: float) -> bool:
+    return abs(left - right) < 1e-6
 
 
 def _build_generic_plan(
@@ -870,6 +1025,13 @@ Important rules:
   projectManagerEmail.
 - For invoices, put customer references into customerName and/or customerOrganizationNumber.
 - For invoice lines, put product references into productName and/or productNumber.
+- For invoice create tasks, phrases like "invoice is for", "fakturaen gjelder", "la facture
+  concerne", "la factura es para", "a fatura e para", or "die Rechnung betrifft" describe the
+  free-text line description unless the prompt explicitly names a product.
+- For invoice create tasks, set sendToCustomer=true only when the prompt explicitly asks to send
+  the invoice now. Leave it null when the prompt only asks to create or issue the invoice.
+- Do not put amount or VAT wording into comment or invoiceComment unless the prompt explicitly
+  asks for a comment.
 - For invoice payment or credit note tasks, prefer invoiceNumber unless the prompt explicitly says
   invoice id; extract invoiceId only when that wording is explicit.
 - For invoice payment tasks, put payment method hints into paymentTypeId and/or
@@ -881,6 +1043,40 @@ Important rules:
 
 _EMAIL_RE = re.compile(r"(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})", re.IGNORECASE)
 _ORG_RE = re.compile(r"\b(?P<org>\d{3}\s?\d{3}\s?\d{3})\b")
+_SEND_INTENT_NEGATIVE_PATTERNS: tuple[str, ...] = (
+    r"\bdo not send\b",
+    r"\bdon't send\b",
+    r"\bwithout sending\b",
+    r"\bikke send\b",
+    r"\bikkje send\b",
+    r"\buten a sende\b",
+    r"\bne pas envoyer\b",
+    r"\bn[' ]?envoyez pas\b",
+    r"\bsans envoyer\b",
+    r"\bno enviar\b",
+    r"\bsin enviar\b",
+    r"\bnao enviar\b",
+    r"\bsem enviar\b",
+    r"\bnicht senden\b",
+    r"\bohne zu senden\b",
+)
+_SEND_INTENT_POSITIVE_PATTERNS: tuple[str, ...] = (
+    r"\bsend\b",
+    r"\bsende\b",
+    r"\bsender\b",
+    r"\bsendt\b",
+    r"\benvoyer\b",
+    r"\benvoyez\b",
+    r"\benvoie\b",
+    r"\benviar\b",
+    r"\benvie\b",
+    r"\benvia\b",
+    r"\bsenden\b",
+    r"\bsende\b",
+    r"\bversenden\b",
+    r"\bverschicken\b",
+    r"\bdispatch\b",
+)
 
 
 def _extract_customer_payload(prompt: str) -> dict[str, object]:
@@ -1112,14 +1308,9 @@ def _extract_product_payload(prompt: str) -> dict[str, object]:
 def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     payload: dict[str, object] = {}
     customer_lookup: dict[str, object] = {}
-    customer_name = _extract_named_value(
-        prompt,
-        [
-            r"(?:for|til)\s+(?:customer|kunde)\s+(?P<value>[^,\n]+)",
-        ],
-    )
+    customer_name = _extract_invoice_customer_name(prompt)
     if customer_name:
-        customer_lookup["customerName"] = _strip_invoice_customer_suffixes(customer_name)
+        customer_lookup["customerName"] = customer_name
 
     organization_number = _extract_org_number(prompt)
     if organization_number:
@@ -1194,14 +1385,9 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
         line.setdefault("productLookup", {})
         line["productLookup"]["productNumber"] = product_number
 
-    description = _extract_named_value(
-        prompt,
-        [
-            r"(?:line description|invoice line|description|beskrivelse)\s+(?P<value>[^,\n]+)",
-        ],
-    )
+    description = _extract_invoice_line_description(prompt)
     if description:
-        line["description"] = _strip_invoice_line_suffixes(description)
+        line["description"] = description
 
     quantity_match = re.search(
         r"(?:quantity|qty|count|antall|stk)\s+(?P<value>\d+(?:[.,]\d+)?)",
@@ -1216,8 +1402,13 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
         prompt,
         flags=re.IGNORECASE,
     )
+    if price_match is None:
+        price_match = _search_invoice_amount_excluding_vat(prompt)
     if price_match:
         line["unitPriceExcludingVatCurrency"] = _parse_decimal(price_match.group("value"))
+
+    if line and "count" not in line:
+        line["count"] = 1.0
 
     if line:
         payload["line"] = line
@@ -1350,15 +1541,10 @@ def _extract_invoice_lookup(prompt: str) -> dict[str, object]:
     if invoice_date:
         lookup["invoiceDate"] = invoice_date
 
-    customer_name = _extract_named_value(
-        prompt,
-        [
-            r"(?:for|til)\s+(?:customer|kunde)\s+(?P<value>[^,\n]+)",
-        ],
-    )
+    customer_name = _extract_invoice_customer_name(prompt)
     customer_lookup: dict[str, object] = {}
     if customer_name:
-        customer_lookup["customerName"] = _strip_invoice_customer_suffixes(customer_name)
+        customer_lookup["customerName"] = customer_name
     organization_number = _extract_org_number(prompt)
     if organization_number:
         customer_lookup.setdefault("organizationNumber", organization_number)
@@ -1493,6 +1679,70 @@ def _parse_decimal(value: str) -> float:
     return float(value.replace(",", "."))
 
 
+def _extract_invoice_customer_name(prompt: str) -> str | None:
+    customer_name = _extract_named_value(
+        prompt,
+        [
+            (
+                r"(?:for|to)\s+(?:customer|kunde)\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|for\s+\d+(?:[.,]\d+)?\s*nok\b|invoice\s+(?:is\s+)?for\b|$))"
+            ),
+            (
+                r"til\s+kunden?\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|for\s+\d+(?:[.,]\d+)?\s*nok\b|faktura(?:en)?\s+gjel(?:der|d)\b|$))"
+            ),
+            (
+                r"au\s+client\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|de\s+\d+(?:[.,]\d+)?\s*nok\b|la\s+facture\s+concerne\b|$))"
+            ),
+            (
+                r"al\s+cliente\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|por\s+\d+(?:[.,]\d+)?\s*nok\b|la\s+factura\s+(?:es|se\s+refiere)\b|$))"
+            ),
+            (
+                r"ao\s+cliente\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|de\s+\d+(?:[.,]\d+)?\s*nok\b|a\s+fatura\s+(?:e|é|refere-se)\b|$))"
+            ),
+            (
+                r"an\s+den\s+kunden\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|uber\s+\d+(?:[.,]\d+)?\s*nok\b|die\s+rechnung\s+betrifft\b|$))"
+            ),
+        ],
+    )
+    if customer_name:
+        return _strip_invoice_customer_suffixes(customer_name)
+    return None
+
+
+def _extract_invoice_line_description(prompt: str) -> str | None:
+    description = _extract_named_value(
+        prompt,
+        [
+            r"(?:line description|invoice line|description|beskrivelse)\s+(?P<value>[^,\n]+)",
+            r"(?:invoice\s+(?:is\s+)?for|faktura(?:en)?\s+gjel(?:der|d))\s+(?P<value>[^,\n.]+)",
+            r"la\s+facture\s+concerne\s+(?P<value>[^,\n.]+)",
+            r"la\s+factura\s+(?:es\s+para|es|se\s+refiere(?:\s+a)?)\s+(?P<value>[^,\n.]+)",
+            r"a\s+fatura\s+(?:e|é|refere-se)\s+(?:para\s+)?(?P<value>[^,\n.]+)",
+            r"die\s+rechnung\s+betrifft\s+(?P<value>[^,\n.]+)",
+        ],
+    )
+    if description:
+        return _strip_invoice_line_suffixes(description)
+    return None
+
+
+def _search_invoice_amount_excluding_vat(prompt: str) -> re.Match[str] | None:
+    return re.search(
+        (
+            r"(?:for|de|por|uber)\s+(?P<value>\d+(?:[.,]\d+)?)\s*nok\b"
+            r"(?:\s*(?:excluding vat|ex vat|hors tva|sin iva|sem iva|uten mva|utan mva|"
+            r"ohne mwst))"
+        ),
+        _normalize_prompt_text(prompt),
+        flags=re.IGNORECASE,
+    )
+
+
 def _strip_product_suffixes(value: str) -> str:
     return _strip_suffixes(
         value,
@@ -1566,7 +1816,11 @@ def _strip_invoice_customer_suffixes(value: str) -> str:
                 r"\b(?:invoice date|fakturadato|due date|forfallsdato|delivery date|leveringsdato|"
                 r"comment|kommentar|invoice comment|fakturakommentar|product number|"
                 r"produktnummer|varenummer|price|pris|quantity|qty|count|antall|stk|"
-                r"line description|invoice line|description|beskrivelse)\b"
+                r"line description|invoice line|description|beskrivelse|organization number|"
+                r"organisasjonsnummer|org(?:anization)?\s*(?:number|nr|no)?|la\s+facture\s+concerne|"
+                r"la\s+factura\s+(?:es|se\s+refiere)|a\s+fatura\s+(?:e|refere-se)|"
+                r"die\s+rechnung\s+betrifft|faktura(?:en)?\s+gjel(?:der|d))\b|"
+                r"(?:for|de|por|uber)\s+\d+(?:[.,]\d+)?\s*nok\b"
             ),
         ],
     )
@@ -1612,6 +1866,26 @@ def _strip_project_suffixes(value: str) -> str:
             ),
         ],
     )
+
+
+def _extract_send_to_customer_intent(prompt: str) -> bool | None:
+    normalized_prompt = _normalize_prompt_text(prompt)
+
+    for pattern in _SEND_INTENT_NEGATIVE_PATTERNS:
+        if re.search(pattern, normalized_prompt, flags=re.IGNORECASE):
+            return False
+
+    for pattern in _SEND_INTENT_POSITIVE_PATTERNS:
+        if re.search(pattern, normalized_prompt, flags=re.IGNORECASE):
+            return True
+
+    return None
+
+
+def _normalize_prompt_text(prompt: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", prompt)
+    without_marks = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return without_marks.lower()
 
 
 def _extract_org_number(prompt: str) -> str | None:

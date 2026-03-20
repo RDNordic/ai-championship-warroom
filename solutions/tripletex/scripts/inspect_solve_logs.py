@@ -127,6 +127,7 @@ def _print_trace(events: list[dict[str, object]], *, trace_id: str, as_json: boo
                     "operation": summary.operation,
                     "api_call_count": summary.api_call_count,
                     "api_error_count": summary.api_error_count,
+                    "api_call_plan": summary.api_call_plan,
                     "result_resources": summary.result_resources,
                     "error": summary.error,
                     "api_calls": summary.api_calls,
@@ -150,6 +151,9 @@ def _print_trace(events: list[dict[str, object]], *, trace_id: str, as_json: boo
     print(summary.prompt)
     print("normalized_prompt:")
     print(normalize_prompt_shape(summary.prompt))
+    if summary.api_call_plan:
+        print("api_call_plan:")
+        print(json.dumps(summary.api_call_plan, ensure_ascii=False, indent=2))
     if summary.error:
         print("error:")
         print(json.dumps(summary.error, ensure_ascii=False, indent=2))

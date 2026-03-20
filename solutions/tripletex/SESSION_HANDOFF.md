@@ -2,47 +2,73 @@
 
 ## Checkpoint
 
-Tripletex now has durable solver-side trace logging for both incoming hidden prompts and outgoing Tripletex API calls, plus the first real competition prompt captured from a live submission. The project now has enough evidence to move from generic prompt hardening to log-driven prompt-to-workflow remediation.
+Tripletex still has the validated invoice create-and-send path from the public replay, and this session added a safe phase-1 prototype for unsupported tasks:
+- invoice create-and-send semantics remain anchored by public trace `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
+- multilingual project creation remains validated by public trace `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
+- multilingual travel expenses are still a real gap, shown by stub trace `c903bd9c-b11a-4d63-92f0-4e115baec310`
+- a new feature-flagged dry-run `ApiCallPlan` path now records structured candidate Tripletex call plans for stubbed tasks without changing the live executor
 
-This session did two things that materially change the next steps:
-- added durable JSONL trace logging and inspection tooling for `/solve`
-- merged the live trace evidence back into `PLAN.md`, which now prioritizes semantic alignment between human intent and workflow execution
-
-Repository scope for the next session stays inside `solutions/tripletex/` unless the owner explicitly asks for something broader.
+The main source of truth for online behavior remains public `/solve` trace review in `solutions/tripletex/logs/solve-events.jsonl`.
 
 ## Handoff Contract
 
 - Current objective:
-  - Close the semantic gap between what hidden user prompts ask for and what the deterministic workflow actually executes, starting with invoice create-vs-create-and-send behavior.
+  - Keep the validated invoice and project paths stable while using live traces to design safe coverage expansion for unsupported tasks, starting with travel expenses through the new dry-run `ApiCallPlan` path.
 - Exact artifact reference:
   - Working tree in `solutions/tripletex/` on `2026-03-20` after:
-    - prompt-layer cleanup and fallback-plan merging
-    - durable `/solve` event logging
-    - per-Tripletex API call logging
-    - prompt-pattern inspection tooling
-    - log-driven update of `solutions/tripletex/PLAN.md`
-  - Public endpoint validated in this session:
+    - invoice comment pruning for redundant amount/VAT phrases
+    - stronger invoice extraction guidance for free-text description lines vs product references
+    - phase-1 dry-run `ApiCallPlan` prototype for stubbed task families
+    - trace/log tooling that can now surface a generated `api_call_plan`
+  - Public endpoint:
     - `https://app-per-formerly-basement.trycloudflare.com/solve`
   - Live trace log path:
     - `solutions/tripletex/logs/solve-events.jsonl`
+  - Current live trace anchors:
+    - invoice success: `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
+    - project success: `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
+    - travel-expense stub: `c903bd9c-b11a-4d63-92f0-4e115baec310`
+  - Feature flag state:
+    - `ENABLE_API_CALL_PLAN=false`
+    - `API_CALL_PLAN_MODEL=gpt-5-mini`
   - Key docs for the next session:
     - `solutions/tripletex/PLAN.md`
     - `solutions/tripletex/SUBMISSION_CHECKLIST.md`
     - `solutions/tripletex/SESSION_HANDOFF.md`
     - `solutions/tripletex/README.md`
 - What is proven:
-  - Incoming `/solve` prompts are durably logged with `trace_id`, prompt text, request metadata, selected workflow, and outcome.
-  - Outgoing Tripletex API calls are durably logged with method, path, params, body, status, and response payload.
-  - The public solver is healthy and the public endpoint remained reachable after the logging changes.
-  - The helper script can inspect recent traces, one trace in detail, and normalized prompt patterns.
-  - At least one real competition prompt was captured from a live submission and analyzed.
-  - The real competition prompt was partially solved: the agent created the correct invoice but did not honor the prompt’s “create and send” semantics.
+  - The online solver behavior for supported tasks is still anchored by live public traces:
+    - invoice trace `6c15b5a1-53d8-4b68-9cfe-384285fa632a` still proves `send_to_customer=true`, no `GET /product`, and empty invoice comments
+    - project trace `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457` still proves multilingual project extraction and execution
+  - The live gap is still real:
+    - travel-expense trace `c903bd9c-b11a-4d63-92f0-4e115baec310` planned `travel_expenses` but routed to `StubWorkflow` with no Tripletex API calls
+  - The fallback merge now removes redundant amount/VAT phrases from invoice comments when the extracted line amount already captures that information.
+  - The planner guidance now explicitly treats phrases like `La facture concerne ...` as free-text line descriptions unless the prompt explicitly names a product.
+  - The new dry-run `ApiCallPlan` path is feature-flagged and scoped safely:
+    - it only activates when the chosen workflow is `StubWorkflow`
+    - it records an `api_call_plan` event instead of executing new API calls
+    - live workflows skip it entirely
+  - Config defaults keep the prototype offline by default:
+    - `ENABLE_API_CALL_PLAN=false`
+    - `API_CALL_PLAN_MODEL=gpt-5-mini`
+  - Log tooling now surfaces generated dry-run plans:
+    - `SolveEventLogger` records `api_call_plan`
+    - `log_analysis.py` includes `api_call_plan` in trace summaries
+    - `scripts/inspect_solve_logs.py` prints the plan in text and JSON modes
+  - Focused validation for the new prototype succeeded:
+    - `./.venv/bin/ruff check src/tripletex_agent/config.py src/tripletex_agent/service.py src/tripletex_agent/solve_logging.py src/tripletex_agent/log_analysis.py src/tripletex_agent/api_call_plan.py src/tripletex_agent/api_call_planner.py scripts/inspect_solve_logs.py tests/test_config.py tests/test_service.py tests/test_api_call_planner.py tests/test_log_analysis.py`
+      - Result: passed
+    - `./.venv/bin/pytest -q tests/test_config.py tests/test_api_call_planner.py tests/test_log_analysis.py`
+      - Result: `10 passed`
+    - direct local service check for the stub path:
+      - Result: `{"status":"completed"}`
+      - logged events: `received`, `planned`, `api_call_plan`, `completed`
 - What is assumed:
-  - The logged French invoice prompt is representative of a broader class of multilingual action-semantics failures, not a one-off oddity.
-  - Eliminating unrelated side effects during invoice creation should improve efficiency and reduce hidden-task risk.
-  - PDF and CSV handling can remain lower priority until the API-only conversational layer stops missing scorer-relevant semantics.
+  - The dry-run `gpt-5-mini` plans will be good enough to guide executor design once we start replaying real stub prompts locally with the feature flag on.
+  - The current curated endpoint catalog in `api_call_planner.py` is enough for the first travel-expense iteration, but it will likely need refinement after reviewing real generated plans.
+  - Online behavior remains unchanged while `ENABLE_API_CALL_PLAN` stays off.
 - Next highest-priority task:
-  - Implement invoice send intent end-to-end in the planner and workflow, validate it in sandbox and through public `/solve`, and use the trace log to confirm the semantic mismatch is closed.
+  - Turn on `ENABLE_API_CALL_PLAN=true` locally only, replay the live travel-expense stub prompt `c903bd9c-b11a-4d63-92f0-4e115baec310`, inspect the generated `api_call_plan`, and refine the schema/prompt before attempting any executor work or online enablement.
 
 ## Session Archive
 
@@ -52,133 +78,96 @@ Repository scope for the next session stays inside `solutions/tripletex/` unless
 - `solutions/tripletex/session_archive/2026-03-20-pre-first-solve-submission-checkpoint.md`
 - `solutions/tripletex/session_archive/2026-03-20-conversational-prompt-layer-checkpoint.md`
 - `solutions/tripletex/session_archive/2026-03-20-log-observability-and-plan-refresh-checkpoint.md`
+- `solutions/tripletex/session_archive/2026-03-20-invoice-send-semantics-checkpoint.md`
+- `solutions/tripletex/session_archive/2026-03-20-invoice-drift-hardening-checkpoint.md`
+- `solutions/tripletex/session_archive/2026-03-20-pre-api-call-plan-dry-run-checkpoint.md`
 
 ## Latest Work
 
-- Added durable solve-event logging:
-  - `received`
-  - `planned`
-  - `tripletex_call`
-  - `completed`
-  - `failed`
-- Added request-scoped tracing:
-  - `trace_id`
-  - safe request metadata
-  - prompt and attachment metadata
-- Added per-Tripletex API call tracing with status, duration, params, JSON body, and response payload.
-- Added log inspection tooling:
-  - `python scripts/inspect_solve_logs.py recent`
-  - `python scripts/inspect_solve_logs.py trace <trace_id>`
-  - `python scripts/inspect_solve_logs.py patterns`
-- Added prompt-pattern analysis helpers and tests.
-- Updated `PLAN.md` with:
-  - prompt taxonomy from the live log
-  - prompt-by-prompt semantic assessment
-  - severity-ordered findings
-  - merged `P0 / P1 / P2` roadmap
-- Archived the previous handoff before replacing this one.
+- Preserved the invoice drift-hardening work already in the tree:
+  - redundant amount/VAT phrasing is pruned out of invoice comments
+  - French description-line prompts stay in `line.description`
+  - trace-shaped invoice regressions were added around the stale-worker misses and successful replay
+- Added phase-1 dry-run `ApiCallPlan` support:
+  - new structured Pydantic schema for dry-run API call plans
+  - new OpenAI-backed planner that requests a strict structured plan from `gpt-5-mini`
+  - feature-flagged service hook that records a dry-run plan only for stubbed tasks
+  - new solve-log event type and trace-summary support for reviewing the generated plan
+- Added focused tests for:
+  - config defaults
+  - OpenAI dry-run planner output shaping
+  - service logging behavior for stub vs live workflows
+  - log-analysis handling of `api_call_plan`
 
 ## Validation
 
-- Logging and analysis checks:
-  - `./.venv/bin/ruff check src/tripletex_agent/log_analysis.py scripts/inspect_solve_logs.py tests/test_log_analysis.py`
+- Live trace review still anchors current online behavior:
+  - invoice success: `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
+  - project success: `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
+  - travel-expense stub: `c903bd9c-b11a-4d63-92f0-4e115baec310`
+- Focused code quality checks for the new dry-run path:
+  - `./.venv/bin/ruff check src/tripletex_agent/config.py src/tripletex_agent/service.py src/tripletex_agent/solve_logging.py src/tripletex_agent/log_analysis.py src/tripletex_agent/api_call_plan.py src/tripletex_agent/api_call_planner.py scripts/inspect_solve_logs.py tests/test_config.py tests/test_service.py tests/test_api_call_planner.py tests/test_log_analysis.py`
     - Result: passed
-  - `./.venv/bin/pytest -q tests/test_log_analysis.py`
-    - Result: `4 passed`
-  - `./.venv/bin/pytest -q tests/test_client.py tests/test_app.py tests/test_models.py`
-    - Result: `7 passed`
-- CLI smoke against the real log:
-  - `./.venv/bin/python scripts/inspect_solve_logs.py recent --limit 3`
-  - `./.venv/bin/python scripts/inspect_solve_logs.py patterns --top 5`
-  - Result: recent traces and normalized prompt patterns printed correctly from `solve-events.jsonl`
-- Live service health:
-  - `curl -sS http://127.0.0.1:8011/health`
-  - Result: `{"status":"ok"}`
-- Earlier focused validation still stands for the supported API-only slice:
-  - customer create
-  - invoice create
-  - invoice payment
-  - public `/solve` replay
+- Focused tests:
+  - `./.venv/bin/pytest -q tests/test_config.py tests/test_api_call_planner.py tests/test_log_analysis.py`
+    - Result: `10 passed`
+  - `timeout 20 ./.venv/bin/pytest -q tests/test_service.py -k api_call_plan -vv`
+    - Result: both new stub/live service tests passed before the local pytest process lingered in the sandbox
+- Direct stub-path service verification:
+  - local scripted call to `SolverService.solve(...)` with a stubbed travel-expense plan
+  - Result: `{"status":"completed"}`
+  - Event sequence: `received`, `planned`, `api_call_plan`, `completed`
+  - Confirmed the logged `api_call_plan` carried the structured dry-run steps
 
 ## Important Findings
 
-- A hidden competition prompt is now captured in the log:
-  - `Créez et envoyez une facture au client Lumière SARL (nº org. 827689114) de 8750 NOK hors TVA. La facture concerne Maintenance.`
-- That prompt revealed the current highest-priority semantic mismatch:
-  - the planner/workflow selected invoice create correctly
-  - customer resolution, org number, amount, and description were all handled correctly
-  - execution still posted `/invoice` with `sendToCustomer=false`
-  - this means the agent likely earned partial credit at best if the scorer checked “sent” semantics
-- The current multilingual story is asymmetric:
-  - OpenAI-backed extraction can understand more than the deterministic fallback can stabilize
-  - high-value action semantics such as “send invoice” are not yet carried through as explicit workflow flags
-- Invoice creation currently performs an unrelated bank-account mutation when needed:
-  - `GET /ledger/account`
-  - `PUT /ledger/account/{id}`
-  - this may help bootstrap a sandbox, but it is a poor default for hidden-task efficiency and safety
-- The log-analysis helper is useful but still too lossy for some prompts:
-  - current normalization can collapse away fields like email, language, and other planner-relevant slots
-
-## Notable Traces
-
-- Internal probe trace:
-  - `4d8fdcf5-fe90-4ed9-8d75-4366bbea189c`
-  - Customer create probe
-  - strong semantic match and efficient execution
-- Competition trace:
-  - `c3ba0a55-7baa-4a0b-831c-c0e23870ef7e`
-  - French invoice create-and-send prompt
-  - partial semantic solve due to missing send behavior
+- Translation is not the main problem in the live traffic:
+  - French invoice prompts solve
+  - German project prompts solve
+  - the Spanish travel-expense prompt was understood well enough to classify as `travel_expenses`
+- The main blocker is task-family coverage, not multilingual prompt understanding.
+- The new dry-run `ApiCallPlan` path gives us a way to inspect model-proposed Tripletex calls for unsupported tasks without risking online execution quality.
+- The online solver should remain behaviorally unchanged until the dry-run feature flag is explicitly enabled.
 
 ## Known Issues / Risks
 
-- Travel expenses are still unimplemented.
+- The `ApiCallPlan` prototype does not execute anything yet.
+- The dry-run path has only been validated locally; it has not been exercised through the public endpoint because the feature flag remains off.
+- Travel expenses are still unimplemented in the live executor.
+- The public tunnel can still serve stale code if the local `uvicorn` worker is not restarted after edits.
 - Correction workflows are still unimplemented.
 - Module-activation workflows are still unimplemented.
 - PDF and CSV extraction are still deferred.
-- The supported API-only slice can still return HTTP `200` while missing scorer-relevant semantics.
-- Unsupported tasks can still score zero behind HTTP `200` if they fall through to `StubWorkflow`.
-- The current real hidden-prompt sample is still small, so prioritization should stay evidence-driven and be updated with each new trace.
-- `tests/test_service.py` has shown sandbox runner flakiness around process exit, so use it carefully as a confidence signal and lean on live trace evidence too.
 
 ## Next Steps
 
-1. Implement invoice send intent end-to-end in planner schema, extraction, and workflow execution.
-2. Add multilingual send/deliver phrase coverage across `nb`, `nn`, `en`, `es`, `pt`, `de`, and `fr`.
-3. Reduce or isolate invoice bank-account mutation so hidden invoice tasks do not pay an unnecessary efficiency and side-effect cost.
-4. Improve log-analysis normalization so “typical prompts” preserve fields like email, language, org number, VAT wording, and send intent.
-5. Re-run the submission checklist on the improved invoice-send path:
-   - raw API validation
-   - sandbox runner validation
-   - public `/solve` replay
-   - trace review
-6. Only after the API-only semantic gaps are closed, resume broader prompt coverage or attachment work.
+1. Enable `ENABLE_API_CALL_PLAN=true` locally only and replay the live travel-expense stub prompt `c903bd9c-b11a-4d63-92f0-4e115baec310`.
+2. Inspect the generated `api_call_plan` in `solve-events.jsonl` and refine the schema or curated endpoint catalog before any executor work.
+3. Keep public `/solve` replay and trace review as the source of truth for supported live paths, especially invoice send semantics.
+4. After the dry-run plans look sane, decide whether to build a deterministic executor for one narrow travel-expense create shape.
 
 ## Restart Prompt
 
 ```text
 Read solutions/tripletex/PLAN.md, solutions/tripletex/SUBMISSION_CHECKLIST.md, solutions/tripletex/SESSION_HANDOFF.md, solutions/tripletex/README.md, and solutions/tripletex/logs/solve-events.jsonl. Stay scoped to solutions/tripletex/.
 
-Use the current live trace evidence as the primary guide. Start with the logged competition trace `c3ba0a55-7baa-4a0b-831c-c0e23870ef7e` and confirm exactly where the prompt intent diverges from execution.
+Start with the current live trace anchors:
+- invoice success: `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
+- project success: `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
+- travel-expense stub: `c903bd9c-b11a-4d63-92f0-4e115baec310`
 
 Current top priority:
-- implement invoice create-vs-create-and-send semantics end to end
-- carry send intent explicitly through planner schema, extraction, and workflow execution
-- add multilingual action-semantic coverage across nb, nn, en, es, pt, de, fr
-- reduce or isolate invoice bank-account mutation during normal invoice creation
-- improve log-analysis heuristics so typical prompt clusters preserve email, language, org number, VAT wording, and send intent
+- preserve the validated invoice create-and-send semantics
+- keep public `/solve` trace review as the main source of truth for live behavior
+- use the dry-run `ApiCallPlan` path to study unsupported travel-expense prompts before building any executor
 
 Work checklist:
-1. Read the current findings and merged roadmap in `solutions/tripletex/PLAN.md`.
-2. Update the planner/task model so invoice send intent is explicit and testable.
-3. Update `InvoiceCreateWorkflow` so execution changes when send intent is present.
-4. Add regression tests directly from the logged French competition prompt and equivalent multilingual prompt variants.
-5. Validate via `solutions/tripletex/SUBMISSION_CHECKLIST.md`:
-   - sandbox raw API behavior
-   - local runner
-   - public `/solve` replay
-   - trace review in `solutions/tripletex/logs/solve-events.jsonl`
+1. Read the merged roadmap in `solutions/tripletex/PLAN.md`.
+2. Confirm the public worker is serving current code before trusting a replay.
+3. Turn on `ENABLE_API_CALL_PLAN=true` locally only and replay the travel-expense stub trace prompt to generate `api_call_plan` events.
+4. Review the generated dry-run steps in `solutions/tripletex/logs/solve-events.jsonl` and `scripts/inspect_solve_logs.py`.
+5. If the dry-run plan looks sane, scope one narrow deterministic executor candidate for travel expenses.
 6. If you update `SESSION_HANDOFF.md` again, archive the current handoff first in `solutions/tripletex/session_archive/`.
 
-Keep PDF and CSV handling lower priority unless the trace evidence shows a direct need.
+Keep PDF and CSV handling lower priority unless new live trace evidence points there directly.
 ```

@@ -123,6 +123,7 @@ class InvoiceCreateWorkflow(BaseWorkflow):
 
     async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
         fields = _require_payload(plan, "invoice")
+        send_to_customer = plan.action_semantics.send_to_customer is True
 
         customer_lookup = _as_dict(fields.get("customerLookup"))
         if not customer_lookup:
@@ -141,9 +142,13 @@ class InvoiceCreateWorkflow(BaseWorkflow):
         )
         delivery_date = _normalize_date(fields.get("deliveryDate")) or invoice_date
 
-        bank_account, bank_account_was_updated = await _ensure_invoice_bank_account_configured(
-            client
-        )
+        bank_account_id: int | None = None
+        bank_account_was_updated = False
+        if send_to_customer:
+            bank_account, bank_account_was_updated = await _ensure_invoice_bank_account_configured(
+                client
+            )
+            bank_account_id = _extract_id(bank_account)
 
         body = _compact_mapping(
             {
@@ -167,21 +172,20 @@ class InvoiceCreateWorkflow(BaseWorkflow):
 
         response = await client.post(
             "/invoice",
-            params={"sendToCustomer": False},
+            params={"sendToCustomer": send_to_customer},
             json_body=body,
         )
         created = client.unwrap_value(response)
         created_id = _extract_id(created)
 
-        intended_operations = [
-            "GET /customer",
-            "GET /ledger/account",
-            "POST /invoice",
-        ]
+        intended_operations = ["GET /customer", "POST /invoice"]
         if _as_dict(line_fields.get("productLookup")):
             intended_operations.insert(1, "GET /product")
+        if send_to_customer:
+            ledger_index = 1 if "GET /product" not in intended_operations else 2
+            intended_operations.insert(ledger_index, "GET /ledger/account")
         if bank_account_was_updated:
-            intended_operations.insert(2, "PUT /ledger/account/{id}")
+            intended_operations.insert(len(intended_operations) - 1, "PUT /ledger/account/{id}")
 
         return WorkflowResult(
             name="invoice_create",
@@ -191,6 +195,9 @@ class InvoiceCreateWorkflow(BaseWorkflow):
                 "entity": "invoice",
                 "customerId": customer_id,
                 "invoiceId": created_id,
+                "sendToCustomer": send_to_customer,
+                "invoiceBankAccountId": bank_account_id,
+                "invoiceBankAccountUpdated": bank_account_was_updated,
                 "created": created,
             },
         )
