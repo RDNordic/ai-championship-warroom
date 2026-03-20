@@ -568,3 +568,68 @@ def test_fallback_planner_drops_amount_vat_comment_from_successful_french_replay
     assert fields["line"]["description"] == "Public solve send validation 20260320 B"
     assert fields["line"]["count"] == 1.0
     assert fields["line"]["unitPriceExcludingVatCurrency"] == 8795.0
+
+
+def test_planner_detects_travel_expense_creation() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        "Register a travel expense for employee Kari Hansen", []
+    )
+
+    assert plan.task_family == TaskFamily.TRAVEL_EXPENSES
+    assert plan.operation == Operation.CREATE
+    assert plan.entities_to_create[0].entity_type == "travel_expense"
+    fields = plan.entities_to_create[0].fields
+    assert fields["employeeLookup"]["firstName"] == "Kari"
+    assert fields["employeeLookup"]["lastName"] == "Hansen"
+
+
+def test_planner_detects_travel_expense_norwegian() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        "Registrer en reiseregning for ansatt Ola Nordmann", []
+    )
+
+    assert plan.task_family == TaskFamily.TRAVEL_EXPENSES
+    assert plan.operation == Operation.CREATE
+    assert plan.entities_to_create[0].entity_type == "travel_expense"
+    fields = plan.entities_to_create[0].fields
+    assert fields["employeeLookup"]["firstName"] == "Ola"
+    assert fields["employeeLookup"]["lastName"] == "Nordmann"
+
+
+def test_planner_extracts_travel_expense_costs() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        "Register a travel expense report. Hotel 2000 NOK, Meals 500 NOK",
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.TRAVEL_EXPENSES
+    assert plan.operation == Operation.CREATE
+    fields = plan.entities_to_create[0].fields
+    costs = fields.get("costs")
+    assert isinstance(costs, list)
+    assert len(costs) == 2
+    assert costs[0]["description"] == "Hotel"
+    assert costs[0]["amount"] == 2000.0
+    assert costs[1]["description"] == "Meals"
+    assert costs[1]["amount"] == 500.0
+
+
+def test_planner_extracts_travel_expense_dates() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        "Register a travel expense from 2026-03-15 to 2026-03-17",
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.TRAVEL_EXPENSES
+    assert plan.operation == Operation.CREATE
+    fields = plan.entities_to_create[0].fields
+    assert fields.get("departureDate") == "2026-03-15"
+    assert fields.get("returnDate") == "2026-03-17"

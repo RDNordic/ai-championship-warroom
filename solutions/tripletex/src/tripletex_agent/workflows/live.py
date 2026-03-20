@@ -459,6 +459,201 @@ class ProjectCreateWorkflow(BaseWorkflow):
         )
 
 
+class TravelExpenseCreateWorkflow(BaseWorkflow):
+    family = TaskFamily.TRAVEL_EXPENSES
+    entity_type = "travel_expense"
+    supported_operations = (Operation.CREATE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        fields = _require_payload(plan, "travel_expense")
+
+        # Resolve employee
+        employee_lookup = _as_dict(fields.get("employeeLookup"))
+        if employee_lookup:
+            employee = await _find_single_employee(client, employee_lookup)
+        else:
+            employee = await _find_default_employee(client)
+        employee_id = _extract_id(employee)
+        if employee_id is None:
+            raise WorkflowExecutionError("Matched employee did not include an id")
+
+        # Resolve optional project
+        project_id: int | None = None
+        project_lookup = _as_dict(fields.get("projectLookup"))
+        if project_lookup:
+            project = await _find_single_project(client, project_lookup)
+            project_id = _extract_id(project)
+
+        # Resolve optional department
+        department_id: int | None = None
+        department_lookup = _as_dict(fields.get("departmentLookup"))
+        if department_lookup:
+            department = await _find_single_department(client, department_lookup)
+            department_id = _extract_id(department)
+
+        # Build parent travel expense body
+        title = fields.get("title") or "Travel expense"
+        departure_date = _normalize_date(fields.get("departureDate")) or date.today().isoformat()
+        return_date = _normalize_date(fields.get("returnDate")) or departure_date
+
+        body = _compact_mapping(
+            {
+                "employee": {"id": employee_id},
+                "title": title,
+                "departureDateTime": departure_date,
+                "returnDateTime": return_date,
+                "project": {"id": project_id} if project_id is not None else None,
+                "department": {"id": department_id} if department_id is not None else None,
+            }
+        )
+
+        response = await client.post("/travelExpense", json_body=body)
+        created = client.unwrap_value(response)
+        expense_id = _extract_id(created)
+        if expense_id is None:
+            raise WorkflowExecutionError("Travel expense creation did not return an id")
+
+        intended_operations = ["GET /employee", "POST /travelExpense"]
+        child_ids: list[int] = []
+
+        # Add cost items
+        costs = fields.get("costs")
+        if isinstance(costs, list):
+            for cost_item in costs:
+                if not isinstance(cost_item, dict):
+                    continue
+                cost_body = _compact_mapping(
+                    {
+                        "travelExpense": {"id": expense_id},
+                        "description": cost_item.get("description"),
+                        "amountNOKInclVAT": _coerce_number(cost_item.get("amount")),
+                        "date": _normalize_date(cost_item.get("date")) or departure_date,
+                        "paymentType": cost_item.get("paymentType", "own_money"),
+                    }
+                )
+                cost_response = await client.post("/travelExpense/cost", json_body=cost_body)
+                cost_created = client.unwrap_value(cost_response)
+                cost_id = _extract_id(cost_created)
+                if cost_id is not None:
+                    child_ids.append(cost_id)
+                intended_operations.append("POST /travelExpense/cost")
+
+        # Add mileage allowances
+        mileage_allowances = fields.get("mileageAllowances")
+        if isinstance(mileage_allowances, list):
+            for mileage_item in mileage_allowances:
+                if not isinstance(mileage_item, dict):
+                    continue
+                mileage_body = _compact_mapping(
+                    {
+                        "travelExpense": {"id": expense_id},
+                        "rateTypeId": _coerce_int(mileage_item.get("rateTypeId")),
+                        "km": _coerce_number(mileage_item.get("km")),
+                        "date": _normalize_date(mileage_item.get("date")) or departure_date,
+                        "description": mileage_item.get("description"),
+                    }
+                )
+                mileage_response = await client.post(
+                    "/travelExpense/mileageAllowance", json_body=mileage_body
+                )
+                mileage_created = client.unwrap_value(mileage_response)
+                mileage_id = _extract_id(mileage_created)
+                if mileage_id is not None:
+                    child_ids.append(mileage_id)
+                intended_operations.append("POST /travelExpense/mileageAllowance")
+
+        # Add per diem compensations
+        per_diem_compensations = fields.get("perDiemCompensations")
+        if isinstance(per_diem_compensations, list):
+            for per_diem_item in per_diem_compensations:
+                if not isinstance(per_diem_item, dict):
+                    continue
+                per_diem_body = _compact_mapping(
+                    {
+                        "travelExpense": {"id": expense_id},
+                        "rateTypeId": _coerce_int(per_diem_item.get("rateTypeId")),
+                        "countDays": _coerce_number(per_diem_item.get("countDays")),
+                        "date": _normalize_date(per_diem_item.get("date")) or departure_date,
+                        "description": per_diem_item.get("description"),
+                    }
+                )
+                per_diem_response = await client.post(
+                    "/travelExpense/perDiemCompensation", json_body=per_diem_body
+                )
+                per_diem_created = client.unwrap_value(per_diem_response)
+                per_diem_id = _extract_id(per_diem_created)
+                if per_diem_id is not None:
+                    child_ids.append(per_diem_id)
+                intended_operations.append("POST /travelExpense/perDiemCompensation")
+
+        # Optionally deliver the expense report
+        deliver = fields.get("deliver") is True
+        if deliver:
+            await client.put(f"/travelExpense/{expense_id}/:deliver")
+            intended_operations.append("PUT /travelExpense/{id}/:deliver")
+
+        return WorkflowResult(
+            name="travel_expense_create",
+            intended_operations=intended_operations,
+            resource_ids=[expense_id] + child_ids,
+            details={
+                "entity": "travel_expense",
+                "employeeId": employee_id,
+                "expenseId": expense_id,
+                "childIds": child_ids,
+                "delivered": deliver,
+                "created": created,
+            },
+        )
+
+
+async def _find_default_employee(client: TripletexClient) -> dict[str, Any]:
+    payload = await client.get(
+        "/employee",
+        params={
+            "count": 1,
+            "sorting": "id",
+            "fields": client.select_fields(
+                "id",
+                "firstName",
+                "lastName",
+                "displayName",
+                "employeeNumber",
+                "email",
+            ),
+        },
+    )
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError("No default employee was available")
+    return matches[0]
+
+
+async def _find_single_project(
+    client: TripletexClient, lookup: dict[str, Any]
+) -> dict[str, Any]:
+    params = _compact_mapping(
+        {
+            "id": lookup.get("id"),
+            "name": lookup.get("name"),
+            "number": lookup.get("number"),
+            "count": 2,
+            "sorting": "id",
+            "fields": client.select_fields("id", "name", "number"),
+        }
+    )
+    if not params or set(params) <= {"count", "sorting", "fields"}:
+        raise WorkflowExecutionError("Project lookup requires id, name, or number")
+
+    payload = await client.get("/project", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No project matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Project lookup was ambiguous for {lookup!r}")
+    return matches[0]
+
+
 async def _find_single_customer(
     client: TripletexClient, lookup: dict[str, Any]
 ) -> dict[str, Any]:

@@ -10,6 +10,7 @@ from .live import (
     InvoicePaymentWorkflow,
     ProductCreateWorkflow,
     ProjectCreateWorkflow,
+    TravelExpenseCreateWorkflow,
 )
 from .registry import WorkflowRegistry
 from .stub import StubWorkflow
@@ -24,6 +25,7 @@ __all__ = [
     "InvoicePaymentWorkflow",
     "ProductCreateWorkflow",
     "ProjectCreateWorkflow",
+    "TravelExpenseCreateWorkflow",
     "StubWorkflow",
     "WorkflowExecutionError",
     "WorkflowRegistry",

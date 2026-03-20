@@ -29,6 +29,7 @@ from .workflows import (
     ProductCreateWorkflow,
     ProjectCreateWorkflow,
     StubWorkflow,
+    TravelExpenseCreateWorkflow,
     WorkflowRegistry,
 )
 
@@ -263,6 +264,7 @@ def build_default_service() -> SolverService:
             InvoiceCreateWorkflow(),
             InvoicePaymentWorkflow(),
             InvoiceCreditNoteWorkflow(),
+            TravelExpenseCreateWorkflow(),
         ],
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )
