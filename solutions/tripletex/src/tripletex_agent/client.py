@@ -66,6 +66,20 @@ class TripletexClient:
         return ",".join(field for field in fields if field)
 
     @staticmethod
+    def unwrap_value(payload: Any) -> Any:
+        if isinstance(payload, dict) and "value" in payload:
+            return payload["value"]
+        return payload
+
+    @staticmethod
+    def unwrap_values(payload: Any) -> list[Any]:
+        if isinstance(payload, dict):
+            values = payload.get("values")
+            if isinstance(values, list):
+                return values
+        return []
+
+    @staticmethod
     def _default_headers(session_token: str) -> dict[str, str]:
         raw = f"0:{session_token}".encode("utf-8")
         encoded = base64.b64encode(raw).decode("ascii")
