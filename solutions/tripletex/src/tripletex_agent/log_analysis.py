@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,14 +18,66 @@ _UUID_RE = re.compile(
 _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _TIME_RE = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
 _NUMERIC_TOKEN_RE = re.compile(r"(?<!\w)#?\d[\d.-]*\b")
+_ORG_NUMBER_RE = re.compile(
+    (
+        r"\b(?:organization number|organisasjonsnummer|org(?:anization)?\s*(?:number|nr|no)?|"
+        r"n[ºo°]\s*org\.?)\s*[:.]?\s*(\d{3}\s?\d{3}\s?\d{3})\b"
+    ),
+    re.IGNORECASE,
+)
+_LANGUAGE_RE = re.compile(
+    r"\b(?:language|sprak|langue|idioma|sprache)\s+([a-z]+)\b",
+    re.IGNORECASE,
+)
+_SEND_NEGATIVE_RE = re.compile(
+    (
+        r"\b(?:do not send|don't send|without sending|ikke send|ikkje send|uten a sende|"
+        r"ne pas envoyer|n[’']?envoyez pas|sans envoyer|no enviar|sin enviar|"
+        r"nao enviar|sem enviar|nicht senden|ohne zu senden)\b"
+    ),
+    re.IGNORECASE,
+)
+_SEND_POSITIVE_RE = re.compile(
+    (
+        r"\b(?:send|sende|sender|sendt|envoyer|envoyez|envoie|enviar|envie|envia|"
+        r"senden|versenden|verschicken|dispatch)\b"
+    ),
+    re.IGNORECASE,
+)
+_VAT_EXCLUDING_RE = re.compile(
+    (
+        r"\b(?:excluding vat|ex vat|hors tva|sin iva|sem iva|uten mva|utan mva|ohne mwst)\b"
+    ),
+    re.IGNORECASE,
+)
+_VAT_INCLUDING_RE = re.compile(
+    r"\b(?:including vat|inkl(?:uding)? mva|incl\.?\s*vat|inkl\.?\s*mwst)\b",
+    re.IGNORECASE,
+)
 
 _PROMPT_SLOT_PATTERNS: tuple[tuple[str, str], ...] = (
     (
-        r"\b(?:named|med navn|with name|som heter|called)\s+([^,\n]+)",
+        (
+            r"\b(?:named|med navn|with name|som heter|called)\s+(.+?)"
+            r"(?=\s*(?:,|and\s+(?:email|e-?post|invoice email|billing email|organization number|"
+            r"organisasjonsnummer|org(?:anization)?\s*(?:number|nr|no)?|language|sprak)|"
+            r"email|e-?post|organization number|organisasjonsnummer|"
+            r"org(?:anization)?\s*(?:number|nr|no)?|language|sprak|$))"
+        ),
         "named <value>",
     ),
     (
-        r"\b(?:for|til)\s+(?:customer|kunde)\s+([^,\n]+)",
+        (
+            r"\b(?:for|to|til|au|al|ao|an den)\s+"
+            r"(?:customer|kunde(?:n)?|client|cliente|kunden)\s+(.+?)"
+            r"(?=\s*(?:\(|,|organization number|organisasjonsnummer|"
+            r"org(?:anization)?\s*(?:number|nr|no)?|for\s+\d+(?:[.,]\d+)?\s*nok\b|"
+            r"de\s+\d+(?:[.,]\d+)?\s*nok\b|por\s+\d+(?:[.,]\d+)?\s*nok\b|"
+            r"uber\s+\d+(?:[.,]\d+)?\s*nok\b|invoice\s+(?:is\s+)?for\b|"
+            r"la\s+facture\s+concerne\b|la\s+factura\s+(?:es|se\s+refiere)\b|"
+            r"a\s+fatura\s+(?:e|refere-se)\b|die\s+rechnung\s+betrifft\b|"
+            r"faktura(?:en)?\s+gjel(?:der|d)\b|$))"
+        ),
         "for customer <value>",
     ),
     (
@@ -58,6 +111,7 @@ class TraceSummary:
     api_call_count: int
     api_error_count: int
     api_calls: list[dict[str, Any]]
+    api_call_plan: dict[str, Any] | None
     result_resources: list[int]
     error: dict[str, Any] | None
 
@@ -90,6 +144,7 @@ def group_events_by_trace(events: list[dict[str, Any]]) -> dict[str, list[dict[s
 def summarize_trace(trace_id: str, trace_events: list[dict[str, Any]]) -> TraceSummary:
     received = _first_event(trace_events, "received")
     planned = _last_event(trace_events, "planned")
+    api_call_plan_event = _last_event(trace_events, "api_call_plan")
     completed = _last_event(trace_events, "completed")
     failed = _last_event(trace_events, "failed")
     call_events = [event for event in trace_events if event.get("event") == "tripletex_call"]
@@ -140,6 +195,12 @@ def summarize_trace(trace_id: str, trace_events: list[dict[str, Any]]) -> TraceS
         api_call_count=len(api_calls),
         api_error_count=api_error_count,
         api_calls=api_calls,
+        api_call_plan=(
+            api_call_plan_event.get("api_call_plan")
+            if api_call_plan_event is not None
+            and isinstance(api_call_plan_event.get("api_call_plan"), dict)
+            else None
+        ),
         result_resources=result_resources,
         error=error,
     )
@@ -224,15 +285,21 @@ def prompt_pattern_counts(
 
 
 def normalize_prompt_shape(prompt: str) -> str:
-    normalized = prompt.strip().lower()
+    normalized = _normalize_prompt_text(prompt)
     normalized = _EMAIL_RE.sub("<email>", normalized)
     normalized = _UUID_RE.sub("<uuid>", normalized)
     normalized = _ISO_DATE_RE.sub("<date>", normalized)
     normalized = _TIME_RE.sub("<time>", normalized)
+    normalized = _SEND_NEGATIVE_RE.sub("do not send", normalized)
+    normalized = _SEND_POSITIVE_RE.sub("send", normalized)
+    normalized = _VAT_EXCLUDING_RE.sub("excluding vat", normalized)
+    normalized = _VAT_INCLUDING_RE.sub("including vat", normalized)
 
     for pattern, replacement in _PROMPT_SLOT_PATTERNS:
         normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
 
+    normalized = _ORG_NUMBER_RE.sub("organization number <orgnum>", normalized)
+    normalized = _LANGUAGE_RE.sub("language <language>", normalized)
     normalized = _NUMERIC_TOKEN_RE.sub("<num>", normalized)
     normalized = " ".join(normalized.split())
     return normalized
@@ -291,3 +358,8 @@ def _top_counter_value(counter: Counter[str]) -> str | None:
     if not counter:
         return None
     return counter.most_common(1)[0][0]
+
+
+def _normalize_prompt_text(prompt: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", prompt.strip().lower())
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))

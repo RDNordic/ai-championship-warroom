@@ -55,6 +55,8 @@ class AppSettings:
     tripletex_session_token: str | None
     openai_api_key: str | None
     openai_model: str
+    enable_api_call_plan: bool
+    api_call_plan_model: str
     host: str
     port: int
     log_level: str
@@ -69,6 +71,8 @@ class AppSettings:
             tripletex_session_token=os.getenv("TRIPLETEX_SESSION_TOKEN"),
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
+            enable_api_call_plan=_env_bool("ENABLE_API_CALL_PLAN", default=False),
+            api_call_plan_model=os.getenv("API_CALL_PLAN_MODEL", "gpt-5-mini"),
             host=os.getenv("HOST", "0.0.0.0"),
             port=int(os.getenv("PORT", "8000")),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
@@ -88,3 +92,10 @@ class AppSettings:
             base_url=self.tripletex_base_url,
             session_token=self.tripletex_session_token,
         )
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

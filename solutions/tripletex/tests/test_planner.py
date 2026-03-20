@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import pytest
+
 from tripletex_agent.models import AttachmentFile
 from tripletex_agent.planner import FallbackPlanner, KeywordTaskPlanner
-from tripletex_agent.task_plan import EntityPayload, Operation, TaskFamily, TaskPlan
+from tripletex_agent.task_plan import (
+    ActionSemantics,
+    CompletionCheck,
+    EntityPayload,
+    Operation,
+    TaskFamily,
+    TaskPlan,
+)
 
 
 class StaticPlanner:
@@ -222,6 +231,116 @@ def test_planner_extracts_invoice_description_line_variant() -> None:
     assert fields["line"]["unitPriceExcludingVatCurrency"] == 1500.0
 
 
+def test_planner_distinguishes_create_invoice_from_create_and_send_invoice() -> None:
+    planner = KeywordTaskPlanner()
+
+    create_only = planner.plan(
+        (
+            "Create an invoice to customer ACME AS for 8750 NOK excluding VAT. "
+            "Invoice is for Maintenance."
+        ),
+        [],
+    )
+    create_and_send = planner.plan(
+        (
+            "Create and send an invoice to customer ACME AS for 8750 NOK excluding VAT. "
+            "Invoice is for Maintenance."
+        ),
+        [],
+    )
+
+    assert create_only.action_semantics.send_to_customer is None
+    assert not any(check.kind == "sent_to_customer" for check in create_only.completion_checks)
+    assert create_and_send.action_semantics.send_to_customer is True
+    assert any(check.kind == "sent_to_customer" for check in create_and_send.completion_checks)
+
+
+def test_planner_extracts_competition_french_invoice_send_prompt() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        (
+            "Créez et envoyez une facture au client Lumière SARL "
+            "(nº org. 827689114) de 8750 NOK hors TVA. "
+            "La facture concerne Maintenance."
+        ),
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.INVOICING
+    assert plan.operation == Operation.CREATE
+    assert plan.action_semantics.send_to_customer is True
+    assert any(check.kind == "sent_to_customer" for check in plan.completion_checks)
+    fields = plan.entities_to_create[0].fields
+    assert fields["customerLookup"] == {
+        "customerName": "Lumière SARL",
+        "organizationNumber": "827689114",
+    }
+    assert "comment" not in fields
+    assert "invoiceComment" not in fields
+    assert fields["line"]["description"] == "Maintenance"
+    assert "productLookup" not in fields["line"]
+    assert fields["line"]["count"] == 1.0
+    assert fields["line"]["unitPriceExcludingVatCurrency"] == 8750.0
+
+
+@pytest.mark.parametrize(
+    ("prompt", "customer_name"),
+    [
+        (
+            "Opprett og send en faktura til kunden ACME AS for 8750 NOK uten mva. "
+            "Fakturaen gjelder Maintenance.",
+            "ACME AS",
+        ),
+        (
+            "Opprett og send ei faktura til kunden ACME AS for 8750 NOK utan mva. "
+            "Fakturaen gjeld Maintenance.",
+            "ACME AS",
+        ),
+        (
+            "Create and send an invoice to customer ACME AS for 8750 NOK excluding VAT. "
+            "Invoice is for Maintenance.",
+            "ACME AS",
+        ),
+        (
+            "Cree y envie una factura al cliente ACME AS por 8750 NOK sin IVA. "
+            "La factura es para Maintenance.",
+            "ACME AS",
+        ),
+        (
+            "Crie e envie uma fatura ao cliente ACME AS de 8750 NOK sem IVA. "
+            "A fatura é para Maintenance.",
+            "ACME AS",
+        ),
+        (
+            "Erstellen und senden Sie eine Rechnung an den Kunden ACME AS uber 8750 NOK "
+            "ohne MwSt. Die Rechnung betrifft Maintenance.",
+            "ACME AS",
+        ),
+        (
+            "Créez et envoyez une facture au client Lumière SARL (nº org. 827689114) "
+            "de 8750 NOK hors TVA. La facture concerne Maintenance.",
+            "Lumière SARL",
+        ),
+    ],
+)
+def test_planner_extracts_send_intent_for_multilingual_invoice_prompts(
+    prompt: str,
+    customer_name: str,
+) -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(prompt, [])
+
+    assert plan.task_family == TaskFamily.INVOICING
+    assert plan.operation == Operation.CREATE
+    assert plan.action_semantics.send_to_customer is True
+    fields = plan.entities_to_create[0].fields
+    assert fields["customerLookup"]["customerName"] == customer_name
+    assert fields["line"]["description"] == "Maintenance"
+    assert fields["line"]["unitPriceExcludingVatCurrency"] == 8750.0
+
+
 def test_planner_extracts_project_variant_with_manager_email_and_dates() -> None:
     planner = KeywordTaskPlanner()
 
@@ -326,3 +445,126 @@ def test_fallback_planner_drops_hallucinated_product_lookup_for_description_line
     line = merged_plan.entities_to_create[0].fields["line"]
     assert line["description"] == "Conversational validation"
     assert "productLookup" not in line
+
+
+def test_fallback_planner_adds_send_intent_for_logged_french_invoice_prompt() -> None:
+    prompt = (
+        "Créez et envoyez une facture au client Lumière SARL "
+        "(nº org. 827689114) de 8750 NOK hors TVA. "
+        "La facture concerne Maintenance."
+    )
+    primary_plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="invoice",
+                fields={
+                    "customerLookup": {
+                        "customerName": "Lumière SARL",
+                        "organizationNumber": "827689114",
+                    },
+                    "line": {
+                        "description": "Maintenance",
+                        "count": 1.0,
+                        "unitPriceExcludingVatCurrency": 8750.0,
+                    },
+                },
+            )
+        ],
+        action_semantics=ActionSemantics(),
+        confidence=0.9,
+    )
+    planner = FallbackPlanner(primary=StaticPlanner(primary_plan), fallback=KeywordTaskPlanner())
+
+    merged_plan = planner.plan(prompt, [])
+
+    assert merged_plan.action_semantics.send_to_customer is True
+    assert any(check.kind == "sent_to_customer" for check in merged_plan.completion_checks)
+    fields = merged_plan.entities_to_create[0].fields
+    assert fields["customerLookup"] == {
+        "customerName": "Lumière SARL",
+        "organizationNumber": "827689114",
+    }
+
+
+def test_fallback_planner_drops_stale_french_product_lookup_trace() -> None:
+    prompt = (
+        "Créez et envoyez une facture au client Codex Logging Probe 20260320-F "
+        "de 8785 NOK hors TVA. "
+        "La facture concerne Public solve send validation 20260320 A."
+    )
+    primary_plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="invoice",
+                fields={
+                    "customerLookup": {"customerName": "Codex Logging Probe 20260320-F"},
+                    "line": {
+                        "productLookup": {"name": "Public solve send validation 20260320 A"},
+                        "unitPriceExcludingVatCurrency": 8785.0,
+                    },
+                },
+            )
+        ],
+        confidence=0.88,
+    )
+    planner = FallbackPlanner(primary=StaticPlanner(primary_plan), fallback=KeywordTaskPlanner())
+
+    merged_plan = planner.plan(prompt, [])
+
+    assert merged_plan.action_semantics.send_to_customer is True
+    assert any(check.kind == "sent_to_customer" for check in merged_plan.completion_checks)
+    fields = merged_plan.entities_to_create[0].fields
+    assert fields["customerLookup"] == {"customerName": "Codex Logging Probe 20260320-F"}
+    assert fields["line"]["description"] == "Public solve send validation 20260320 A"
+    assert fields["line"]["count"] == 1.0
+    assert fields["line"]["unitPriceExcludingVatCurrency"] == 8785.0
+    assert "productLookup" not in fields["line"]
+
+
+def test_fallback_planner_drops_amount_vat_comment_from_successful_french_replay() -> None:
+    prompt = (
+        "Créez et envoyez une facture au client Codex Logging Probe 20260320-F "
+        "de 8795 NOK hors TVA. "
+        "La facture concerne Public solve send validation 20260320 B."
+    )
+    primary_plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="invoice",
+                fields={
+                    "comment": "8795 NOK hors TVA",
+                    "customerLookup": {"customerName": "Codex Logging Probe 20260320-F"},
+                    "line": {
+                        "description": "Public solve send validation 20260320 B",
+                        "count": 1.0,
+                        "unitPriceExcludingVatCurrency": 8795.0,
+                    },
+                },
+            )
+        ],
+        action_semantics=ActionSemantics(send_to_customer=True),
+        completion_checks=[
+            CompletionCheck(kind="created", entity_type="invoice", expected_fields=["id"]),
+            CompletionCheck(kind="sent_to_customer", entity_type="invoice", expected_fields=[]),
+        ],
+        confidence=0.86,
+    )
+    planner = FallbackPlanner(primary=StaticPlanner(primary_plan), fallback=KeywordTaskPlanner())
+
+    merged_plan = planner.plan(prompt, [])
+
+    assert merged_plan.action_semantics.send_to_customer is True
+    assert any(check.kind == "sent_to_customer" for check in merged_plan.completion_checks)
+    fields = merged_plan.entities_to_create[0].fields
+    assert fields["customerLookup"] == {"customerName": "Codex Logging Probe 20260320-F"}
+    assert "comment" not in fields
+    assert "invoiceComment" not in fields
+    assert fields["line"]["description"] == "Public solve send validation 20260320 B"
+    assert fields["line"]["count"] == 1.0
+    assert fields["line"]["unitPriceExcludingVatCurrency"] == 8795.0
