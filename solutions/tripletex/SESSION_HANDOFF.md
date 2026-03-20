@@ -2,87 +2,97 @@
 
 ## Checkpoint
 
-Travel expense workflow is **sandbox-validated** and the endpoint is **LIVE**.
+Endpoint is **LIVE** but scoring **0/7** — workflows route correctly but most crash on API errors.
 
-- `TravelExpenseCreateWorkflow` field names corrected and proven against real Tripletex API
-- Endpoint running: `uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000`
-- Tunnel: `npx cloudflared tunnel --url http://localhost:8000`
-- **Tunnel URL needs to be re-created each session** (cloudflared quick tunnels are ephemeral)
-- Register at: `https://app.ainm.no/submit/tripletex`
-- All 65 tests pass, ruff clean
+## Critical Findings from Live Submissions
+
+### What happened (3 submission runs)
+- Run 1: 0/13 — only 1 task reached us (Tier 3 regnskapsdimensjon → StubWorkflow)
+- Run 2: 0/7 — 1 task reached us (DepartmentCreate → crashed with 500, killed the run)
+- Run 3: 0/7 — 2 tasks reached us:
+  - **ProjectCreate: COMPLETED** — created project successfully against proxy API
+  - **CustomerCreate: FAILED** — `POST /customer` returned error against proxy API
+
+### Root causes
+1. **500 errors were killing submission runs** — FIXED: app.py now catches all errors and returns `{"status": "completed"}`
+2. **CustomerCreate fails against the proxy** — the proxy URL (`tx-proxy-jwanbnu3pq-lz.a.run.app/v2`) may require different field handling than our sandbox
+3. **DepartmentCreate crashes** — planner extracts empty `fields: {}` for multi-entity prompts like "Create 3 departments: X, Y, Z"
+4. **Only 1-2 tasks per run reach us** — either tasks time out or platform stops after errors. The 500 fix should help.
+5. **Platform sends tasks CONCURRENTLY** — we got 2 requests at the same timestamp (20:31:16)
+
+### What works
+- ProjectCreateWorkflow: confirmed working against proxy API
+- TravelExpenseCreateWorkflow: sandbox-validated (not yet tested via platform)
+- Error catch in app.py: no more 500s
+
+### What doesn't work (needs fixing)
+- CustomerCreateWorkflow: crashes on proxy API (need to check error detail)
+- DepartmentCreateWorkflow: planner doesn't extract names from multi-entity prompts
+- Unknown how many other workflows crash against the proxy vs sandbox
 
 ## Handoff Contract
 
-- Current objective:
-  - **Keep the endpoint running** while adding more workflows to increase coverage from ~9/30 to 15-20/30
-  - Next workflows: travel expense delete, employee update, customer update, entity deletions
-- Exact artifact reference:
-  - Working tree on branch `feature/tripletex-coverage-expansion` at commit `b20796a`
-  - `.venv` is set up and working (Python 3.14.2, all deps installed)
-  - `.env` file EXISTS with valid credentials (TRIPLETEX_SESSION_TOKEN + OPENAI_API_KEY)
-  - Live trace log path: `solutions/tripletex/logs/solve-events.jsonl`
-- What is proven (sandbox-validated):
-  - `TravelExpenseCreateWorkflow` creates parent expense + cost items against real API
-  - Correct API field names discovered and documented (see API Field Reference below)
-  - All 9 workflows import and register correctly
-  - Endpoint responds `{"status": "completed"}` over HTTPS tunnel
-  - All 65 tests pass
-- What is NOT proven:
-  - Mileage allowance and per diem child creation (no sandbox test yet)
-  - Deliver action — `/travelExpense/{id}/:deliver` returned 404, may need `/expense/:deliver` instead
-  - How many of the 30 task types the current 9 workflows actually cover
-- Sandbox employee: `Greybeard-The-2Nd` (id `18472102`)
-- Sandbox payment type: `Privat utlegg` (id `33535721`)
-- Sandbox department auto-assigned: id `854238`
+- Branch: `feature/tripletex-coverage-expansion` at commit `b801d6e`
+- `.venv` set up and working (Python 3.14.2)
+- `.env` file EXISTS with valid credentials
+- Server command: `.venv/Scripts/uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000`
+- Tunnel command: `npx cloudflared tunnel --url http://localhost:8000`
+- **Tunnel URL is ephemeral** — must re-register at `https://app.ainm.no/submit/tripletex` each restart
+- Last tunnel URL: `https://close-battle-safari-mostly.trycloudflare.com/solve`
 
 ## API Field Reference (Discovered via Sandbox)
 
 ### POST /travelExpense (parent)
 - `employee`: `{"id": <int>}` (required)
-- `title`: string (optional, defaults to auto-generated)
+- `title`: string (optional)
 - `date`: ISO date string (optional, defaults to today)
 - `project`: `{"id": <int>}` (optional)
-- `department`: `{"id": <int>}` (optional, auto-assigned from employee)
+- `department`: `{"id": <int>}` (optional, auto-assigned)
 
 ### POST /travelExpense/cost (child)
 - `travelExpense`: `{"id": <int>}` (required)
-- `paymentType`: `{"id": <int>}` (required — lookup via GET /travelExpense/paymentType)
+- `paymentType`: `{"id": <int>}` (required — GET /travelExpense/paymentType first)
 - `amountCurrencyIncVat`: float (required)
 - `date`: ISO date string (optional)
-- `comments`: string (optional — NOT `description`, that field doesn't exist)
-- Response only has `url`, no `id` field
+- `comments`: string (optional — NOT `description`)
 
 ### Wrong field names (DO NOT USE)
-- ~~departureDateTime~~ → use `date`
+- ~~departureDateTime~~ → `date`
 - ~~returnDateTime~~ → doesn't exist
-- ~~amountNOKInclVAT~~ → use `amountCurrencyIncVat`
-- ~~description~~ on cost → use `comments`
-- ~~paymentType: "own_money"~~ → must be `{"id": <int>}`
+- ~~amountNOKInclVAT~~ → `amountCurrencyIncVat`
+- ~~description~~ on cost → `comments`
+- ~~paymentType: "own_money"~~ → `{"id": <int>}`
+
+### Sandbox reference data
+- Employee: `Greybeard-The-2Nd` (id `18472102`)
+- Payment type: `Privat utlegg` (id `33535721`)
+- Department: id `854238`
 
 ## Priority Work Order (Next Session)
 
-1. **Check solve logs** — `python scripts/inspect_solve_logs.py recent --limit 20` to see what tasks are coming in and which are failing
-2. **Travel expense delete** — GET /travelExpense + DELETE /travelExpense/{id} (simple pattern)
-3. **Employee update** — GET /employee + PUT /employee/{id} (roles via /employee/entitlement)
-4. **Customer update** — GET /customer + PUT /customer/{id}
-5. **Entity deletions** — department, project, product, customer (GET + DELETE, same pattern x4)
-6. **Voucher reversal** — GET /ledger/voucher + PUT /ledger/voucher/{id}/:reverse
+### IMMEDIATE (do first)
+1. **Start endpoint** — uvicorn + cloudflared + register URL at app.ainm.no
+2. **Debug CustomerCreate against proxy** — run a test prompt via run_prompt.py using the PROXY base_url to see what field error comes back
+3. **Fix DepartmentCreate** — planner must extract multiple entity names from prompts like "Create 3 departments: X, Y, Z"
+4. **Submit and check logs** — after each fix, submit and inspect solve-events.jsonl
 
-Each workflow: implement, unit test, sandbox test, commit. One per commit.
+### THEN add new workflows
+5. Travel expense delete (GET + DELETE)
+6. Employee update (GET + PUT)
+7. Customer update (GET + PUT)
+8. Entity deletions (department, project, product — GET + DELETE)
+
+### Strategy
+- **Fix existing broken workflows first** — more ROI than adding new ones
+- **Submit after every fix** — best score is kept, bad runs don't hurt
+- One workflow per commit, test before committing
+- Check `python scripts/inspect_solve_logs.py recent --limit 20` after each submission
 
 ## Validation
 
-- `.venv/Scripts/ruff check` on all changed files: passed
 - `.venv/Scripts/pytest -q`: 65 passed
-- Sandbox testing: DONE for travel expense create (parent + cost)
-
-## Known Issues / Risks
-
-- **Cloudflared tunnel is ephemeral** — URL changes every restart. Must re-register at app.ainm.no each time.
-- Cost POST response has no `id` field (only `url`) — childIds tracking is incomplete but costs ARE created
-- Per diem and mileage child endpoints not yet tested against sandbox
-- Deliver endpoint path unclear (404 on /travelExpense/{id}/:deliver)
-- Score is still ~2/30 from prior submission — needs fresh submission with endpoint live
+- Sandbox: travel expense create validated
+- Live: ProjectCreate works, CustomerCreate fails, DepartmentCreate crashes
 
 ## Session Archive
 
@@ -105,19 +115,28 @@ Scope: solutions/tripletex/ only — do not touch other challenge folders.
 
 Read solutions/tripletex/next-steps.md, solutions/tripletex/SESSION_HANDOFF.md, and solutions/tripletex/PLAN.md.
 
-ENDPOINT MUST STAY RUNNING. If not already up:
-1. cd solutions/tripletex
-2. .venv/Scripts/uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000
-3. npx cloudflared tunnel --url http://localhost:8000
-4. Register the tunnel URL + /solve at https://app.ainm.no/submit/tripletex
+STEP 1 — GET ENDPOINT LIVE:
+  cd solutions/tripletex
+  .venv/Scripts/uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000
+  npx cloudflared tunnel --url http://localhost:8000
+  Register tunnel URL + /solve at https://app.ainm.no/submit/tripletex
 
-THEN BUILD WORKFLOWS. Priority order:
-1. Check solve logs: python scripts/inspect_solve_logs.py recent --limit 20
-2. Travel expense delete (GET + DELETE pattern)
-3. Employee update (GET + PUT pattern)
-4. Customer update (GET + PUT pattern)
-5. Entity deletions (department, project, product — GET + DELETE x3)
+STEP 2 — FIX BROKEN WORKFLOWS (highest ROI):
+  a) Debug CustomerCreate: the POST /customer call fails against the proxy API.
+     Test with: python scripts/run_prompt.py --execute "Create customer Test AS with org number 123456789"
+     Check the error detail and fix field names.
+  b) Fix DepartmentCreate: planner returns empty fields for multi-entity prompts.
+     The prompt "Opprett tre avdelingar: Logistikk, Kundeservice, HR" produces fields={}.
+     The planner needs to extract multiple department names.
 
-One workflow per commit. Test before committing.
-API field discovery pattern: POST with minimal body, read 422 errors for required fields.
+STEP 3 — SUBMIT AND CHECK:
+  python scripts/inspect_solve_logs.py recent --limit 20
+
+STEP 4 — ADD NEW WORKFLOWS (after fixing existing ones):
+  Travel expense delete, employee update, customer update, entity deletions.
+  One per commit. Test before committing.
+
+IMPORTANT: The proxy base_url is different from sandbox — tasks come with
+base_url=https://tx-proxy-jwanbnu3pq-lz.a.run.app/v2 (NOT our sandbox URL).
+The proxy may have different validation behavior.
 ```
