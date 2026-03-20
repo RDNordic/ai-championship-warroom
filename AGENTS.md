@@ -78,13 +78,12 @@ Patrick is out for personal reasons. Kept in loop via Signal. Do not assign him 
 5. Full spec: `solutions/tripletex/README.md`
 
 ### AD — Astar Island
-1. Log in at `app.ainm.no`, extract JWT from browser cookies
-2. Check `GET /astar-island/rounds` — is a round active?
-3. Build terrain-prior tensor from initial grid (free, zero queries)
-4. Submit prior-only predictions for all 5 seeds immediately
-5. Begin tiling queries (9 viewports = full 40×40 map coverage)
-6. Infer hidden parameters from observations, resubmit improved predictions
-7. Full spec: `solutions/astar-island/README.md`
+1. Check `GET /astar-island/rounds` — is a new round active?
+2. If active: submit a prior-only baseline for all 5 seeds before spending any queries
+3. Use the corrected scripted workflow for the full coverage + repeat cycle; do not use the website UI
+4. After scoring, export `/analysis/{round_id}/{seed_index}` for all 5 seeds and compare against the prior round
+5. Adjust priors or observation weighting only when the analysis shows a clear, repeated bias
+6. Full spec and live handoff: `solutions/astar-island/README.md` and `solutions/astar-island/next-steps.md`
 
 ### Chris — NorgesGruppen Object Detection
 1. Download training data from `app.ainm.no` Submit page (~924 MB total)

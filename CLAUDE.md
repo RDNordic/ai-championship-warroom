@@ -19,7 +19,7 @@ This file defines how AI assistants should operate in this repository.
 
 Patrick is out for personal reasons. Kept in loop via Signal.
 
-**When starting a new session:** Read `next-steps.md` first for current status, then the relevant `solutions/<challenge>/README.md` for technical detail.
+**When starting a new session:** Read the challenge-local handoff first (`solutions/<challenge>/next-steps.md` when it exists). For Astar Island, start with `solutions/astar-island/next-steps.md`. Use root `next-steps.md` only for repo-wide coordination, then read the relevant `solutions/<challenge>/README.md` for technical detail.
 
 ---
 
