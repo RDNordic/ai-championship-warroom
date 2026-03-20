@@ -61,10 +61,9 @@ class CustomerCreateWorkflow(BaseWorkflow):
                 "phoneNumber": fields.get("phoneNumber"),
                 "phoneNumberMobile": fields.get("phoneNumberMobile"),
                 "description": fields.get("description"),
-                "language": fields.get("language"),
+                "language": _normalize_language(fields.get("language")),
                 "postalAddress": _compact_address(_as_dict(fields.get("postalAddress"))),
                 "physicalAddress": _compact_address(_as_dict(fields.get("physicalAddress"))),
-                "isCustomer": True,
             }
         )
 
@@ -379,26 +378,38 @@ class DepartmentCreateWorkflow(BaseWorkflow):
 
     async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
         fields = _require_payload(plan, "department")
-        name = fields.get("name")
-        if not isinstance(name, str) or not name.strip():
+
+        # Support both single name and multi-department name lists
+        names_list = fields.get("names")
+        single_name = fields.get("name")
+        if isinstance(names_list, list) and names_list:
+            dept_names = [str(n).strip() for n in names_list if str(n).strip()]
+        elif isinstance(single_name, str) and single_name.strip():
+            dept_names = [single_name.strip()]
+        else:
             raise WorkflowExecutionError("Department creation requires a name")
 
-        body = _compact_mapping(
-            {
-                "name": name.strip(),
-                "departmentNumber": fields.get("departmentNumber"),
-            }
-        )
-
-        response = await client.post("/department", json_body=body)
-        created = client.unwrap_value(response)
-        created_id = _extract_id(created)
+        created_ids: list[int] = []
+        all_created: list[Any] = []
+        for dept_name in dept_names:
+            body = _compact_mapping(
+                {
+                    "name": dept_name,
+                    "departmentNumber": fields.get("departmentNumber"),
+                }
+            )
+            response = await client.post("/department", json_body=body)
+            created = client.unwrap_value(response)
+            created_id = _extract_id(created)
+            if created_id is not None:
+                created_ids.append(created_id)
+            all_created.append(created)
 
         return WorkflowResult(
             name="department_create",
-            intended_operations=["POST /department"],
-            resource_ids=[created_id] if created_id is not None else [],
-            details={"entity": "department", "created": created},
+            intended_operations=["POST /department"] * len(dept_names),
+            resource_ids=created_ids,
+            details={"entity": "department", "count": len(dept_names), "created": all_created},
         )
 
 
@@ -457,6 +468,515 @@ class ProjectCreateWorkflow(BaseWorkflow):
                 "created": created,
             },
         )
+
+
+class TravelExpenseCreateWorkflow(BaseWorkflow):
+    family = TaskFamily.TRAVEL_EXPENSES
+    entity_type = "travel_expense"
+    supported_operations = (Operation.CREATE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        fields = _require_payload(plan, "travel_expense")
+
+        # Resolve employee
+        employee_lookup = _as_dict(fields.get("employeeLookup"))
+        if employee_lookup:
+            employee = await _find_single_employee(client, employee_lookup)
+        else:
+            employee = await _find_default_employee(client)
+        employee_id = _extract_id(employee)
+        if employee_id is None:
+            raise WorkflowExecutionError("Matched employee did not include an id")
+
+        # Resolve optional project
+        project_id: int | None = None
+        project_lookup = _as_dict(fields.get("projectLookup"))
+        if project_lookup:
+            project = await _find_single_project(client, project_lookup)
+            project_id = _extract_id(project)
+
+        # Resolve optional department
+        department_id: int | None = None
+        department_lookup = _as_dict(fields.get("departmentLookup"))
+        if department_lookup:
+            department = await _find_single_department(client, department_lookup)
+            department_id = _extract_id(department)
+
+        # Build parent travel expense body
+        title = fields.get("title") or "Travel expense"
+        expense_date = _normalize_date(fields.get("departureDate")) or date.today().isoformat()
+
+        body = _compact_mapping(
+            {
+                "employee": {"id": employee_id},
+                "title": title,
+                "date": expense_date,
+                "project": {"id": project_id} if project_id is not None else None,
+                "department": {"id": department_id} if department_id is not None else None,
+            }
+        )
+
+        response = await client.post("/travelExpense", json_body=body)
+        created = client.unwrap_value(response)
+        expense_id = _extract_id(created)
+        if expense_id is None:
+            raise WorkflowExecutionError("Travel expense creation did not return an id")
+
+        intended_operations = ["GET /employee", "POST /travelExpense", "GET /travelExpense/paymentType"]
+        child_ids: list[int] = []
+
+        # Look up default payment type for costs
+        payment_type_id: int | None = None
+        try:
+            pt_resp = await client.get("/travelExpense/paymentType", params={"count": 1})
+            pt_values = client.unwrap_values(pt_resp)
+            if pt_values:
+                payment_type_id = _extract_id(pt_values[0])
+        except Exception:
+            pass  # Will fail at cost creation if no payment type found
+
+        # Add cost items
+        costs = fields.get("costs")
+        if isinstance(costs, list):
+            for cost_item in costs:
+                if not isinstance(cost_item, dict):
+                    continue
+                cost_body = _compact_mapping(
+                    {
+                        "travelExpense": {"id": expense_id},
+                        "comments": cost_item.get("description", ""),
+                        "amountCurrencyIncVat": _coerce_number(cost_item.get("amount")),
+                        "date": _normalize_date(cost_item.get("date")) or expense_date,
+                        "paymentType": {"id": payment_type_id} if payment_type_id else None,
+                    }
+                )
+                cost_response = await client.post("/travelExpense/cost", json_body=cost_body)
+                cost_created = client.unwrap_value(cost_response)
+                cost_id = _extract_id(cost_created)
+                if cost_id is not None:
+                    child_ids.append(cost_id)
+                intended_operations.append("POST /travelExpense/cost")
+
+        # Add mileage allowances
+        mileage_allowances = fields.get("mileageAllowances")
+        if isinstance(mileage_allowances, list):
+            for mileage_item in mileage_allowances:
+                if not isinstance(mileage_item, dict):
+                    continue
+                mileage_body = _compact_mapping(
+                    {
+                        "travelExpense": {"id": expense_id},
+                        "rateTypeId": _coerce_int(mileage_item.get("rateTypeId")),
+                        "km": _coerce_number(mileage_item.get("km")),
+                        "date": _normalize_date(mileage_item.get("date")) or expense_date,
+                    }
+                )
+                mileage_response = await client.post(
+                    "/travelExpense/mileageAllowance", json_body=mileage_body
+                )
+                mileage_created = client.unwrap_value(mileage_response)
+                mileage_id = _extract_id(mileage_created)
+                if mileage_id is not None:
+                    child_ids.append(mileage_id)
+                intended_operations.append("POST /travelExpense/mileageAllowance")
+
+        # Add per diem compensations
+        per_diem_compensations = fields.get("perDiemCompensations")
+        if isinstance(per_diem_compensations, list):
+            for per_diem_item in per_diem_compensations:
+                if not isinstance(per_diem_item, dict):
+                    continue
+                per_diem_body = _compact_mapping(
+                    {
+                        "travelExpense": {"id": expense_id},
+                        "rateTypeId": _coerce_int(per_diem_item.get("rateTypeId")),
+                        "countDays": _coerce_number(per_diem_item.get("countDays")),
+                        "date": _normalize_date(per_diem_item.get("date")) or expense_date,
+                    }
+                )
+                per_diem_response = await client.post(
+                    "/travelExpense/perDiemCompensation", json_body=per_diem_body
+                )
+                per_diem_created = client.unwrap_value(per_diem_response)
+                per_diem_id = _extract_id(per_diem_created)
+                if per_diem_id is not None:
+                    child_ids.append(per_diem_id)
+                intended_operations.append("POST /travelExpense/perDiemCompensation")
+
+        # Optionally deliver the expense report
+        deliver = fields.get("deliver") is True
+        if deliver:
+            await client.put(f"/travelExpense/{expense_id}/:deliver")
+            intended_operations.append("PUT /travelExpense/{id}/:deliver")
+
+        return WorkflowResult(
+            name="travel_expense_create",
+            intended_operations=intended_operations,
+            resource_ids=[expense_id] + child_ids,
+            details={
+                "entity": "travel_expense",
+                "employeeId": employee_id,
+                "expenseId": expense_id,
+                "childIds": child_ids,
+                "delivered": deliver,
+                "created": created,
+            },
+        )
+
+
+class CustomerDeleteWorkflow(BaseWorkflow):
+    family = TaskFamily.CUSTOMERS_PRODUCTS
+    entity_type = "customer"
+    supported_operations = (Operation.DELETE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "customer")
+        customer = await _find_single_customer(client, lookup)
+        customer_id = _extract_id(customer)
+        if customer_id is None:
+            raise WorkflowExecutionError("Matched customer did not include an id")
+
+        await client.delete(f"/customer/{customer_id}")
+
+        return WorkflowResult(
+            name="customer_delete",
+            intended_operations=["GET /customer", "DELETE /customer/{id}"],
+            resource_ids=[customer_id],
+            details={"entity": "customer", "deletedId": customer_id},
+        )
+
+
+class CustomerUpdateWorkflow(BaseWorkflow):
+    family = TaskFamily.CUSTOMERS_PRODUCTS
+    entity_type = "customer"
+    supported_operations = (Operation.UPDATE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "customer")
+        fields = plan.fields_to_set
+
+        customer = await _find_single_customer(client, lookup)
+        customer_id = _extract_id(customer)
+        if customer_id is None:
+            raise WorkflowExecutionError("Matched customer did not include an id")
+
+        update_body = _compact_mapping(
+            {
+                "name": fields.get("name"),
+                "organizationNumber": _normalize_org_number(fields.get("organizationNumber")),
+                "email": fields.get("email"),
+                "invoiceEmail": fields.get("invoiceEmail"),
+                "phoneNumber": fields.get("phoneNumber"),
+                "phoneNumberMobile": fields.get("phoneNumberMobile"),
+                "description": fields.get("description"),
+                "language": _normalize_language(fields.get("language")),
+                "postalAddress": _compact_address(_as_dict(fields.get("postalAddress"))),
+                "physicalAddress": _compact_address(_as_dict(fields.get("physicalAddress"))),
+            }
+        )
+        if not update_body:
+            raise WorkflowExecutionError("Customer update requires at least one field to change")
+
+        response = await client.put(f"/customer/{customer_id}", json_body=update_body)
+        updated = client.unwrap_value(response)
+
+        return WorkflowResult(
+            name="customer_update",
+            intended_operations=["GET /customer", "PUT /customer/{id}"],
+            resource_ids=[customer_id],
+            details={"entity": "customer", "customerId": customer_id, "updated": updated},
+        )
+
+
+class ProductDeleteWorkflow(BaseWorkflow):
+    family = TaskFamily.CUSTOMERS_PRODUCTS
+    entity_type = "product"
+    supported_operations = (Operation.DELETE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "product")
+        product = await _find_single_product(client, lookup)
+        product_id = _extract_id(product)
+        if product_id is None:
+            raise WorkflowExecutionError("Matched product did not include an id")
+
+        await client.delete(f"/product/{product_id}")
+
+        return WorkflowResult(
+            name="product_delete",
+            intended_operations=["GET /product", "DELETE /product/{id}"],
+            resource_ids=[product_id],
+            details={"entity": "product", "deletedId": product_id},
+        )
+
+
+class EmployeeUpdateWorkflow(BaseWorkflow):
+    family = TaskFamily.EMPLOYEES
+    entity_type = "employee"
+    supported_operations = (Operation.UPDATE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "employee")
+        fields = plan.fields_to_set
+
+        employee = await _find_single_employee(client, lookup)
+        employee_id = _extract_id(employee)
+        if employee_id is None:
+            raise WorkflowExecutionError("Matched employee did not include an id")
+
+        update_body = _compact_mapping(
+            {
+                "firstName": fields.get("firstName"),
+                "lastName": fields.get("lastName"),
+                "email": fields.get("email"),
+                "phoneNumberMobile": fields.get("phoneNumberMobile"),
+                "comments": fields.get("comments"),
+            }
+        )
+        if not update_body:
+            raise WorkflowExecutionError("Employee update requires at least one field to change")
+
+        response = await client.put(f"/employee/{employee_id}", json_body=update_body)
+        updated = client.unwrap_value(response)
+
+        return WorkflowResult(
+            name="employee_update",
+            intended_operations=["GET /employee", "PUT /employee/{id}"],
+            resource_ids=[employee_id],
+            details={"entity": "employee", "employeeId": employee_id, "updated": updated},
+        )
+
+
+class DepartmentDeleteWorkflow(BaseWorkflow):
+    family = TaskFamily.DEPARTMENTS
+    entity_type = "department"
+    supported_operations = (Operation.DELETE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "department")
+        department = await _find_single_department(client, lookup)
+        department_id = _extract_id(department)
+        if department_id is None:
+            raise WorkflowExecutionError("Matched department did not include an id")
+
+        await client.delete(f"/department/{department_id}")
+
+        return WorkflowResult(
+            name="department_delete",
+            intended_operations=["GET /department", "DELETE /department/{id}"],
+            resource_ids=[department_id],
+            details={"entity": "department", "deletedId": department_id},
+        )
+
+
+class ProjectDeleteWorkflow(BaseWorkflow):
+    family = TaskFamily.PROJECTS
+    entity_type = "project"
+    supported_operations = (Operation.DELETE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "project")
+        project = await _find_single_project(client, lookup)
+        project_id = _extract_id(project)
+        if project_id is None:
+            raise WorkflowExecutionError("Matched project did not include an id")
+
+        await client.delete(f"/project/{project_id}")
+
+        return WorkflowResult(
+            name="project_delete",
+            intended_operations=["GET /project", "DELETE /project/{id}"],
+            resource_ids=[project_id],
+            details={"entity": "project", "deletedId": project_id},
+        )
+
+
+class VoucherReverseWorkflow(BaseWorkflow):
+    family = TaskFamily.CORRECTIONS
+    entity_type = "voucher"
+    supported_operations = (Operation.REVERSE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "voucher")
+        fields = plan.fields_to_set
+
+        voucher = await _find_single_voucher(client, lookup)
+        voucher_id = _extract_id(voucher)
+        if voucher_id is None:
+            raise WorkflowExecutionError("Matched voucher did not include an id")
+
+        reversal_date = _normalize_date(fields.get("date")) or date.today().isoformat()
+        response = await client.put(
+            f"/ledger/voucher/{voucher_id}/:reverse",
+            params={"date": reversal_date},
+        )
+        reversed_voucher = client.unwrap_value(response)
+
+        return WorkflowResult(
+            name="voucher_reverse",
+            intended_operations=["GET /ledger/voucher", "PUT /ledger/voucher/{id}/:reverse"],
+            resource_ids=[voucher_id],
+            details={
+                "entity": "voucher",
+                "sourceVoucherId": voucher_id,
+                "reversed": reversed_voucher,
+            },
+        )
+
+
+class TravelExpenseDeleteWorkflow(BaseWorkflow):
+    family = TaskFamily.TRAVEL_EXPENSES
+    entity_type = "travel_expense"
+    supported_operations = (Operation.DELETE,)
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        lookup = _require_reference(plan, "travel_expense")
+        expense = await _find_single_travel_expense(client, lookup)
+        expense_id = _extract_id(expense)
+        if expense_id is None:
+            raise WorkflowExecutionError("Matched travel expense did not include an id")
+
+        await client.delete(f"/travelExpense/{expense_id}")
+
+        return WorkflowResult(
+            name="travel_expense_delete",
+            intended_operations=["GET /travelExpense", "DELETE /travelExpense/{id}"],
+            resource_ids=[expense_id],
+            details={"entity": "travel_expense", "deletedId": expense_id},
+        )
+
+
+async def _find_single_voucher(
+    client: TripletexClient,
+    lookup: dict[str, Any],
+) -> dict[str, Any]:
+    voucher_id = _coerce_int(lookup.get("id"))
+    if voucher_id is not None:
+        payload = await client.get(
+            f"/ledger/voucher/{voucher_id}",
+            params={"fields": client.select_fields("id", "voucherNumber", "date", "description")},
+        )
+        voucher = client.unwrap_value(payload)
+        if isinstance(voucher, dict):
+            return voucher
+        raise WorkflowExecutionError(
+            f"Voucher lookup by id {voucher_id} did not return a voucher"
+        )
+
+    voucher_number = _stringify_lookup_value(lookup.get("voucherNumber") or lookup.get("number"))
+    if not voucher_number:
+        raise WorkflowExecutionError("Voucher lookup requires id or voucherNumber")
+
+    params = _compact_mapping(
+        {
+            "numberFrom": voucher_number,
+            "numberTo": voucher_number,
+            "count": 2,
+            "fields": client.select_fields("id", "voucherNumber", "date", "description"),
+        }
+    )
+    payload = await client.get("/ledger/voucher", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No voucher matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Voucher lookup was ambiguous for {lookup!r}")
+    return matches[0]
+
+
+async def _find_single_travel_expense(
+    client: TripletexClient,
+    lookup: dict[str, Any],
+) -> dict[str, Any]:
+    expense_id = _coerce_int(lookup.get("id"))
+    if expense_id is not None:
+        payload = await client.get(
+            f"/travelExpense/{expense_id}",
+            params={"fields": client.select_fields("id", "title")},
+        )
+        expense = client.unwrap_value(payload)
+        if isinstance(expense, dict):
+            return expense
+        raise WorkflowExecutionError(
+            f"Travel expense lookup by id {expense_id} did not return an expense"
+        )
+
+    params: dict[str, Any] = {
+        "count": 2,
+        "sorting": "id desc",
+        "fields": client.select_fields("id", "title"),
+    }
+
+    title = lookup.get("title")
+    if isinstance(title, str) and title.strip():
+        params["title"] = title.strip()
+
+    employee_lookup = _as_dict(lookup.get("employeeLookup"))
+    if employee_lookup:
+        employee = await _find_single_employee(client, employee_lookup)
+        employee_id = _extract_id(employee)
+        if employee_id is not None:
+            params["employeeId"] = employee_id
+
+    if set(params) <= {"count", "sorting", "fields"}:
+        raise WorkflowExecutionError(
+            "Travel expense lookup requires id, title, or employee reference"
+        )
+
+    payload = await client.get("/travelExpense", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No travel expense matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Travel expense lookup was ambiguous for {lookup!r}")
+    return matches[0]
+
+
+async def _find_default_employee(client: TripletexClient) -> dict[str, Any]:
+    payload = await client.get(
+        "/employee",
+        params={
+            "count": 1,
+            "sorting": "id",
+            "fields": client.select_fields(
+                "id",
+                "firstName",
+                "lastName",
+                "displayName",
+                "employeeNumber",
+                "email",
+            ),
+        },
+    )
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError("No default employee was available")
+    return matches[0]
+
+
+async def _find_single_project(
+    client: TripletexClient, lookup: dict[str, Any]
+) -> dict[str, Any]:
+    params = _compact_mapping(
+        {
+            "id": lookup.get("id"),
+            "name": lookup.get("name"),
+            "number": lookup.get("number"),
+            "count": 2,
+            "sorting": "id",
+            "fields": client.select_fields("id", "name", "number"),
+        }
+    )
+    if not params or set(params) <= {"count", "sorting", "fields"}:
+        raise WorkflowExecutionError("Project lookup requires id, name, or number")
+
+    payload = await client.get("/project", params=params)
+    matches = client.unwrap_values(payload)
+    if len(matches) == 0:
+        raise WorkflowExecutionError(f"No project matched lookup {lookup!r}")
+    if len(matches) > 1:
+        raise WorkflowExecutionError(f"Project lookup was ambiguous for {lookup!r}")
+    return matches[0]
 
 
 async def _find_single_customer(
@@ -860,6 +1380,18 @@ def _extract_id(payload: Any) -> int | None:
         value = payload.get("id")
         if isinstance(value, int):
             return value
+    return None
+
+
+def _normalize_language(value: Any) -> str | None:
+    """Normalise a language hint to a Tripletex-accepted code (NO or EN)."""
+    if not isinstance(value, str):
+        return None
+    upper = value.strip().upper()
+    if upper in {"NO", "NB", "NN", "NOR"}:
+        return "NO"
+    if upper in {"EN", "ENG", "ENGLISH"}:
+        return "EN"
     return None
 
 

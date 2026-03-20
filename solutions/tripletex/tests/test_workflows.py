@@ -23,6 +23,7 @@ from tripletex_agent.workflows import (
     InvoicePaymentWorkflow,
     ProductCreateWorkflow,
     ProjectCreateWorkflow,
+    TravelExpenseCreateWorkflow,
 )
 
 
@@ -555,3 +556,160 @@ async def test_project_create_workflow_resolves_customer_before_posting() -> Non
 
     assert result.resource_ids == [777]
     assert recorded == [("GET", "/v2/customer"), ("GET", "/v2/employee"), ("POST", "/v2/project")]
+
+
+@pytest.mark.asyncio
+async def test_travel_expense_create_workflow_with_default_employee() -> None:
+    recorded: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/v2/employee":
+            return httpx.Response(
+                200,
+                json={
+                    "values": [
+                        {
+                            "id": 303,
+                            "firstName": "Ola",
+                            "lastName": "Nordmann",
+                            "displayName": "Ola Nordmann",
+                        }
+                    ]
+                },
+            )
+        if request.method == "POST" and request.url.path == "/v2/travelExpense":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["employee"] == {"id": 303}
+            assert payload["title"] == "Business trip to Bergen"
+            assert payload["date"] == "2026-03-15"
+            return httpx.Response(
+                201,
+                json={"value": {"id": 500, "title": "Business trip to Bergen"}},
+            )
+        if request.method == "GET" and request.url.path == "/v2/travelExpense/paymentType":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": 99, "description": "Privat utlegg"}]},
+            )
+        raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+    workflow = TravelExpenseCreateWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.TRAVEL_EXPENSES,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="travel_expense",
+                fields={
+                    "title": "Business trip to Bergen",
+                    "departureDate": "2026-03-15",
+                    "returnDate": "2026-03-17",
+                },
+            )
+        ],
+        confidence=0.8,
+    )
+
+    async with TripletexClient(
+        base_url="https://example.test/v2",
+        session_token="token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await workflow.execute(plan=plan, client=client)
+
+    assert result.resource_ids == [500]
+    assert result.details["employeeId"] == 303
+    assert result.details["expenseId"] == 500
+    assert result.details["delivered"] is False
+    assert recorded == [
+        ("GET", "/v2/employee"),
+        ("POST", "/v2/travelExpense"),
+        ("GET", "/v2/travelExpense/paymentType"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_travel_expense_create_workflow_with_employee_lookup_and_costs() -> None:
+    recorded: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/v2/employee":
+            return httpx.Response(
+                200,
+                json={
+                    "values": [
+                        {
+                            "id": 303,
+                            "firstName": "Kari",
+                            "lastName": "Hansen",
+                            "displayName": "Kari Hansen",
+                        }
+                    ]
+                },
+            )
+        if request.method == "POST" and request.url.path == "/v2/travelExpense":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["employee"] == {"id": 303}
+            return httpx.Response(
+                201,
+                json={"value": {"id": 500, "title": "Trip"}},
+            )
+        if request.method == "GET" and request.url.path == "/v2/travelExpense/paymentType":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": 99, "description": "Privat utlegg"}]},
+            )
+        if request.method == "POST" and request.url.path == "/v2/travelExpense/cost":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["travelExpense"] == {"id": 500}
+            assert payload["amountCurrencyIncVat"] in [2000.0, 500.0]
+            assert payload["paymentType"] == {"id": 99}
+            return httpx.Response(
+                201,
+                json={"value": {"id": len(recorded) + 600}},
+            )
+        raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+    workflow = TravelExpenseCreateWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.TRAVEL_EXPENSES,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="travel_expense",
+                fields={
+                    "title": "Trip",
+                    "departureDate": "2026-03-15",
+                    "returnDate": "2026-03-17",
+                    "employeeLookup": {
+                        "firstName": "Kari",
+                        "lastName": "Hansen",
+                    },
+                    "costs": [
+                        {"description": "Hotel", "amount": 2000.0},
+                        {"description": "Meals", "amount": 500.0},
+                    ],
+                },
+            )
+        ],
+        confidence=0.8,
+    )
+
+    async with TripletexClient(
+        base_url="https://example.test/v2",
+        session_token="token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await workflow.execute(plan=plan, client=client)
+
+    assert result.resource_ids[0] == 500
+    assert len(result.details["childIds"]) == 2
+    assert recorded == [
+        ("GET", "/v2/employee"),
+        ("POST", "/v2/travelExpense"),
+        ("GET", "/v2/travelExpense/paymentType"),
+        ("POST", "/v2/travelExpense/cost"),
+        ("POST", "/v2/travelExpense/cost"),
+    ]
