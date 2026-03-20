@@ -187,40 +187,88 @@ These will cause rejection:
 
 ---
 
-## Training Setup (KO's Machine)
+## Training
+
+Two options: local GPU or RunPod serverless. Both produce the same output — a trained `yolov8{size}.pt` in `submission/`.
+
+### Prerequisites
 
 ```bash
-# Match sandbox versions exactly
-pip install ultralytics==8.1.0
-pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+# Install project dependencies (from solutions/challenge-3/)
+uv sync
 ```
 
-### Dataset YAML
+Training data must be at `data/train/` with `images/` and `annotations.json` (COCO format).
 
-```yaml
-# norgesgruppen.yaml
-path: /path/to/NM_NGD_coco_dataset
-train: images/train
-val: images/val
-nc: 357
-names:
-  0: VESTLANDSLEFSA TØRRE 10STK 360G
-  1: COFFEE MATE 180G NESTLE
-  # ... (generate from annotations.json categories)
-  356: unknown_product
-```
+### Option A: Local GPU
 
-### Train YOLOv8m
+Train directly on your machine. Requires a CUDA GPU.
 
 ```bash
-yolo detect train \
-  data=norgesgruppen.yaml \
-  model=yolov8m.pt \
-  epochs=50 \
-  imgsz=640 \
-  batch=16 \
-  seed=42
+# Train YOLOv8s for 50 epochs (default settings)
+uv run python scripts/train.py
+
+# Customize model size, epochs, image size, batch size
+uv run python scripts/train.py --model-size m --epochs 100 --imgsz 1280 --batch 16
+
+# Resume interrupted training
+uv run python scripts/train.py --resume
 ```
+
+Weights are automatically copied to `submission/yolov8{size}.pt` when training completes.
+
+### Option B: RunPod Serverless
+
+Train on a remote GPU via RunPod. Useful when you don't have a local GPU or want a more powerful one.
+
+**Step 1: Build and push Docker image**
+
+Training data is baked into the Docker image. Requires Docker and a Docker Hub login (`docker login`).
+
+```bash
+# Build and push (tag includes model size + epoch count)
+uv run python scripts/runpod_train.py build --epochs 50
+# Produces: chrcoello/nmai:c3-yolos-50ep
+```
+
+**Step 2: Create a RunPod endpoint**
+
+Go to [RunPod Serverless](https://www.runpod.io/console/serverless) and create a new endpoint:
+- Docker image: `chrcoello/nmai:c3-yolos-50ep` (from step 1)
+- GPU: pick one available in your region
+- Workers: min=0, max=1
+- Execution timeout: 3600s (1 hour)
+
+Copy the endpoint ID.
+
+**Step 3: Submit training job, poll, download weights**
+
+```bash
+export RUNPOD_API_KEY="your-key-here"
+uv run python scripts/runpod_train.py run --epochs 50 --endpoint-id <ENDPOINT_ID>
+```
+
+This submits a training job, polls every 15s until done, then decodes the trained weights and saves them to `submission/yolov8s.pt`.
+
+**Step 4: Cleanup (optional)**
+
+Delete the endpoint when done to stop billing:
+
+```bash
+uv run python scripts/runpod_train.py cleanup --endpoint-id <ENDPOINT_ID>
+```
+
+**CLI options for `runpod_train.py`:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--model-size` | `s` | YOLOv8 size: n/s/m/l/x |
+| `--epochs` | `50` | Training epochs |
+| `--batch` | `16` | Batch size |
+| `--imgsz` | `1280` | Training image size |
+| `--endpoint-id` | — | Reuse existing RunPod endpoint |
+| `--image-tag` | auto | Override Docker image tag |
+| `--timeout` | `3600` | Execution timeout in seconds |
 
 ### Weight Export
 

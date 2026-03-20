@@ -1,0 +1,31 @@
+# Data (large images)
+data/
+
+# Model weights
+*.pt
+*.onnx
+
+# Submission zip
+submission.zip
+
+# Training outputs
+runs/
+predictions.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
