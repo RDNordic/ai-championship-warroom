@@ -86,6 +86,7 @@ class DepartmentExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
+    names: list[str] | None = None  # for multi-department prompts
     departmentNumber: str | None = None
 
 
@@ -113,6 +114,36 @@ class ProductExtraction(BaseModel):
     description: str | None = None
     priceExcludingVatCurrency: float | None = None
     costExcludingVatCurrency: float | None = None
+
+
+class TravelExpenseCostExtraction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str | None = None
+    amount: float | None = None
+    date: str | None = None
+
+
+class TravelExpenseMileageExtraction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    km: float | None = None
+    date: str | None = None
+    description: str | None = None
+
+
+class TravelExpenseExtraction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = None
+    departureDate: str | None = None
+    returnDate: str | None = None
+    employeeName: str | None = None
+    employeeEmail: str | None = None
+    projectName: str | None = None
+    departmentName: str | None = None
+    costs: list[TravelExpenseCostExtraction] | None = None
+    mileageAllowances: list[TravelExpenseMileageExtraction] | None = None
 
 
 class InvoiceLineExtraction(BaseModel):
@@ -184,6 +215,7 @@ class PromptExtraction(BaseModel):
     project: ProjectExtraction | None = None
     department: DepartmentExtraction | None = None
     invoice: InvoiceExtraction | None = None
+    travel_expense: TravelExpenseExtraction | None = None
     lookup: LookupExtraction | None = None
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)
     notes: str | None = None
@@ -291,10 +323,100 @@ class KeywordTaskPlanner:
             ),
         ),
         IntentRule(
+            TaskFamily.TRAVEL_EXPENSES,
+            Operation.DELETE,
+            "travel_expense",
+            (
+                "delete travel",
+                "remove travel",
+                "slett reise",
+                "fjern reise",
+                "ta bort reise",
+                "delete expense",
+                "slett utlegg",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.TRAVEL_EXPENSES,
+            Operation.CREATE,
+            "travel_expense",
+            ("travel expense", "expense report", "reiseregning", "reiseutlegg"),
+        ),
+        IntentRule(
             TaskFamily.EMPLOYEES,
             Operation.UPDATE,
             "employee",
-            ("update employee", "oppdater ansatt"),
+            (
+                "update employee",
+                "edit employee",
+                "change employee",
+                "modify employee",
+                "oppdater ansatt",
+                "endre ansatt",
+                "rediger ansatt",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.DELETE,
+            "customer",
+            (
+                "delete customer",
+                "remove customer",
+                "slett kunde",
+                "fjern kunde",
+                "ta bort kunde",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.UPDATE,
+            "customer",
+            (
+                "update customer",
+                "edit customer",
+                "change customer",
+                "modify customer",
+                "oppdater kunde",
+                "endre kunde",
+                "rediger kunde",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.DELETE,
+            "product",
+            (
+                "delete product",
+                "remove product",
+                "slett produkt",
+                "fjern produkt",
+                "ta bort produkt",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.DEPARTMENTS,
+            Operation.DELETE,
+            "department",
+            (
+                "delete department",
+                "remove department",
+                "slett avdeling",
+                "fjern avdeling",
+                "ta bort avdeling",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.PROJECTS,
+            Operation.DELETE,
+            "project",
+            (
+                "delete project",
+                "remove project",
+                "slett prosjekt",
+                "fjern prosjekt",
+                "ta bort prosjekt",
+            ),
         ),
         IntentRule(
             TaskFamily.EMPLOYEES,
@@ -312,18 +434,21 @@ class KeywordTaskPlanner:
                 "ansett",
             ),
         ),
-        IntentRule(TaskFamily.CORRECTIONS, Operation.REVERSE, "voucher", ("reverse", "reverser")),
         IntentRule(
-            TaskFamily.TRAVEL_EXPENSES,
-            Operation.DELETE,
-            "travel_expense",
-            ("delete travel", "slett reise"),
-        ),
-        IntentRule(
-            TaskFamily.TRAVEL_EXPENSES,
-            Operation.CREATE,
-            "travel_expense",
-            ("travel expense", "expense report", "reiseregning", "reiseutlegg"),
+            TaskFamily.CORRECTIONS,
+            Operation.REVERSE,
+            "voucher",
+            (
+                "reverse voucher",
+                "reverse the voucher",
+                "reverser bilag",
+                "reverser bilaget",
+                "tilbakefør bilag",
+                "reverse posting",
+                "reverse entry",
+                "credit note voucher",
+                "storno",
+            ),
         ),
     )
 
@@ -418,6 +543,8 @@ class KeywordTaskPlanner:
             return _extract_department_payload(prompt)
         if entity_type == "project":
             return _extract_project_payload(prompt)
+        if entity_type == "travel_expense":
+            return _extract_travel_expense_payload(prompt)
         return {}
 
 
@@ -527,6 +654,10 @@ def _plan_from_extraction(
         entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
         fields_to_set = payload
 
+    if extraction.operation in (Operation.DELETE, Operation.REVERSE) and entity_type != "unknown":
+        lookup = _lookup_for_extraction(extraction)
+        entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
+
     if extraction.operation in (Operation.REGISTER_PAYMENT, Operation.CREATE_CREDIT_NOTE):
         if entity_type == "invoice":
             lookup, fields_to_set = _invoice_lookup_and_fields_from_payload(
@@ -581,6 +712,28 @@ def _payload_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
         return project_payload
     if extraction.primary_entity_type == "product" and extraction.product is not None:
         return extraction.product.model_dump(exclude_none=True)
+    if extraction.primary_entity_type == "travel_expense" and extraction.travel_expense is not None:
+        te_payload = extraction.travel_expense.model_dump(exclude_none=True)
+        te_employee_lookup: dict[str, object] = {}
+        employee_name = te_payload.pop("employeeName", None)
+        employee_email = te_payload.pop("employeeEmail", None)
+        if employee_name is not None:
+            names = employee_name.split()
+            if names:
+                te_employee_lookup["firstName"] = names[0]
+            if len(names) > 1:
+                te_employee_lookup["lastName"] = " ".join(names[1:])
+        if employee_email is not None:
+            te_employee_lookup["email"] = employee_email
+        if te_employee_lookup:
+            te_payload["employeeLookup"] = te_employee_lookup
+        project_name = te_payload.pop("projectName", None)
+        if project_name is not None:
+            te_payload["projectLookup"] = {"name": project_name}
+        department_name = te_payload.pop("departmentName", None)
+        if department_name is not None:
+            te_payload["departmentLookup"] = {"name": department_name}
+        return te_payload
     if extraction.primary_entity_type == "invoice" and extraction.invoice is not None:
         invoice_payload = extraction.invoice.model_dump(exclude_none=True)
         invoice_payload.pop("sendToCustomer", None)
@@ -1011,14 +1164,32 @@ Important rules:
 - If the prompt is outside the currently supported slice, return unknown.
 - The currently supported live implementation slice is:
   - create customer
+  - update customer (change name, email, phone, address, etc.)
+  - delete customer
   - create product
+  - delete product
   - create employee
+  - update employee (change name, email, phone, comments)
   - create department
+  - delete department
   - create project linked to an existing customer
+  - delete project
   - create invoice for an existing customer with one line item
   - register invoice payment
   - create credit note for an existing invoice
-- Travel expense, correction, and module tasks are not yet implemented.
+  - create travel expense report
+  - delete travel expense report
+  - reverse a voucher/posting (use operation=reverse, primary_entity_type=voucher)
+- For voucher reverse tasks, extract the voucher id or voucherNumber into the lookup field.
+- Module activation tasks are not yet implemented.
+- For department create tasks with multiple departments (e.g. "create departments X, Y, Z"),
+  put all department names into the names list field, not just name.
+- For travel expenses, put employee references into employeeName and/or employeeEmail.
+- For travel expenses, put cost items into the costs array with description, amount, and date.
+- For travel expenses, put mileage items into the mileageAllowances array with km, date, and
+  description.
+- For travel expenses, put the report title into title.
+- For travel expenses, put travel dates into departureDate and returnDate (YYYY-MM-DD format).
 - For people, split names into firstName and lastName when possible.
 - For projects, put customer references into customerName and/or customerOrganizationNumber.
 - For projects, put explicit project manager references into projectManagerName and/or
@@ -1641,6 +1812,87 @@ def _extract_project_payload(prompt: str) -> dict[str, object]:
     if project_manager_name and email_matches:
         payload.setdefault("projectManagerLookup", {})
         payload["projectManagerLookup"]["email"] = email_matches[-1]
+
+    return payload
+
+
+def _extract_travel_expense_payload(prompt: str) -> dict[str, object]:
+    payload: dict[str, object] = {}
+
+    # Extract employee name
+    employee_name = _extract_named_value(
+        prompt,
+        [
+            (
+                r"(?:for|til)\s+(?:employee|ansatt|empleado|empregado|employ[eé]|mitarbeiter)"
+                r"\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:employee|ansatt|empleado|empregado|employ[eé]|mitarbeiter)"
+                r"\s+(?:named|med navn|with name|som heter|called)\s+(?P<value>[^,\n]+)"
+            ),
+        ],
+    )
+    if employee_name:
+        names = _strip_person_suffixes(employee_name).split()
+        employee_lookup: dict[str, object] = {}
+        if names:
+            employee_lookup["firstName"] = names[0]
+        if len(names) > 1:
+            employee_lookup["lastName"] = " ".join(names[1:])
+        if employee_lookup:
+            payload["employeeLookup"] = employee_lookup
+
+    # Extract title/description
+    title = _extract_named_value(
+        prompt,
+        [
+            r"(?:title|tittel|titulo|titre)\s+(?P<value>[^,\n]+)",
+            r"(?:description|beskrivelse)\s+(?P<value>[^,\n]+)",
+        ],
+    )
+    if title:
+        payload["title"] = title
+
+    # Extract departure date
+    departure_date = _extract_named_value(
+        prompt,
+        [
+            r"(?:departure|avreise|from|fra|del|du|von|ab)\s+(?P<value>\d{4}-\d{2}-\d{2})",
+        ],
+    )
+    if departure_date:
+        payload["departureDate"] = departure_date
+
+    # Extract return date
+    return_date = _extract_named_value(
+        prompt,
+        [
+            r"(?:return|retur|to|til|al|au|bis)\s+(?P<value>\d{4}-\d{2}-\d{2})",
+        ],
+    )
+    if return_date:
+        payload["returnDate"] = return_date
+
+    # Extract cost items from prompt
+    costs: list[dict[str, object]] = []
+    cost_matches = re.finditer(
+        r"(?P<description>[A-Za-zÀ-ÿ\s]+?)\s+(?P<amount>\d+(?:[.,]\d+)?)\s*(?:NOK|kr)\b",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    for match in cost_matches:
+        desc = match.group("description").strip()
+        amount = _parse_decimal(match.group("amount"))
+        if desc and amount > 0:
+            costs.append({"description": desc, "amount": amount})
+    if costs:
+        payload["costs"] = costs
+
+    # Extract email for employee lookup
+    email_match = _EMAIL_RE.search(prompt)
+    if email_match and "employeeLookup" not in payload:
+        payload["employeeLookup"] = {"email": email_match.group("email")}
 
     return payload
 

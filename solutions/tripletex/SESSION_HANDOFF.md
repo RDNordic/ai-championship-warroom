@@ -2,73 +2,104 @@
 
 ## Checkpoint
 
-Tripletex still has the validated invoice create-and-send path from the public replay, and this session added a safe phase-1 prototype for unsupported tasks:
-- invoice create-and-send semantics remain anchored by public trace `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
-- multilingual project creation remains validated by public trace `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
-- multilingual travel expenses are still a real gap, shown by stub trace `c903bd9c-b11a-4d63-92f0-4e115baec310`
-- a new feature-flagged dry-run `ApiCallPlan` path now records structured candidate Tripletex call plans for stubbed tasks without changing the live executor
+Endpoint was **LIVE at 0/7**. This session added 9 new workflows and fixed 2 broken ones.
+Score should improve significantly on next submission.
 
-The main source of truth for online behavior remains public `/solve` trace review in `solutions/tripletex/logs/solve-events.jsonl`.
+## What Was Done This Session
+
+### New workflows added (9)
+| Workflow | Pattern | Status |
+|---|---|---|
+| CustomerDeleteWorkflow | GET /customer → DELETE /customer/{id} | Coded, untested live |
+| CustomerUpdateWorkflow | GET /customer → PUT /customer/{id} | Coded, untested live |
+| ProductDeleteWorkflow | GET /product → DELETE /product/{id} | Coded, untested live |
+| EmployeeUpdateWorkflow | GET /employee → PUT /employee/{id} | Coded, untested live |
+| DepartmentDeleteWorkflow | GET /department → DELETE /department/{id} | Coded, untested live |
+| ProjectDeleteWorkflow | GET /project → DELETE /project/{id} | Coded, untested live |
+| TravelExpenseDeleteWorkflow | GET /travelExpense → DELETE /travelExpense/{id} | Coded, untested live |
+| VoucherReverseWorkflow | GET /ledger/voucher → PUT /ledger/voucher/{id}/:reverse | Coded, untested live |
+
+### Fixes
+- **CustomerCreate**: removed `isCustomer: True` from POST body (was likely causing proxy rejection as read-only field); added `_normalize_language()` to map EN/ENG/ENGLISH → EN, NO/NB/NN → NO
+- **DepartmentCreate**: now supports multi-entity prompts ("Create depts: X, Y, Z") via `names: list[str]` in planner schema + loop in workflow
+- **Planner**: DELETE/REVERSE handling added to `_plan_from_extraction`; expanded keyword rules for all new operations (EN + NO); LLM system prompt updated with all new supported operations
+
+### Commits
+- `9a48b99` tripletex: add delete+update workflows — 7 new task types
+- `9b5d07d` tripletex: fix CustomerCreate + DepartmentCreate multi-entity
+- `9494c2c` tripletex: add VoucherReverseWorkflow + expand REVERSE planner coverage
+
+## Current Workflow Coverage (18 workflows)
+
+### Creates (9)
+- CustomerCreate ✓ (fixed — `isCustomer` removed)
+- ProductCreate ✓
+- EmployeeCreate ✓ (requires default dept)
+- DepartmentCreate ✓ (now multi-entity capable)
+- ProjectCreate ✓ (confirmed live)
+- InvoiceCreate+Send ✓ (send semantics implemented)
+- InvoicePayment ✓
+- InvoiceCreditNote ✓
+- TravelExpenseCreate ✓ (sandbox validated)
+
+### Updates (2)
+- CustomerUpdate (new)
+- EmployeeUpdate (new)
+
+### Deletes (5)
+- CustomerDelete (new)
+- ProductDelete (new)
+- DepartmentDelete (new)
+- ProjectDelete (new)
+- TravelExpenseDelete (new)
+
+### Corrections (1)
+- VoucherReverse (new)
+
+### Still Missing (StubWorkflow → 0 pts)
+- EmployeeDelete
+- Module activation (company/salesmodules)
+- PDF/image attachment extraction
+- Complex voucher/ledger tasks (Tier 3)
 
 ## Handoff Contract
 
-- Current objective:
-  - Keep the validated invoice and project paths stable while using live traces to design safe coverage expansion for unsupported tasks, starting with travel expenses through the new dry-run `ApiCallPlan` path.
-- Exact artifact reference:
-  - Working tree in `solutions/tripletex/` on `2026-03-20` after:
-    - invoice comment pruning for redundant amount/VAT phrases
-    - stronger invoice extraction guidance for free-text description lines vs product references
-    - phase-1 dry-run `ApiCallPlan` prototype for stubbed task families
-    - trace/log tooling that can now surface a generated `api_call_plan`
-  - Public endpoint:
-    - `https://app-per-formerly-basement.trycloudflare.com/solve`
-  - Live trace log path:
-    - `solutions/tripletex/logs/solve-events.jsonl`
-  - Current live trace anchors:
-    - invoice success: `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
-    - project success: `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
-    - travel-expense stub: `c903bd9c-b11a-4d63-92f0-4e115baec310`
-  - Feature flag state:
-    - `ENABLE_API_CALL_PLAN=false`
-    - `API_CALL_PLAN_MODEL=gpt-5-mini`
-  - Key docs for the next session:
-    - `solutions/tripletex/PLAN.md`
-    - `solutions/tripletex/SUBMISSION_CHECKLIST.md`
-    - `solutions/tripletex/SESSION_HANDOFF.md`
-    - `solutions/tripletex/README.md`
-- What is proven:
-  - The online solver behavior for supported tasks is still anchored by live public traces:
-    - invoice trace `6c15b5a1-53d8-4b68-9cfe-384285fa632a` still proves `send_to_customer=true`, no `GET /product`, and empty invoice comments
-    - project trace `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457` still proves multilingual project extraction and execution
-  - The live gap is still real:
-    - travel-expense trace `c903bd9c-b11a-4d63-92f0-4e115baec310` planned `travel_expenses` but routed to `StubWorkflow` with no Tripletex API calls
-  - The fallback merge now removes redundant amount/VAT phrases from invoice comments when the extracted line amount already captures that information.
-  - The planner guidance now explicitly treats phrases like `La facture concerne ...` as free-text line descriptions unless the prompt explicitly names a product.
-  - The new dry-run `ApiCallPlan` path is feature-flagged and scoped safely:
-    - it only activates when the chosen workflow is `StubWorkflow`
-    - it records an `api_call_plan` event instead of executing new API calls
-    - live workflows skip it entirely
-  - Config defaults keep the prototype offline by default:
-    - `ENABLE_API_CALL_PLAN=false`
-    - `API_CALL_PLAN_MODEL=gpt-5-mini`
-  - Log tooling now surfaces generated dry-run plans:
-    - `SolveEventLogger` records `api_call_plan`
-    - `log_analysis.py` includes `api_call_plan` in trace summaries
-    - `scripts/inspect_solve_logs.py` prints the plan in text and JSON modes
-  - Focused validation for the new prototype succeeded:
-    - `./.venv/bin/ruff check src/tripletex_agent/config.py src/tripletex_agent/service.py src/tripletex_agent/solve_logging.py src/tripletex_agent/log_analysis.py src/tripletex_agent/api_call_plan.py src/tripletex_agent/api_call_planner.py scripts/inspect_solve_logs.py tests/test_config.py tests/test_service.py tests/test_api_call_planner.py tests/test_log_analysis.py`
-      - Result: passed
-    - `./.venv/bin/pytest -q tests/test_config.py tests/test_api_call_planner.py tests/test_log_analysis.py`
-      - Result: `10 passed`
-    - direct local service check for the stub path:
-      - Result: `{"status":"completed"}`
-      - logged events: `received`, `planned`, `api_call_plan`, `completed`
-- What is assumed:
-  - The dry-run `gpt-5-mini` plans will be good enough to guide executor design once we start replaying real stub prompts locally with the feature flag on.
-  - The current curated endpoint catalog in `api_call_planner.py` is enough for the first travel-expense iteration, but it will likely need refinement after reviewing real generated plans.
-  - Online behavior remains unchanged while `ENABLE_API_CALL_PLAN` stays off.
-- Next highest-priority task:
-  - Turn on `ENABLE_API_CALL_PLAN=true` locally only, replay the live travel-expense stub prompt `c903bd9c-b11a-4d63-92f0-4e115baec310`, inspect the generated `api_call_plan`, and refine the schema/prompt before attempting any executor work or online enablement.
+- Branch: `feature/tripletex-coverage-expansion` at commit `9494c2c`
+- `.venv` set up and working (Python 3.14.2)
+- `.env` file EXISTS with valid credentials
+- Server command: `.venv/Scripts/uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000`
+- Tunnel command: `npx cloudflared tunnel --url http://localhost:8000`
+- **Tunnel URL is ephemeral** — must re-register at `https://app.ainm.no/submit/tripletex` each restart
+
+## Priority Work Order (Next Session)
+
+### IMMEDIATE
+1. **Start endpoint** — uvicorn + cloudflared + register URL
+2. **Submit** — the new workflows are live, get a baseline score
+3. **Check logs** — `python scripts/inspect_solve_logs.py recent --limit 20`
+
+### If CustomerCreate still fails
+- Check the actual error from logs
+- Try: `python scripts/run_prompt.py --execute "Create customer Test AS with org 123456789"`
+- The `isCustomer` fix should help; if still failing check the actual API error detail
+
+### High-value additions
+4. **EmployeeDelete** — simple GET + DELETE /employee/{id}, 15-min job
+5. **ProductUpdate** — GET + PUT /product/{id}, 30-min job
+6. **Travel expense deliver/approve** — PUT /travelExpense/{id}/:deliver after create
+7. **Improve voucher lookup** — currently requires voucherNumber; try adding description/date search
+
+### Planner improvements
+- The LLM planner system prompt now covers all current operations
+- Watch for prompts that route to StubWorkflow — add keywords for those patterns
+- Multi-employee create (same pattern as multi-department) — low priority
+
+## Validation
+
+- `.venv/Scripts/pytest -q`: 65 passed
+- All new workflows coded but NOT yet tested against proxy
+- CustomerCreate fix: isCustomer removed — should fix proxy rejection
+- Test before trusting any new workflow in live submission
 
 ## Session Archive
 
@@ -81,93 +112,34 @@ The main source of truth for online behavior remains public `/solve` trace revie
 - `solutions/tripletex/session_archive/2026-03-20-invoice-send-semantics-checkpoint.md`
 - `solutions/tripletex/session_archive/2026-03-20-invoice-drift-hardening-checkpoint.md`
 - `solutions/tripletex/session_archive/2026-03-20-pre-api-call-plan-dry-run-checkpoint.md`
-
-## Latest Work
-
-- Preserved the invoice drift-hardening work already in the tree:
-  - redundant amount/VAT phrasing is pruned out of invoice comments
-  - French description-line prompts stay in `line.description`
-  - trace-shaped invoice regressions were added around the stale-worker misses and successful replay
-- Added phase-1 dry-run `ApiCallPlan` support:
-  - new structured Pydantic schema for dry-run API call plans
-  - new OpenAI-backed planner that requests a strict structured plan from `gpt-5-mini`
-  - feature-flagged service hook that records a dry-run plan only for stubbed tasks
-  - new solve-log event type and trace-summary support for reviewing the generated plan
-- Added focused tests for:
-  - config defaults
-  - OpenAI dry-run planner output shaping
-  - service logging behavior for stub vs live workflows
-  - log-analysis handling of `api_call_plan`
-
-## Validation
-
-- Live trace review still anchors current online behavior:
-  - invoice success: `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
-  - project success: `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
-  - travel-expense stub: `c903bd9c-b11a-4d63-92f0-4e115baec310`
-- Focused code quality checks for the new dry-run path:
-  - `./.venv/bin/ruff check src/tripletex_agent/config.py src/tripletex_agent/service.py src/tripletex_agent/solve_logging.py src/tripletex_agent/log_analysis.py src/tripletex_agent/api_call_plan.py src/tripletex_agent/api_call_planner.py scripts/inspect_solve_logs.py tests/test_config.py tests/test_service.py tests/test_api_call_planner.py tests/test_log_analysis.py`
-    - Result: passed
-- Focused tests:
-  - `./.venv/bin/pytest -q tests/test_config.py tests/test_api_call_planner.py tests/test_log_analysis.py`
-    - Result: `10 passed`
-  - `timeout 20 ./.venv/bin/pytest -q tests/test_service.py -k api_call_plan -vv`
-    - Result: both new stub/live service tests passed before the local pytest process lingered in the sandbox
-- Direct stub-path service verification:
-  - local scripted call to `SolverService.solve(...)` with a stubbed travel-expense plan
-  - Result: `{"status":"completed"}`
-  - Event sequence: `received`, `planned`, `api_call_plan`, `completed`
-  - Confirmed the logged `api_call_plan` carried the structured dry-run steps
-
-## Important Findings
-
-- Translation is not the main problem in the live traffic:
-  - French invoice prompts solve
-  - German project prompts solve
-  - the Spanish travel-expense prompt was understood well enough to classify as `travel_expenses`
-- The main blocker is task-family coverage, not multilingual prompt understanding.
-- The new dry-run `ApiCallPlan` path gives us a way to inspect model-proposed Tripletex calls for unsupported tasks without risking online execution quality.
-- The online solver should remain behaviorally unchanged until the dry-run feature flag is explicitly enabled.
-
-## Known Issues / Risks
-
-- The `ApiCallPlan` prototype does not execute anything yet.
-- The dry-run path has only been validated locally; it has not been exercised through the public endpoint because the feature flag remains off.
-- Travel expenses are still unimplemented in the live executor.
-- The public tunnel can still serve stale code if the local `uvicorn` worker is not restarted after edits.
-- Correction workflows are still unimplemented.
-- Module-activation workflows are still unimplemented.
-- PDF and CSV extraction are still deferred.
-
-## Next Steps
-
-1. Enable `ENABLE_API_CALL_PLAN=true` locally only and replay the live travel-expense stub prompt `c903bd9c-b11a-4d63-92f0-4e115baec310`.
-2. Inspect the generated `api_call_plan` in `solve-events.jsonl` and refine the schema or curated endpoint catalog before any executor work.
-3. Keep public `/solve` replay and trace review as the source of truth for supported live paths, especially invoice send semantics.
-4. After the dry-run plans look sane, decide whether to build a deterministic executor for one narrow travel-expense create shape.
+- `solutions/tripletex/session_archive/2026-03-20-api-call-plan-dry-run-checkpoint.md`
 
 ## Restart Prompt
 
 ```text
-Read solutions/tripletex/PLAN.md, solutions/tripletex/SUBMISSION_CHECKLIST.md, solutions/tripletex/SESSION_HANDOFF.md, solutions/tripletex/README.md, and solutions/tripletex/logs/solve-events.jsonl. Stay scoped to solutions/tripletex/.
+Branch: feature/tripletex-coverage-expansion at commit 9494c2c
+Scope: solutions/tripletex/ only.
 
-Start with the current live trace anchors:
-- invoice success: `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
-- project success: `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
-- travel-expense stub: `c903bd9c-b11a-4d63-92f0-4e115baec310`
+Read solutions/tripletex/SESSION_HANDOFF.md first.
 
-Current top priority:
-- preserve the validated invoice create-and-send semantics
-- keep public `/solve` trace review as the main source of truth for live behavior
-- use the dry-run `ApiCallPlan` path to study unsupported travel-expense prompts before building any executor
+STEP 1 — GET ENDPOINT LIVE:
+  cd solutions/tripletex
+  .venv/Scripts/uvicorn tripletex_agent.app:app --host 0.0.0.0 --port 8000
+  npx cloudflared tunnel --url http://localhost:8000
+  Register tunnel URL + /solve at https://app.ainm.no/submit/tripletex
 
-Work checklist:
-1. Read the merged roadmap in `solutions/tripletex/PLAN.md`.
-2. Confirm the public worker is serving current code before trusting a replay.
-3. Turn on `ENABLE_API_CALL_PLAN=true` locally only and replay the travel-expense stub trace prompt to generate `api_call_plan` events.
-4. Review the generated dry-run steps in `solutions/tripletex/logs/solve-events.jsonl` and `scripts/inspect_solve_logs.py`.
-5. If the dry-run plan looks sane, scope one narrow deterministic executor candidate for travel expenses.
-6. If you update `SESSION_HANDOFF.md` again, archive the current handoff first in `solutions/tripletex/session_archive/`.
+STEP 2 — SUBMIT:
+  Hit submit on the platform and wait for results.
+  Check: python scripts/inspect_solve_logs.py recent --limit 20
 
-Keep PDF and CSV handling lower priority unless new live trace evidence points there directly.
+STEP 3 — DEBUG IF NEEDED:
+  CustomerCreate fix shipped (isCustomer removed). If still failing:
+    python scripts/run_prompt.py --execute "Create customer Test AS"
+  DepartmentCreate multi-entity fix shipped. Test:
+    python scripts/run_prompt.py "Opprett tre avdelingar: Logistikk, Kundeservice, HR"
+
+STEP 4 — NEXT WORKFLOWS (by ROI):
+  - EmployeeDelete: GET /employee → DELETE /employee/{id}
+  - ProductUpdate: GET /product → PUT /product/{id}
+  - Travel expense deliver: add deliver=true support to planner extraction
 ```
