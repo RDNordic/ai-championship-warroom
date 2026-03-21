@@ -89,6 +89,21 @@ GET /invoice REQUIRES invoiceDateFrom + invoiceDateTo.
 ## Invoice Credit Note
 CRITICAL: PUT /invoice/{{id}}/:createCreditNote uses QUERY PARAMS (date, sendToCustomer).
 
+## Account Lookup
+Norwegian accounts are ALWAYS 4 digits. NEVER use 5-digit numbers.
+If unsure of the exact number, search by name: GET /ledger/account?query=<keyword>&count=5
+Common Norwegian expense accounts:
+- 1240: Inventar (furniture/fixtures)
+- 1920: Bankinnskudd (bank deposit)
+- 2400: Leverandørgjeld (accounts payable)
+- 2710: Inngående mva, høy sats (input VAT 25%)
+- 2910/2960: Kredittkort/bedriftskort (credit card)
+- 6300: Leie lokaler (rent)
+- 6540: Inventar (equipment, furniture expense)
+- 6800: Kontorrekvisita (office supplies)
+- 7100: Bilkostnader (vehicle costs)
+- 7140: Reisekostnader (travel costs)
+
 ## Ledger Voucher (Journal Entry)
 CRITICAL posting rules:
 - row: starts at 1, NOT 0
@@ -103,6 +118,22 @@ CRITICAL posting rules:
 - Example: supplier invoice 10000 NOK + 25% VAT = 12500 gross:
   Row 1 (expense): amount=10000, amountGross=12500, vatType:{{"id":3}}
   Row 2 (payable): amount=-12500, amountGross=-12500, supplier:{{"id":$id}}
+
+## Expense Receipt Voucher (Utleggsbilag)
+For posting expense receipts (kvittering) paid by employee/company card:
+- Use the 2-posting pattern with vatType on the expense row:
+  Row 1 (expense): amount=net, amountGross=gross, amountCurrency=net, \
+    amountGrossCurrency=gross, vatType:{{"id":3}}, \
+    account:{{"id":$expense_account}}, employee:{{"id":$emp_id}}, \
+    department:{{"id":$dept_id}}
+  Row 2 (payment): amount=-gross, amountGross=-gross, \
+    amountCurrency=-gross, amountGrossCurrency=-gross, \
+    account:{{"id":$bank_or_card_account}}, employee:{{"id":$emp_id}}
+- CRITICAL: 25% VAT math: net = gross / 1.25 (e.g., 6750 gross → net=5400)
+- CRITICAL: EVERY posting MUST include employee:{{"id":$emp_id}}
+- If no specific employee, GET /employee?count=1 to get any employee
+- Sum of amount must = 0: net + (-gross) ≠ 0, so you MUST include vatType \
+  on Row 1 so Tripletex auto-handles the VAT difference
 
 ## Timesheet Entry
 1. GET /employee (by email or name) to find employee ID.
@@ -758,6 +789,18 @@ class LLMApiExecutor:
                 if step_fixes:
                     all_details[f"step_{step_id}_fixes"] = step_fixes
                 if not schema_result.valid:
+                    # Block vouchers with balance errors — they will always fail
+                    balance_errors = [e for e in schema_result.errors if "does not balance" in e]
+                    if balance_errors and "/voucher" in path:
+                        error_msg = f"Voucher blocked: {balance_errors}"
+                        logger.error("Step %s blocked due to balance error: %s", step_id, error_msg)
+                        all_details[f"step_{step_id}_error"] = error_msg
+                        executed_operations.append(f"{method} {path} [BLOCKED: balance error]")
+                        return {
+                            "step_id": str(step_id), "method": method, "path": path,
+                            "error": error_msg, "auto_fixes": step_fixes,
+                            "fields_removed": step_removed,
+                        }
                     all_details[f"step_{step_id}_validation_warnings"] = schema_result.errors
 
             logger.info(
@@ -837,6 +880,36 @@ class LLMApiExecutor:
                         if isinstance(value, int) and field_path.endswith(".id"):
                             resource_ids.append(value)
                     else:
+                        # Auto-retry: if GET /ledger/account returned empty, try name search
+                        if (
+                            method == "GET"
+                            and "/ledger/account" in path
+                            and isinstance(response_payload, dict)
+                            and response_payload.get("fullResultSize", -1) == 0
+                            and isinstance(params, dict)
+                            and "number" in params
+                        ):
+                            acct_number = params["number"]
+                            logger.info(
+                                "Account number %s returned empty, retrying with query search",
+                                acct_number,
+                            )
+                            try:
+                                retry_payload = await tripletex_client.request(
+                                    "GET", "/ledger/account",
+                                    params={"query": str(acct_number), "count": 5},
+                                    expected_status=(200,),
+                                )
+                                retry_value = _resolve_value(retry_payload, field_path)
+                                if retry_value is not None:
+                                    saved_vars[var_name] = retry_value
+                                    logger.info("Saved %s = %s (via query retry)", var_name, retry_value)
+                                    if isinstance(retry_value, int) and field_path.endswith(".id"):
+                                        resource_ids.append(retry_value)
+                                    continue
+                            except Exception as exc:
+                                logger.warning("Account query retry failed: %s", exc)
+
                         logger.warning(
                             "Could not extract %s from response via path '%s'",
                             var_name,
