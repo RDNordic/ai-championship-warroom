@@ -693,6 +693,9 @@ class FallbackPlanner:
         if plan.primary_entity_type() is None and fallback_plan.primary_entity_type() is not None:
             logger.info("Primary planner returned no primary entity; using keyword fallback")
             return fallback_plan
+        if _should_prefer_fallback_plan(plan, fallback_plan):
+            logger.info("Primary planner missed richer order-invoice-payment fallback; using keyword fallback")
+            return fallback_plan
         return _merge_with_fallback_plan(plan, fallback_plan)
 
 
@@ -1013,6 +1016,25 @@ def _merge_with_fallback_plan(primary: TaskPlan, fallback: TaskPlan) -> TaskPlan
         update["completion_checks"] = merged_completion_checks
 
     return merged.model_copy(update=update) if update else merged
+
+
+def _should_prefer_fallback_plan(primary: TaskPlan, fallback: TaskPlan) -> bool:
+    if primary.task_family != TaskFamily.INVOICING or fallback.task_family != TaskFamily.INVOICING:
+        return False
+    if primary.primary_entity_type() != "invoice" or fallback.primary_entity_type() != "invoice":
+        return False
+    if primary.operation != Operation.REGISTER_PAYMENT or fallback.operation != Operation.CREATE:
+        return False
+
+    fallback_payload = fallback.primary_payload("invoice")
+    if fallback_payload is None:
+        return False
+    fallback_fields = fallback_payload.fields
+    return (
+        fallback_fields.get("createOrder") is True
+        and fallback_fields.get("convertOrderToInvoice") is True
+        and fallback_fields.get("registerPayment") is True
+    )
 
 
 def _sanitize_plan(plan: TaskPlan) -> TaskPlan:

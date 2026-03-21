@@ -1007,3 +1007,43 @@ def test_fallback_planner_fail_closes_attachment_led_employee_onboarding_prompt(
     assert merged_plan.task_family == TaskFamily.UNKNOWN
     assert merged_plan.operation == Operation.UNKNOWN
     assert len(merged_plan.attachment_facts) == 1
+
+
+def test_fallback_planner_prefers_order_invoice_payment_keyword_plan_over_payment_only_primary() -> None:
+    prompt = (
+        "Opprett en ordre for kunden Stormberg AS (org.nr 870531559) med produktene "
+        "Vedlikehold (4665) til 35200 kr og Systemutvikling (7431) til 4400 kr. "
+        "Konverter ordren til faktura og registrer full betaling."
+    )
+    primary_plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.REGISTER_PAYMENT,
+        entities_to_find=[
+            EntityReference(
+                entity_type="invoice",
+                lookup={
+                    "customerLookup": {
+                        "customerName": "Stormberg AS",
+                        "organizationNumber": "870531559",
+                    }
+                },
+            )
+        ],
+        fields_to_set={"paidAmount": 39600.0},
+        confidence=0.82,
+    )
+    planner = FallbackPlanner(primary=StaticPlanner(primary_plan), fallback=KeywordTaskPlanner())
+
+    merged_plan = planner.plan(prompt, [])
+
+    assert merged_plan.task_family == TaskFamily.INVOICING
+    assert merged_plan.operation == Operation.CREATE
+    fields = merged_plan.entities_to_create[0].fields
+    assert fields["customerLookup"] == {
+        "customerName": "Stormberg AS",
+        "organizationNumber": "870531559",
+    }
+    assert fields["createOrder"] is True
+    assert fields["convertOrderToInvoice"] is True
+    assert fields["registerPayment"] is True
+    assert len(fields["lines"]) == 2
