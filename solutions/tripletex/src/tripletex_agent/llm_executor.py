@@ -1093,6 +1093,24 @@ class LLMApiExecutor:
                 save_fields = _normalize_save_fields(save_fields)
                 for var_name, field_path in save_fields.items():
                     value = _resolve_value(response_payload, field_path)
+                    # Fallback: if a deeply nested path like
+                    # "values.0.orders.0.customer.id" fails, try
+                    # collapsing to "values.0.customer.id" — the LLM
+                    # often nests through ref arrays that don't contain
+                    # the desired field.
+                    if value is None and field_path.count(".") >= 4:
+                        parts = field_path.split(".")
+                        # Try removing intermediate array traversals
+                        # e.g. "values.0.orders.0.customer.id" → "values.0.customer.id"
+                        for i in range(2, len(parts) - 2):
+                            shorter = ".".join(parts[:2] + parts[i + 1:])
+                            value = _resolve_value(response_payload, shorter)
+                            if value is not None:
+                                logger.info(
+                                    "Fallback path %s → %s resolved %s",
+                                    field_path, shorter, value,
+                                )
+                                break
                     if value is not None:
                         saved_vars[var_name] = value
                         logger.info("Saved %s = %s", var_name, value)
