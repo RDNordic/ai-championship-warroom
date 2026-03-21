@@ -382,6 +382,114 @@ def _fix_invoice_orders(json_body: dict[str, Any], fixes: list[str]) -> None:
             fixes.append("Injected missing 'deliveryDate' with today's date")
 
 
+def _voucher_balance_errors(json_body: dict[str, Any]) -> list[str]:
+    """Return voucher balance errors for amount and amountGross sums."""
+    postings = json_body.get("postings")
+    if not isinstance(postings, list) or len(postings) < 2:
+        return []
+
+    sum_amount = 0.0
+    sum_amount_gross = 0.0
+    has_numeric_amount = False
+    has_numeric_amount_gross = False
+
+    for posting in postings:
+        if not isinstance(posting, dict):
+            continue
+        amount = posting.get("amount")
+        amount_gross = posting.get("amountGross")
+        if isinstance(amount, (int, float)):
+            sum_amount += float(amount)
+            has_numeric_amount = True
+        if isinstance(amount_gross, (int, float)):
+            sum_amount_gross += float(amount_gross)
+            has_numeric_amount_gross = True
+
+    errors: list[str] = []
+    tolerance = 0.01
+    if has_numeric_amount and abs(sum_amount) > tolerance:
+        errors.append(f"Postings amount sum={sum_amount:.2f} does not balance to 0")
+    if has_numeric_amount_gross and abs(sum_amount_gross) > tolerance:
+        errors.append(f"Postings amountGross sum={sum_amount_gross:.2f} does not balance to 0")
+    return errors
+
+
+def _voucher_balances_in_tripletex(json_body: dict[str, Any]) -> bool:
+    """Check voucher balance using Tripletex VAT semantics."""
+    postings = json_body.get("postings")
+    if not isinstance(postings, list) or len(postings) < 2:
+        return False
+
+    effective_sum = 0.0
+    has_numeric_amounts = False
+
+    for posting in postings:
+        if not isinstance(posting, dict):
+            continue
+
+        amount = posting.get("amount")
+        if not isinstance(amount, (int, float)):
+            return False
+
+        if "vatType" in posting:
+            amount_gross = posting.get("amountGross")
+            if not isinstance(amount_gross, (int, float)):
+                return False
+            effective_sum += float(amount_gross)
+        else:
+            effective_sum += float(amount)
+        has_numeric_amounts = True
+
+    return has_numeric_amounts and abs(effective_sum) <= 0.01
+
+
+def _fix_voucher_vat_amounts(json_body: dict[str, Any], step_fixes: list[str]) -> None:
+    """Correct voucher posting net amounts when vatType rows use gross as amount."""
+    postings = json_body.get("postings")
+    if not isinstance(postings, list):
+        return
+
+    vat_rates = {
+        1: 1.25,
+        3: 1.25,
+        5: 1.15,
+        6: 1.0,
+        12: 1.15,
+        31: 1.12,
+    }
+
+    for posting in postings:
+        if not isinstance(posting, dict) or "vatType" not in posting:
+            continue
+
+        amount = posting.get("amount")
+        amount_gross = posting.get("amountGross")
+        if not isinstance(amount, (int, float)) or not isinstance(amount_gross, (int, float)):
+            continue
+        if round(float(amount), 2) != round(float(amount_gross), 2):
+            continue
+
+        vat_type = posting.get("vatType")
+        vat_type_id: int | None = None
+        if isinstance(vat_type, dict):
+            vat_id_value = vat_type.get("id")
+            if isinstance(vat_id_value, int):
+                vat_type_id = vat_id_value
+            elif isinstance(vat_id_value, str) and vat_id_value.isdigit():
+                vat_type_id = int(vat_id_value)
+        elif isinstance(vat_type, int):
+            vat_type_id = vat_type
+        elif isinstance(vat_type, str) and vat_type.isdigit():
+            vat_type_id = int(vat_type)
+
+        divisor = vat_rates.get(vat_type_id, 1.25)
+        old_amount = float(amount)
+        new_amount = round(float(amount_gross) / divisor, 2)
+        posting["amount"] = new_amount
+        posting["amountCurrency"] = new_amount
+        step_fixes.append(f"Auto-corrected VAT: amount {old_amount:.2f} -> {new_amount:.2f}")
+
+
 def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
     """Parse the LLM response into a list of step dicts."""
     text = raw_text.strip()
@@ -777,6 +885,7 @@ class LLMApiExecutor:
                     _fix_invoice_orders(json_body, step_fixes)
                 # Auto-fix voucher: inject date if missing + propagate employee refs
                 if method == "POST" and "/voucher" in path:
+                    _fix_voucher_vat_amounts(json_body, step_fixes)
                     from datetime import date as _date
                     if "date" not in json_body:
                         json_body["date"] = _date.today().isoformat()
@@ -805,6 +914,13 @@ class LLMApiExecutor:
                 json_body = schema_result.cleaned_body
                 step_fixes = schema_result.fixes_applied + step_fixes
                 step_removed = schema_result.fields_removed
+                if "/voucher" in path:
+                    balance_errors = [e for e in schema_result.errors if "does not balance" in e]
+                    if balance_errors and _voucher_balances_in_tripletex(json_body):
+                        schema_result.errors = [
+                            e for e in schema_result.errors if "does not balance" not in e
+                        ]
+                        schema_result.valid = len(schema_result.errors) == 0
                 if step_fixes:
                     all_details[f"step_{step_id}_fixes"] = step_fixes
                 if not schema_result.valid:
