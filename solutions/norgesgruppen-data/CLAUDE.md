@@ -72,14 +72,14 @@ Disk (JPEG) → cv2.imread() → BGR uint8
 3. **Copy-paste augmentation script** (`scripts/augment_copypaste.py`): GrabCut foreground extraction from 320 individual product images, inverse-frequency sampling for rare categories, 248 synthetic images with 10 pastes each
 4. **Run 2 — Augmented training** (50 epochs, 496 images): val mAP50=0.799, cls_loss=0.726 — large improvement over Run 1. Score=**0.8329**.
 5. **RGB channel investigation**: concluded not worth changing (see above)
+6. **Evaluate Run 2** — copied best.pt to submission, ran local eval, confirmed score=0.8329
 
 ### To Do Next (priority order)
 
-1. **Evaluate Run 2** — copy `runs/detect/train_aug/weights/best.pt` to `submission/best.pt`, run local eval, compare score to Run 1
-2. **Train longer (100-150 epochs)** — both Run 1 and Run 2 were still improving at epoch 50. Training longer is the easiest next gain. Use the augmented dataset.
-3. **Full-data retrain** — once best hyperparams are found, retrain on all 248 original images (val_fraction=0.0) + augmented images. Gives ~20% more real training data.
-4. **Try YOLOv8X** — larger model, more parameters for 356-class classification. May need batch=2 at 1280px to fit in 24GB VRAM.
-5. **More augmented images** — current run uses 248 synthetic images with 10 pastes. Could increase to 500+ synthetic images or 15-20 pastes per image to further boost rare categories.
-6. **Augmentation tuning** — try `mixup=0.15`, `copy_paste=0.1` (YOLO's built-in), reduce `scale` from 0.5 to 0.3 to preserve small products.
-7. **Color histogram post-processing** — use individual product reference images to re-rank/correct classification predictions by color similarity between detected crops and reference images. Acts as a classification refinement layer on top of YOLO output.
-8. **Confidence threshold sweep** — systematic sweep of inference `conf` (0.001, 0.005, 0.01, 0.05) to find optimal value for the eval metric.
+1. **Train longer (100-150 epochs)** — both Run 1 and Run 2 were still improving at epoch 50. Training longer is the easiest next gain. Use the augmented dataset.
+2. **Full-data retrain** — once best hyperparams are found, retrain on all 248 original images (val_fraction=0.0) + augmented images. Gives ~20% more real training data.
+3. **Try YOLOv8X** — larger model, more parameters for 356-class classification. May need batch=2 at 1280px to fit in 24GB VRAM.
+4. **More augmented images** — current run uses 248 synthetic images with 10 pastes. Could increase to 500+ synthetic images or 15-20 pastes per image to further boost rare categories.
+5. **Augmentation tuning** — try `mixup=0.15`, `copy_paste=0.1` (YOLO's built-in), reduce `scale` from 0.5 to 0.3 to preserve small products.
+6. **Color histogram post-processing** — use individual product reference images to re-rank/correct classification predictions by color similarity between detected crops and reference images. Acts as a classification refinement layer on top of YOLO output.
+7. **Confidence threshold sweep** — systematic sweep of inference `conf` (0.001, 0.005, 0.01, 0.05) to find optimal value for the eval metric.
