@@ -1,272 +1,316 @@
 # SESSION_HANDOFF.md
 
-## Read This First
-
-This is now the single authoritative Tripletex handoff.
-
-- Read this file first in the next chat.
-- `solutions/tripletex/next-steps.md` is intentionally only a pointer to this file.
-- Do not spend another submission until the public worker has been restarted onto current local code.
-
 ## Current State
 
-- Date: `2026-03-21`
-- Repo branch: `main`
-- Working tree: dirty, with uncommitted Tripletex changes
-- Last older confirmed leaderboard snapshot:
-  - score `5.0`
-  - rank `#221`
-  - solved `11/30`
-- Latest later user-reported submission outcomes on `2026-03-21` Oslo time:
-  - `0/14`
-  - `0/8`
+Last known leaderboard snapshot:
+- Score: `5.0`
+- Rank: `#221`
+- Solved: `11/30`
+
+Branch: `feature/tripletex-multiline-invoice`
+HEAD commit: `1429bb9`
+Working tree: dirty, with local uncommitted Tripletex changes
+
+Uncommitted files:
+- `solutions/tripletex/SESSION_HANDOFF.md`
+- `solutions/tripletex/scripts/run_prompt.py`
+- `solutions/tripletex/src/tripletex_agent/planner.py`
+- `solutions/tripletex/src/tripletex_agent/service.py`
+- `solutions/tripletex/src/tripletex_agent/workflows/__init__.py`
+- `solutions/tripletex/src/tripletex_agent/workflows/live.py`
+- `solutions/tripletex/tests/test_planner.py`
+- `solutions/tripletex/tests/test_workflows.py`
+
+Unrelated change still present:
+- `solutions/astar-island/next-steps.md`
+
+---
+
+## Critical Bug Discovered This Session — Fix Before Anything Else
+
+**The OpenAI model name in config is `gpt-5-mini`. That model does not exist.**
+
+The actual model is `gpt-4o-mini`. This means every LLM planner call is failing silently
+and the system has been running entirely on the `KeywordTaskPlanner` fallback — no LLM
+extraction at all. This is almost certainly responsible for multiple recent failures.
+
+**Fix in `config.py` or `.env` immediately:**
+```python
+openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+api_call_plan_model=os.getenv("API_CALL_PLAN_MODEL", "gpt-4o-mini")
+```
+
+Verify the fix worked by checking that a complex prompt produces a richer plan than
+the keyword fallback would generate (e.g. multi-field extraction, not just task_family).
+
+---
+
+## Architecture Review This Session
+
+This session included a full external architecture review against a set of framework
+documents built from scratch based on the OpenAPI spec, live logs, and hackathon rules.
+The documents are in `docs/` — read them before coding. See "New Framework Documents"
+section below for what was added and where.
+
+### What the review found
+
+**Architecture is correct and should not be rewritten.** The planner→workflow separation,
+`TaskPlan` schema, `FallbackPlanner`, and workflow implementations are all sound. The code
+is better than expected. Do not start from scratch.
+
+**The five real problems, in priority order:**
+
+1. **Wrong model name** — `gpt-5-mini` doesn't exist. All LLM calls are failing. (See above.)
+2. **No `temperature=0`** — Both `responses.parse()` calls in `OpenAIPlanner` and
+   `OpenAIApiCallPlanner` have no `temperature` parameter. Default is non-zero, causing
+   non-determinism. Identical prompts produce different plans. One-line fix each.
+3. **Voucher reversal planner doesn't populate lookup** — `VoucherReverseWorkflow` has the
+   correct customer→invoice→voucher chain (Path 3 in `_find_single_voucher`), but the
+   planner's `_lookup_for_extraction` for `entity_type="voucher"` returns `{}` because
+   there is no voucher-specific extraction. Customer name and org number from the prompt
+   never reach the workflow. Fix: when `primary_entity_type == "voucher"` and
+   `operation == "reverse"`, extract customer name + org number into the lookup dict
+   with keys `name` and `organizationNumber`.
+4. **Bank account mutation on every send-invoice** — `_ensure_invoice_bank_account_configured`
+   fires `GET /ledger/account` on every `sendToCustomer=True` call, and `PUT /ledger/account`
+   if no bank number is set. The GET alone costs the efficiency bonus. Test whether invoices
+   succeed without this function entirely — if the sandbox already has a configured bank
+   account, remove the call.
+5. **Department multi-name extraction missing from keyword fallback** — The `names: list[str]`
+   field exists in `DepartmentExtraction` and `DepartmentCreateWorkflow` handles it correctly,
+   but `_extract_department_payload` only extracts a single `name`. When the LLM path fails
+   (which it always has, due to wrong model name), multi-department prompts produce
+   `fields: {}` and the workflow throws. Fix the keyword extractor to parse comma/og/and
+   separated quoted department names into the `names` list.
+
+---
+
+## What Is Live-Proven (Carry Forward)
+
+These paths were confirmed working on the live public endpoint before this session:
+
+1. **Invoice payment (VAT gross-up)** — Amount stated excluding VAT is correctly grossed
+   up against `amountOutstanding` before `PUT /invoice/{id}/:payment`. Confirmed on
+   Solmar SL (46700 NOK sin IVA → 58375 gross) and Río Verde SL (22500 → 28125).
+
+2. **Invoice create-and-send** — `sendToCustomer=True` correctly set. Confirmed on
+   Fjelltopp AS (Nynorsk prompt).
+
+3. **Travel expense create** — Employee lookup, parent expense, and cost sub-resources
+   all working. Confirmed on William Wilson (EN prompt, flight + taxi + per diem).
+
+4. **Customer create** — Stable. Address fields, language, org number all working.
+
+5. **Product create** — Stable. Name, number, price all working.
+
+6. **Project create** — Customer lookup + project manager lookup + POST confirmed.
+   German prompt (Windkraft GmbH) confirmed working.
+
+---
+
+## What Is Locally Patched But Not Yet Live-Proven
+
+1. **Supplier registration** — `isSupplier=true`, `isCustomer=false` now set in planner.
+   Customer workflow forwards flags. Not yet confirmed on live endpoint after restart.
+
+2. **Supplier invoice containment** — Supplier invoice prompts now tagged `supplierInvoice=true`
+   and routed to StubWorkflow rather than misfiring into outgoing invoice path. Not yet
+   live-confirmed.
+
+3. **Order → invoice → payment** — `OrderInvoicePaymentWorkflow` is implemented and
+   mock-tested. Not yet live-proven.
+
+---
+
+## What Is Still Broken / Stubbed
+
+From log analysis (31 traces reviewed this session):
+
+| Task | Status | Root cause |
+|---|---|---|
+| Voucher reversal (bounced payment) | BROKEN | Planner lookup empty — see fix #3 above |
+| Department create (multi-dept) | BROKEN | Keyword extractor doesn't parse `names` list |
+| Supplier invoice (POST) | STUB | Not implemented, only contained |
+| Timesheet entry | STUB | StubWorkflow |
+| Set project fixed price | STUB | StubWorkflow |
+| Accounting dimension + voucher | STUB | Not classified (0.0 conf) |
+| Month-end closing | STUB | Misclassified as invoicing, Tier 3 |
+| Full project lifecycle | STUB | Not classified (0.0 conf), Tier 3 |
+| Employee from PDF | BROKEN | PDF extraction not implemented |
+
+---
+
+## New Framework Documents Added This Session
+
+A full set of architecture/domain docs was created and should be added to the repo.
+See "Merging Framework Documents" section below for how to handle conflicts.
+
+Documents created:
+- `docs/ARCHITECTURE.md` — System design, planner→workflow separation, retry logic,
+  TaskPlan schema, the three prompt-handling layers
+- `docs/TRIPLETEX_DOMAIN.md` — Domain context block (inject into LLM system prompt),
+  invoice type distinctions, voucher lifecycle, travel expense state machine, Norwegian
+  terminology, multilingual action semantics
+- `docs/SCORING.md` — Scoring mechanics, tier multipliers, efficiency bonus rules,
+  strategic priority order
+- `docs/WORKFLOWS.md` — Per-family workflow specs with confidence levels (✅/🔶/❓),
+  API sequences, known failure modes, postcondition checks
+- `docs/TASK_COVERAGE.md` — Living coverage matrix of all 31 observed task types,
+  priority implementation order, confirmed bugs from log analysis
+- `docs/TESTING_RIG.md` — Sandbox reset strategy, prompt library design, integration
+  test runner, attachment fixture generation
+
+`CLAUDE.md` (repo root for the tripletex folder) was also created — Claude Code reads
+this automatically. Contains the must-never-break rules, repo layout, current known gaps,
+and pointers to all docs.
+
+---
+
+## Merging Framework Documents
+
+The repo already has `PLAN.md`, `docs.md`, and `session_archive/` checkpoint files.
+The new docs don't replace these — they complement and extend them.
+
+**Recommended approach:**
+
+1. Keep `PLAN.md` as the operational log it already is (evidence-updated, date-stamped).
+   Do not replace it. Append a section `## 2026-03-21 Architecture Review` that links
+   to the new docs and summarises the five critical findings above.
+
+2. Add the new `docs/` files alongside whatever is already there. If `docs/` doesn't
+   exist yet, create it. If architecture files already exist there, rename the old ones
+   with a `-legacy` suffix or move them to `session_archive/` with a date prefix before
+   adding the new ones. Do not silently overwrite — the old files may have context
+   not captured in the new ones.
+
+3. Add `CLAUDE.md` at the `solutions/tripletex/` root. Claude Code reads this
+   automatically on every session. If a `CLAUDE.md` already exists, merge the contents
+   — don't overwrite.
+
+4. Commit everything together as a single commit with message:
+   `docs: add architecture framework from 2026-03-21 review session`
+
+---
 
 ## Runtime Status
 
-- Current supervisor state file says the active public endpoint is:
-  - `https://concerts-remarks-carol-display.trycloudflare.com/solve`
-- Supervisor state file:
-  - `solutions/tripletex/logs/public-endpoint-state-8003.json`
-- Supervisor log:
-  - `solutions/tripletex/logs/public-supervisor-8003.stdout.log`
-- Live service log:
-  - `solutions/tripletex/logs/public-uvicorn-8003.log`
-- Solve trace log:
-  - `solutions/tripletex/logs/solve-events.jsonl`
+At last handoff:
+- Local health `http://127.0.0.1:8000/health`: `200`
+- Public endpoint: `https://newspapers-reform-walking-embassy.trycloudflare.com/solve`
+- Public health: `200`
+- 54 targeted tests passing (`test_planner.py`, `test_workflows.py`)
+- Full pytest blocked by Windows temp ACL issue (`.tmp`, `.pytest-tmp` folders)
 
-Important:
+Latest live failure traces:
+- Voucher reversal: `44e888d3` — empty lookup, workflow dies before first API call
+- Proxy 403: `77082f85` — transient, same endpoint worked in same window
 
-- the tunnel is not the current blocker
-- the current blocker is stale deployed runtime behavior
-- the currently running public worker is behind the current local code
+---
 
-## What Is Proven Locally
+## Immediate Next Steps (Ordered)
 
-Current narrow gate:
+**Do these before any competition submission:**
 
-```powershell
-cd solutions/tripletex
-.\.venv\Scripts\python.exe -m pytest -q tests\test_planner.py tests\test_workflows.py tests\test_api_call_planner.py --basetemp "C:\Users\John Brown\.codex\memories\tripletex-pytest-run"
-.\.venv\Scripts\python.exe scripts\replay_prompt_fixtures.py --keyword-only
+```
+1. Fix model name: gpt-5-mini → gpt-4o-mini in config.py or .env
+   Verify: run a complex prompt through run_prompt.py and confirm LLM extraction works
+
+2. Add temperature=0 to both responses.parse() calls:
+   - planner.py: OpenAIPlanner.plan()
+   - api_call_planner.py: OpenAIApiCallPlanner.plan()
+
+3. Fix voucher reversal planner extraction:
+   - When primary_entity_type == "voucher" and operation == "reverse"
+   - Extract customer name + org number from prompt into lookup dict
+   - Keys: "name" and "organizationNumber"
+   - The workflow's Path 3 lookup chain already handles these correctly
+
+4. Run narrow test gate:
+   .venv/Scripts/pytest -q tests/test_planner.py tests/test_workflows.py
+
+5. Submit once, inspect logs immediately
+   - Watch for voucher reversal prompt — should now reach Path 3 lookup
+   - Watch for any LLM extraction evidence in planned events (richer than keyword output)
 ```
 
-Results:
+**After confirming fixes work on live:**
 
-- `66 passed`
-- replay fixtures pass for:
-  - supplier invoice containment
-  - voucher reversal lookup extraction
-  - project-lifecycle fail-closed
-  - month-end fail-closed
-  - attachment-led employee onboarding fail-closed
+```
+6. Fix bank account mutation:
+   - Test POST /invoice?sendToCustomer=true in sandbox WITHOUT _ensure_invoice_bank_account_configured
+   - If it works, remove the GET /ledger/account + PUT /ledger/account calls entirely
+   - This recovers the efficiency bonus on all send-invoice tasks
 
-Local planner behavior now intentionally fail-closes these unsupported families:
+7. Fix department multi-name extraction in keyword fallback:
+   - _extract_department_payload should parse comma/og/and separated quoted names
+   - Populate the "names" list field, not just "name"
 
-1. project lifecycle / project delivery compound prompts
-2. month-end / period-close prompts
-3. attachment-led employee onboarding prompts that depend on PDF offer-letter contents
+8. Implement supplier invoice workflow:
+   - POST /incomingInvoice or /supplierInvoice
+   - Approval → payment chain
+   - Currently only contained as StubWorkflow
 
-Practical meaning:
+9. Implement timesheet entry:
+   - POST /timesheet/entry
+   - Employee + project + activity + date + hours
+   - Currently StubWorkflow
 
-- these families should now route to `unknown` / `StubWorkflow`
-- they should not hit live write workflows on the current local code
-
-## What Is Still Live-Proven Good
-
-1. Invoice payment with amount stated excluding VAT
-2. Invoice create-and-send
-3. Travel expense creation
-4. Basic customer creation
-5. Basic product creation
-
-These were proven in earlier live traces and are still the stable base.
-
-## Most Important New Live Traces
-
-### 1. Employee Onboarding Via PDF Hit Old Worker Behavior
-
-- `trace_id=c24268f2-b7c5-4fb8-9ce7-db3525b2770a`
-- received at `2026-03-21 13:48` Oslo time
-
-Prompt family:
-
-- Portuguese
-- attachment-led employee onboarding
-- PDF offer letter referenced
-- create employee
-- assign department
-- configure employment percentage
-- configure annual salary
-- configure standard working hours
-
-Observed live behavior:
-
-- planned to `EmployeeCreateWorkflow`
-- extracted only a generic `comments` field about the PDF
-- failed before any Tripletex API call with:
-  - `Employee creation requires firstName`
-
-Meaning:
-
-- the public worker was still serving old code after the local fail-closed patch existed
-- this is direct evidence of stale runtime, not just a planner-quality problem
-
-### 2. Order -> Invoice -> Payment Still Misroutes Live
-
-- `trace_id=702235e7-9398-4473-9da3-7936ab79814c`
-- received at `2026-03-21 14:00` Oslo time
-
-Prompt:
-
-```text
-Opprett en ordre for kunden Stormberg AS (org.nr 870531559) med produktene Vedlikehold (4665) til 35200 kr og Systemutvikling (7431) til 4400 kr. Konverter ordren til faktura og registrer full betaling.
+10. Add domain context block to LLM system prompt:
+    - The full block is in docs/TRIPLETEX_DOMAIN.md under "System prompt context block"
+    - Add it to the _SYSTEM_PROMPT string in planner.py
+    - This hardens description vs productLookup, invoice type disambiguation,
+      multilingual action semantics, and Norwegian terminology
 ```
 
-Observed live behavior:
+**Consider for Tier 3 (only after Tier 1/2 stable):**
+- Accounting dimension + voucher (`/ledger/accountingDimensionName` + `/ledger/voucher`)
+- Bank reconciliation from CSV attachment
 
-- planned to `InvoicePaymentWorkflow`
-- operation became `register_payment`
-- order creation and invoice creation steps were lost
-- API calls:
-  - `GET /customer` -> matched Stormberg AS
-  - `GET /invoice` -> no results
-- failed with:
-  - `No invoice matched lookup {'customerLookup': {'customerName': 'Stormberg AS', 'organizationNumber': '870531559'}}`
-
-Meaning:
-
-- `order -> invoice -> payment` is still not live-proven
-- the live worker did not use the intended local route for this family
-- this is another sign the public worker is stale
-
-### 3. Older But Still Relevant Live Traces
-
-- `8ce83963-d7d7-4d55-ae1d-ecdd2e5d18e7`
-  - French project-lifecycle prompt
-  - old live worker degraded into invoice/supplier containment
-- `68855094-7ec9-4302-8da7-576c0afa7b6b`
-  - German month-end close
-  - old live worker degraded into `InvoiceCreateWorkflow`
-- `44e888d3-38c8-4b46-94d9-352b2280b179`
-  - voucher reversal
-  - old live worker lost lookup and failed before Tripletex API call
-
-These are still relevant as regression targets, but the immediate operational issue is stale deployment.
-
-## Current Highest-Priority Problems
-
-1. The live public worker is stale.
-2. The latest submissions were spent against code that does not match current local patches.
-3. `order -> invoice -> payment` still is not live-proven.
-4. Voucher reversal is still only partially validated live.
-5. Attachment/PDF tasks are only contained, not solved.
-
-## Current Objective
-
-Do not do more local planner work first.
-
-The next objective is:
-
-1. restart the public worker onto the current local code
-2. re-check local and public health
-3. submit once
-4. inspect `solve-events.jsonl` immediately
-
-## What The Next Submission Must Validate
-
-On the first fresh post-restart traces, verify:
-
-1. employee PDF onboarding now fails closed to `unknown` / `StubWorkflow`
-2. project-lifecycle prompts fail closed
-3. month-end close prompts fail closed
-4. `order -> invoice -> payment` routes to `OrderInvoicePaymentWorkflow`
-
-If `order -> invoice -> payment` still misroutes after restart, then it becomes the next code-fix target.
-
-## Recommended Action Sequence
-
-1. Restart the public worker.
-   - Do not assume the current uvicorn process picked up local edits.
-
-2. Re-check health.
-
-```powershell
-Invoke-WebRequest http://127.0.0.1:8003/health
-Invoke-WebRequest https://concerts-remarks-carol-display.trycloudflare.com/health
-```
-
-3. Re-run the narrow local gate if needed.
-
-4. Submit once.
-
-5. Inspect logs immediately.
-
-```powershell
-cd solutions/tripletex
-.\.venv\Scripts\python.exe scripts\inspect_solve_logs.py recent --limit 20
-Get-Content logs\public-uvicorn-8003.log -Tail 120
-```
+---
 
 ## Key Files
 
-- planner: `solutions/tripletex/src/tripletex_agent/planner.py`
-- workflows: `solutions/tripletex/src/tripletex_agent/workflows/live.py`
-- service: `solutions/tripletex/src/tripletex_agent/service.py`
-- replay harness: `solutions/tripletex/scripts/replay_prompt_fixtures.py`
-- replay fixtures: `solutions/tripletex/fixtures/replay_prompt_fixtures.json`
-- public endpoint supervisor: `solutions/tripletex/scripts/run_public_endpoint.py`
-- solve trace log: `solutions/tripletex/logs/solve-events.jsonl`
-- live service log: `solutions/tripletex/logs/public-uvicorn-8003.log`
+- Planner: `src/tripletex_agent/planner.py`
+  - `OpenAIPlanner.plan()` — add `temperature=0`, fix model name
+  - `_SYSTEM_PROMPT` — add domain context block from `docs/TRIPLETEX_DOMAIN.md`
+  - `_lookup_for_extraction` — fix voucher lookup population
+- Workflows: `src/tripletex_agent/workflows/live.py`
+  - `_ensure_invoice_bank_account_configured` — remove or gate more tightly
+  - `VoucherReverseWorkflow` — already correct, needs planner fix to feed it
+- Config: `src/tripletex_agent/config.py` — fix model name default
+- `.env` — check `OPENAI_MODEL` value
+- New docs: `docs/ARCHITECTURE.md`, `docs/TRIPLETEX_DOMAIN.md`, `docs/SCORING.md`,
+  `docs/WORKFLOWS.md`, `docs/TASK_COVERAGE.md`, `docs/TESTING_RIG.md`
+- New root context: `CLAUDE.md`
+- Logs: `logs/solve-events.jsonl` (31 traces analysed this session)
+- Tests: `tests/test_planner.py`, `tests/test_workflows.py`
 
-## What Is Assumed
+---
 
-- the current tunnel URL remains live until the current `cloudflared` process dies
-- the current local code is the desired version to deploy
-- the stale behavior is from an old worker process, not from missing local edits
-
-## Do Not Spend Time On
-
-- blaming the tunnel by default
-- broad new unsupported feature work before restarting the worker
-- implementing full PDF extraction right now
-- reading both handoff files; this file is enough
-
-## Restart Prompt
+## Restart Prompt for Claude Code
 
 ```text
-Read solutions/tripletex/SESSION_HANDOFF.md first. Do not read next-steps.md for detail; it is only a pointer.
+Branch: feature/tripletex-multiline-invoice
+HEAD: 1429bb9
+Working tree is dirty. Read SESSION_HANDOFF.md and docs/CLAUDE.md first.
 
-Current state:
-- Latest later user-reported runs on 2026-03-21 Oslo time: 0/14, then 0/8
-- Current public endpoint in the supervisor state file:
-  https://concerts-remarks-carol-display.trycloudflare.com/solve
-- Tunnel health is not the blocker
-- The blocker is stale public worker behavior relative to local code
-- Local narrow gate passes with 66 tests
-- Local replay fixtures pass for:
-  - project lifecycle fail-closed
-  - month-end fail-closed
-  - employee PDF onboarding fail-closed
+CRITICAL: The OpenAI model name in config is "gpt-5-mini" which doesn't exist.
+Fix to "gpt-4o-mini" before anything else. This has been silently breaking all
+LLM extraction — the system has been running on keyword fallback only.
 
-Most important live traces:
-- c24268f2-b7c5-4fb8-9ce7-db3525b2770a
-  - Portuguese PDF-led employee onboarding
-  - live worker routed to EmployeeCreateWorkflow
-  - failed with Employee creation requires firstName
+After fixing the model name, the next three fixes in order:
+1. Add temperature=0 to both responses.parse() calls in planner.py and api_call_planner.py
+2. Fix voucher reversal planner lookup (see SESSION_HANDOFF.md fix #3)
+3. Run pytest -q tests/test_planner.py tests/test_workflows.py
 
-- 702235e7-9398-4473-9da3-7936ab79814c
-  - Norwegian order -> invoice -> payment
-  - live worker routed to InvoicePaymentWorkflow
-  - it only did GET /customer then GET /invoice
-  - failed with No invoice matched lookup ...
+Do not submit to the competition until all three are done and tests pass.
 
-Goal for this chat:
-- restart the public worker onto current local code
-- re-check health
-- submit once
-- inspect fresh traces immediately
-- confirm whether:
-  - employee PDF onboarding now fails closed
-  - project/month-end now fail closed
-  - order -> invoice -> payment routes to OrderInvoicePaymentWorkflow
+What is live-proven working: invoice payment (VAT gross-up), invoice create-and-send,
+travel expense create, customer create, product create, project create.
+
+What is broken: voucher reversal (empty lookup), department create (multi-name),
+supplier invoice (only contained), PDF extraction (not implemented).
+
+New architecture docs are in docs/ — these are the ground truth for design decisions.
+PLAN.md remains the operational log — append to it, do not replace it.
 ```
