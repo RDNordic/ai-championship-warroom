@@ -144,6 +144,27 @@ For posting expense receipts (kvittering) paid by employee/company card:
 - Sum of amount must = 0: net + (-gross) ≠ 0, so you MUST include vatType \
   on Row 1 so Tripletex auto-handles the VAT difference
 
+## Salary / Payroll (Lønnskjøring)
+For payroll processing, create a voucher with MULTIPLE postings:
+1. GET /employee (by email/name) to find employee ID
+2. GET /ledger/account?number=5000 → Lønn til ansatte (salary expense)
+3. GET /ledger/account?number=1920 → Bankinnskudd (bank, for net pay)
+4. POST /ledger/voucher with these postings:
+  Row 1: account 5000, DEBIT gross salary (amount=gross, amountGross=gross)
+  Row 2: account 2780, CREDIT tax withholding ~30% of gross \
+    (amount=-tax, amountGross=-tax). Forskuddstrekk.
+  Row 3: account 2770, CREDIT employer social security ~14.1% of gross \
+    (amount=-aga, amountGross=-aga). Skyldig arbeidsgiveravgift.
+  Row 4: account 5400, DEBIT employer social security expense ~14.1% of gross \
+    (amount=aga, amountGross=aga). Arbeidsgiveravgift.
+  Row 5: account 1920, CREDIT net pay = gross - tax \
+    (amount=-net, amountGross=-net)
+- EVERY posting MUST include employee:{{"id":$emp_id}}
+- All amounts are NOK, no vatType on any posting
+- Postings MUST balance: gross - tax - aga + aga - net = 0 \
+  (i.e., gross - tax - net = 0, so net = gross - tax)
+- If bonus is mentioned, add it to gross salary in posting 1
+
 ## Timesheet Entry
 1. GET /employee (by email or name) to find employee ID.
 2. GET /project (by name or customer) to find project ID.
