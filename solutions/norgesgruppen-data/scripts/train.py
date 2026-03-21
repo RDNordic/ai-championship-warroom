@@ -221,6 +221,8 @@ def main() -> None:
                         help="Resume training from last checkpoint")
     parser.add_argument("--augmented", action="store_true",
                         help="Use augmented data from data/train_augmented/")
+    parser.add_argument("--tiled", action="store_true",
+                        help="Use tiled data from data/train_tiled/ (or train_tiled_augmented/ with --augmented)")
     parser.add_argument("--project", type=str, default="runs/detect",
                         help="Project directory for outputs")
     parser.add_argument("--name", type=str, default="train",
@@ -229,7 +231,13 @@ def main() -> None:
 
     project_dir = Path(__file__).resolve().parent.parent
 
-    if args.augmented:
+    if args.tiled and args.augmented:
+        annotations_path = project_dir / "data" / "train_tiled_augmented" / "annotations.json"
+        images_dir = project_dir / "data" / "train_tiled_augmented" / "images"
+    elif args.tiled:
+        annotations_path = project_dir / "data" / "train_tiled" / "annotations.json"
+        images_dir = project_dir / "data" / "train_tiled" / "images"
+    elif args.augmented:
         annotations_path = project_dir / "data" / "train_augmented" / "annotations.json"
         images_dir = project_dir / "data" / "train_augmented" / "images"
     else:
@@ -238,7 +246,9 @@ def main() -> None:
 
     if not annotations_path.exists():
         print(f"ERROR: annotations not found at {annotations_path}")
-        if args.augmented:
+        if args.tiled:
+            print("Run: python scripts/tile_dataset.py" + (" --augmented" if args.augmented else ""))
+        elif args.augmented:
             print("Run: python scripts/augment_copypaste.py")
         raise SystemExit(1)
 
