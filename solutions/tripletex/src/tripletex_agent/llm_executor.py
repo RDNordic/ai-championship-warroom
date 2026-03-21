@@ -763,8 +763,8 @@ class LLMApiExecutor:
                     "fields_removed": step_removed,
                 }
             except Exception as exc:
-                error_msg = str(exc)
-                logger.error("Step %s failed: %s", step_id, exc)
+                error_msg = str(exc) or f"{type(exc).__name__}: {repr(exc)}"
+                logger.error("Step %s failed (%s): %s", step_id, type(exc).__name__, repr(exc))
                 all_details[f"step_{step_id}_error"] = error_msg
                 executed_operations.append(f"{method} {path} [FAILED]")
                 return {
