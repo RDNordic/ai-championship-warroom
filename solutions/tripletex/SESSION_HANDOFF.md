@@ -1,10 +1,10 @@
 # SESSION_HANDOFF.md
 
-## Checkpoint (2026-03-21 ~22:30 CET)
+## Checkpoint (2026-03-21 ~23:10 CET)
 
-Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hitting 8/8 on simple/medium tasks. Strategy: queue 3 runs at a time, fix root causes in bulk. 17 fixes deployed.
+**Total score: 42.2 (leaderboard best: 48.8). Target: 60-80.**
 
-**Current best scores: 8/8 consistently. Tasks we ace: employee, customer, product, department, project, invoice, credit note, timesheet+invoice, agio/exchange rate. Remaining gap: voucher/expense VAT math.**
+Simple/medium tasks banked (8/8 consistently). Now attacking voucher/expense tasks which are the biggest remaining point pool (~25-30 pts). VAT auto-correction fix just deployed — should unblock supplier invoices + expense receipts. 18 fixes deployed.
 
 **Branch: `tripletex/complex-multi-step-project`**
 
@@ -54,6 +54,13 @@ Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hit
 | 22:12 | 0/10, 0/13, 2/8 | Voucher VAT math failures |
 | 22:17 | 0/10, 2/10, 0/13 | Same pattern |
 | 22:29 | 8/8, 8/8, 0/13 | Back on track, dept fallback + employee inject working |
+| 22:41 | 7/7, 0/10, 7/7 | Farming |
+| 22:46 | 6/6, 0/10, 7/7 | Farming |
+| 22:54 | 2/10, 0/8, 5.5/8 | VAT fix not triggering yet |
+| 22:59 | 5.5/8, 7/7, 6.5/8, 18/22, 0/14 | 18/22 huge! |
+| 23:05 | 0/14, 0/10, 0/10 | Bad task draw, all hard types |
+
+**Total sum of best-per-task: 42.2 | Leaderboard: 48.8**
 
 ## What Works
 
@@ -90,6 +97,7 @@ Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hit
 15. **Auto-fallback on empty entity lookups** — department/employee/account GETs that return empty auto-retry with broader params (any dept, any employee, query search).
 16. **Account lookup recipe in system prompt** — common 4-digit Norwegian account numbers to prevent hallucinated 5-digit numbers.
 17. **Auto-inject employee refs into voucher postings** — propagates employee ref across all postings, or finds one from saved_vars. Fixes 'Ansatt mangler' errors.
+18. **VAT auto-correction on voucher postings** — always recalculates amount=amountGross/divisor for vatType postings and amount=amountGross for non-vatType. Fixes the most common voucher balance error. JUST DEPLOYED — not yet scored.
 
 ## All Fixes Deployed and Scoring
 
