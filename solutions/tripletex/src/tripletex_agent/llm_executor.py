@@ -18,7 +18,12 @@ from .schema_validator import SchemaValidator
 from .swagger_tools import SWAGGER_TOOLS, SwaggerQueryService
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
+
 from .workflows.base import WorkflowResult
+
+# Retry config for transient Anthropic API errors (529 overloaded, 503 unavailable)
+_LLM_MAX_RETRIES = 3
+_LLM_RETRY_BASE_DELAY = 2.0  # seconds
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,11 @@ RULES:
 - GET list responses: "values" array → "values.0.id". \
 Single responses: "value" object → "value.id".
 - Do NOT send read-only fields.
+- CRITICAL: Numbers in parentheses like "Produkt (5664)" are product NUMBERS, \
+not IDs. Always GET /product?number=5664 first to get the actual ID. \
+Same for employee numbers, department numbers, etc. Never use a number as an ID.
+- save_response_fields_as format: {{"my_var": "value.id"}} — key is your variable \
+name, value is the dot-path into the response. For lists: "values.0.id".
 
 RECIPES:
 
@@ -74,9 +84,20 @@ GET /invoice REQUIRES invoiceDateFrom + invoiceDateTo.
 ## Invoice Credit Note
 CRITICAL: PUT /invoice/{{id}}/:createCreditNote uses QUERY PARAMS (date, sendToCustomer).
 
-## Ledger Voucher
-Postings: row starts at 1 (NOT 0). All amount fields must match. \
-1500-accounts need customer ref. 2400-accounts need supplier ref.
+## Ledger Voucher (Journal Entry)
+CRITICAL posting rules:
+- row: starts at 1, NOT 0
+- EVERY posting MUST have ALL FOUR amount fields:
+  amount (net excl VAT), amountCurrency (=amount for NOK), \
+  amountGross (gross incl VAT), amountGrossCurrency (=amountGross for NOK)
+- Do NOT use amountVatCurrency — this field does not exist
+- For postings WITH vatType: amount=net, amountGross=gross (net+VAT)
+- For postings WITHOUT vatType: amount=amountGross (same value)
+- Postings MUST balance: sum of all amount fields = 0
+- 1500-accounts need customer ref. 2400-accounts need supplier ref.
+- Example: supplier invoice 10000 NOK + 25% VAT = 12500 gross:
+  Row 1 (expense): amount=10000, amountGross=12500, vatType:{{"id":3}}
+  Row 2 (payable): amount=-12500, amountGross=-12500, supplier:{{"id":$id}}
 
 WORKFLOW:
 1. Look up schemas for the 2-3 POST/PUT endpoints you need (use lookup_endpoint).
@@ -195,6 +216,74 @@ def _substitute_vars(obj: Any, saved_vars: dict[str, Any]) -> Any:
     if isinstance(obj, list):
         return [_substitute_vars(item, saved_vars) for item in obj]
     return obj
+
+
+def _call_anthropic_with_retry(client: Any, **kwargs: Any) -> Any:
+    """Call the Anthropic API with retry on transient errors (529, 503)."""
+    import time as _time
+
+    last_exc = None
+    for attempt in range(_LLM_MAX_RETRIES):
+        try:
+            return client.messages.create(**kwargs)
+        except Exception as exc:
+            exc_str = str(exc)
+            if "529" in exc_str or "overloaded" in exc_str.lower() or "503" in exc_str:
+                last_exc = exc
+                delay = _LLM_RETRY_BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "Anthropic API transient error (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1, _LLM_MAX_RETRIES, delay, exc_str[:100],
+                )
+                _time.sleep(delay)
+            else:
+                raise
+    raise last_exc  # type: ignore[misc]
+
+
+def _find_unresolved_vars(
+    path: Any, params: Any, json_body: Any
+) -> list[str]:
+    """Find any $variable references that weren't substituted."""
+    import re as _re
+    unresolved: list[str] = []
+
+    def _scan(obj: Any) -> None:
+        if isinstance(obj, str):
+            for match in _re.findall(r'\$([a-zA-Z_][a-zA-Z0-9_]*)', obj):
+                unresolved.append(f"${match}")
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                _scan(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _scan(item)
+
+    _scan(path)
+    _scan(params)
+    _scan(json_body)
+    return unresolved
+
+
+def _normalize_save_fields(save_fields: dict[str, str]) -> dict[str, str]:
+    """Fix inverted save_response_fields_as mappings.
+
+    Correct format: {"my_var_name": "value.id"}
+    Inverted format: {"value.id": "my_var_name"}
+
+    Heuristic: if the key contains a dot (like "value.id" or "values.0.id"),
+    it's probably a response path that should be the value, not the key.
+    """
+    normalized = {}
+    for key, val in save_fields.items():
+        if not isinstance(val, str):
+            normalized[key] = str(val)
+        elif "." in key and "." not in val:
+            # Key looks like a path, value looks like a var name → flip
+            normalized[val] = key
+        else:
+            normalized[key] = val
+    return normalized
 
 
 def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
@@ -358,7 +447,7 @@ class LLMApiExecutor:
         # Phase 1: Haiku does the tool calling (fast, cheap)
         tool_messages = list(messages)
         for round_num in range(_MAX_TOOL_ROUNDS):
-            response = self._client.messages.create(
+            response = _call_anthropic_with_retry(self._client,
                 model=self._tool_model,
                 max_tokens=4096,
                 system=system_prompt,
@@ -431,7 +520,7 @@ class LLMApiExecutor:
             {"role": "user", "content": generation_content}
         ]
 
-        response = self._client.messages.create(
+        response = _call_anthropic_with_retry(self._client,
             model=self._executor_model,
             max_tokens=4096,
             system=system_prompt,
@@ -508,6 +597,31 @@ class LLMApiExecutor:
             if json_body:
                 json_body = _substitute_vars(json_body, saved_vars)
 
+            # Strip empty dicts — LLM sometimes generates {} instead of null
+            if isinstance(params, dict) and not params:
+                params = None
+            if isinstance(json_body, dict) and not json_body:
+                json_body = None
+            # Never send json_body on GET/DELETE — proxies reject it
+            if method in ("GET", "DELETE"):
+                json_body = None
+
+            # Check for unresolved $variable references — don't send if found
+            unresolved = _find_unresolved_vars(path, params, json_body)
+            if unresolved:
+                error_msg = f"Unresolved variables: {unresolved}. Saved vars: {list(saved_vars.keys())}"
+                logger.error("Step %s has unresolved vars — skipping: %s", step_id, error_msg)
+                all_details[f"step_{step_id}_error"] = error_msg
+                executed_operations.append(f"{method} {path} [SKIPPED: unresolved vars]")
+                return {
+                    "step_id": str(step_id),
+                    "method": method,
+                    "path": path,
+                    "error": error_msg,
+                    "auto_fixes": step_fixes,
+                    "fields_removed": step_removed,
+                }
+
             # Validate and clean json_body against swagger schema
             step_fixes: list[str] = []
             step_removed: list[str] = []
@@ -524,13 +638,15 @@ class LLMApiExecutor:
                     all_details[f"step_{step_id}_validation_warnings"] = schema_result.errors
 
             logger.info(
-                "Executing step %s: %s %s params=%s body_keys=%s",
+                ">>> Step %s REQUEST: %s %s params=%s body=%s",
                 step_id,
                 method,
                 path,
-                list(params.keys()) if params else None,
-                list(json_body.keys()) if isinstance(json_body, dict) else None,
+                json.dumps(params, ensure_ascii=False, default=str) if params else None,
+                json.dumps(json_body, ensure_ascii=False, default=str) if json_body else None,
             )
+            if step_fixes:
+                logger.info("    Auto-fixes applied: %s", step_fixes)
 
             try:
                 response_payload = await tripletex_client.request(
@@ -576,10 +692,20 @@ class LLMApiExecutor:
                     "fields_removed": step_removed,
                 }
 
+            # Log the response (truncate large responses)
+            response_str = json.dumps(response_payload, ensure_ascii=False, default=str)
+            if len(response_str) > 1000:
+                response_str = response_str[:1000] + "... (truncated)"
+            logger.info("<<< Step %s RESPONSE: %s", step_id, response_str)
+
             executed_operations.append(f"{method} {path}")
             all_details["steps_executed"] = all_details.get("steps_executed", 0) + 1
 
             if save_fields and isinstance(save_fields, dict) and response_payload:
+                # Auto-detect inverted save_response_fields_as
+                # Correct: {"my_var": "value.id"}
+                # Inverted: {"value.id": "my_var"}
+                save_fields = _normalize_save_fields(save_fields)
                 for var_name, field_path in save_fields.items():
                     value = _resolve_value(response_payload, field_path)
                     if value is not None:
@@ -635,15 +761,23 @@ class LLMApiExecutor:
             remaining_steps=json.dumps(remaining_steps, indent=2),
         )
 
-        # For correction, use a simple message without tools
-        # (the LLM already has the schema from the correction prompt)
+        # Include original user content (with attachments like PDFs)
+        # so the LLM can still access extracted data during correction.
+        original_content = messages[0]["content"]
+        if isinstance(original_content, list):
+            correction_content = list(original_content) + [
+                {"type": "text", "text": correction_prompt}
+            ]
+        else:
+            correction_content = f"{original_content}\n\n{correction_prompt}"
+
         correction_messages: list[dict[str, Any]] = [
-            {"role": "user", "content": correction_prompt},
+            {"role": "user", "content": correction_content},
         ]
 
         logger.info("Requesting LLM correction for step %s", failed_step_id)
 
-        response = self._client.messages.create(
+        response = _call_anthropic_with_retry(self._client,
             model=self._executor_model,
             max_tokens=4096,
             system=system_prompt,

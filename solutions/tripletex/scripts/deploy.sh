@@ -2,17 +2,48 @@
 # Build, deploy, and capture logs for the Tripletex agent.
 # Usage: ./scripts/deploy.sh
 #
+# Reads env vars from .env file at the root of the tripletex folder.
 # After deploy, run a scoring batch on app.ainm.no, then:
 #   ./scripts/capture_logs.sh
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PROJECT=nmiai-490717
-REGION=europe-north1
-IMAGE=europe-north1-docker.pkg.dev/$PROJECT/tripletex/tripletex-agent:latest
-SERVICE=tripletex-agent
-ANTHROPIC_KEY="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"
+# Load .env file if it exists
+if [ -f .env ]; then
+  echo "=== Loading .env ==="
+  set -a
+  source .env
+  set +a
+else
+  echo "WARNING: No .env file found. Create one from .env.example"
+  echo "Expected at: $(pwd)/.env"
+  exit 1
+fi
+
+PROJECT="${GCP_PROJECT:-nmiai-490717}"
+REGION="${GCP_REGION:-europe-north1}"
+IMAGE="$REGION-docker.pkg.dev/$PROJECT/tripletex/tripletex-agent:latest"
+SERVICE="${CLOUD_RUN_SERVICE:-tripletex-agent}"
+
+# Build comma-separated env vars for Cloud Run from .env
+# Include all vars except GCP/deployment-specific ones
+ENV_VARS=""
+while IFS='=' read -r key value; do
+  # Skip comments, empty lines, and deployment-specific vars
+  [[ -z "$key" || "$key" =~ ^# ]] && continue
+  [[ "$key" =~ ^(GCP_PROJECT|GCP_REGION|CLOUD_RUN_SERVICE)$ ]] && continue
+  # Strip quotes from value
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  if [ -n "$ENV_VARS" ]; then
+    ENV_VARS="$ENV_VARS,$key=$value"
+  else
+    ENV_VARS="$key=$value"
+  fi
+done < .env
 
 echo "=== Building image ==="
 gcloud builds submit --tag "$IMAGE" --region="$REGION" .
@@ -22,7 +53,7 @@ echo "=== Deploying to Cloud Run ==="
 gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --region "$REGION" \
-  --set-env-vars "ANTHROPIC_API_KEY=$ANTHROPIC_KEY,SOLVE_EVENT_LOG_PATH=/tmp/solve-events.jsonl"
+  --set-env-vars "$ENV_VARS"
 
 echo ""
 echo "=== Clearing old logs ==="
