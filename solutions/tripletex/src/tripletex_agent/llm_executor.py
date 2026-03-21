@@ -775,11 +775,30 @@ class LLMApiExecutor:
                 # Auto-fix invoice orders: inject required date fields
                 if method == "POST" and "/invoice" in path:
                     _fix_invoice_orders(json_body, step_fixes)
-                # Auto-fix voucher: inject date if missing
-                if method == "POST" and "/voucher" in path and "date" not in json_body:
+                # Auto-fix voucher: inject date if missing + propagate employee refs
+                if method == "POST" and "/voucher" in path:
                     from datetime import date as _date
-                    json_body["date"] = _date.today().isoformat()
-                    step_fixes.append("Injected missing 'date' field with today's date")
+                    if "date" not in json_body:
+                        json_body["date"] = _date.today().isoformat()
+                        step_fixes.append("Injected missing 'date' field with today's date")
+                    # Auto-inject employee ref across all postings if any have it
+                    postings = json_body.get("postings")
+                    if isinstance(postings, list):
+                        emp_refs = [p.get("employee") for p in postings if isinstance(p, dict) and p.get("employee")]
+                        if emp_refs:
+                            for p in postings:
+                                if isinstance(p, dict) and not p.get("employee"):
+                                    p["employee"] = emp_refs[0]
+                                    step_fixes.append("Propagated employee ref to posting")
+                        elif not emp_refs and saved_vars:
+                            # No employee on any posting — try to find one from saved vars
+                            for vname, vid in saved_vars.items():
+                                if "employee" in vname or "emp" in vname:
+                                    for p in postings:
+                                        if isinstance(p, dict) and not p.get("employee"):
+                                            p["employee"] = {"id": int(vid) if str(vid).isdigit() else vid}
+                                            step_fixes.append(f"Injected employee from ${vname}")
+                                    break
                 schema_result = self._schema_validator.validate_and_clean(
                     method, path, json_body
                 )
