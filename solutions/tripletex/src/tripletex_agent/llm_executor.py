@@ -333,6 +333,24 @@ def _normalize_save_fields(save_fields: dict[str, str]) -> dict[str, str]:
     return normalized
 
 
+def _fix_invoice_orders(json_body: dict[str, Any], fixes: list[str]) -> None:
+    """Inject required orderDate/deliveryDate into invoice order objects."""
+    from datetime import date as _date
+    today = _date.today().isoformat()
+    orders = json_body.get("orders")
+    if not isinstance(orders, list):
+        return
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        if "orderDate" not in order:
+            order["orderDate"] = today
+            fixes.append("Injected missing 'orderDate' with today's date")
+        if "deliveryDate" not in order:
+            order["deliveryDate"] = today
+            fixes.append("Injected missing 'deliveryDate' with today's date")
+
+
 def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
     """Parse the LLM response into a list of step dicts."""
     text = raw_text.strip()
@@ -723,11 +741,19 @@ class LLMApiExecutor:
                     "fields_removed": step_removed,
                 }
             if json_body and isinstance(json_body, dict) and method in ("POST", "PUT"):
+                # Auto-fix invoice orders: inject required date fields
+                if method == "POST" and "/invoice" in path:
+                    _fix_invoice_orders(json_body, step_fixes)
+                # Auto-fix voucher: inject date if missing
+                if method == "POST" and "/voucher" in path and "date" not in json_body:
+                    from datetime import date as _date
+                    json_body["date"] = _date.today().isoformat()
+                    step_fixes.append("Injected missing 'date' field with today's date")
                 schema_result = self._schema_validator.validate_and_clean(
                     method, path, json_body
                 )
                 json_body = schema_result.cleaned_body
-                step_fixes = schema_result.fixes_applied
+                step_fixes = schema_result.fixes_applied + step_fixes
                 step_removed = schema_result.fields_removed
                 if step_fixes:
                     all_details[f"step_{step_id}_fixes"] = step_fixes
