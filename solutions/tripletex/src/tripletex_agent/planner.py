@@ -235,7 +235,42 @@ class KeywordTaskPlanner:
     """A conservative keyword-based fallback used when LLM planning is unavailable."""
 
     _rules = (
-        # Travel expenses first — prompts often contain "ansatt"/"kunde" substrings
+        # Out-of-scope tasks — must come before specific workflow rules
+        # so they get routed to unknown → LLM executor.
+        IntentRule(
+            TaskFamily.UNKNOWN,
+            Operation.UNKNOWN,
+            "unknown",
+            (
+                # Supplier invoices
+                "leverandørfaktura",
+                "leverandorfaktura",
+                "supplier invoice",
+                "vendor invoice",
+                "mottatt faktura",
+                "innkjøpsfaktura",
+                "innkjopsfaktura",
+                "inngående mva",
+                "inngaende mva",
+                "fra leverandør",
+                "fra leverandor",
+                # Payment reversals (not credit notes)
+                "reverse the payment",
+                "reverse payment",
+                "reverser betalingen",
+                "returned by the bank",
+                "returned by bank",
+                "tilbakeført",
+                # Payroll
+                "kjør lønn",
+                "kjor lonn",
+                "run payroll",
+                "grunnlønn",
+                "grunnlonn",
+                "salary run",
+            ),
+        ),
+        # Travel expenses — prompts often contain "ansatt"/"kunde" substrings
         IntentRule(
             TaskFamily.TRAVEL_EXPENSES,
             Operation.DELETE,
@@ -1324,6 +1359,9 @@ def _convert_invoice_create_params(params: dict) -> dict[str, object]:
             line["count"] = src_line["quantity"]
         if src_line.get("unitPriceExcludingVat") is not None:
             line["unitPriceExcludingVatCurrency"] = src_line["unitPriceExcludingVat"]
+        elif src_line.get("unitPriceIncludingVat") is not None:
+            # Convert inclusive VAT → exclusive (assume 25% MVA)
+            line["unitPriceExcludingVatCurrency"] = src_line["unitPriceIncludingVat"] / 1.25
 
         if line:
             result["line"] = line
@@ -1772,6 +1810,12 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     if price_match:
         line["unitPriceExcludingVatCurrency"] = _parse_decimal(price_match.group("value"))
 
+    # Fallback: try inclusive VAT amounts and convert (assume 25% MVA)
+    if "unitPriceExcludingVatCurrency" not in line:
+        inc_match = _search_invoice_amount_including_vat(prompt)
+        if inc_match:
+            line["unitPriceExcludingVatCurrency"] = _parse_decimal(inc_match.group("value")) / 1.25
+
     if line and "count" not in line:
         line["count"] = 1.0
 
@@ -2116,6 +2160,31 @@ def _search_invoice_amount_excluding_vat(prompt: str) -> re.Match[str] | None:
             r"(?:nok|kr)\s+(?P<value>\d+(?:[.,]\d+)?)"
             r"(?:\s*(?:excluding vat|ex\.?\s*vat|excl\.?\s*vat|eksklusiv mva|ekskl\.?\s*mva|"
             r"hors tva|sin iva|sem iva|uten mva|utan mva|ohne mwst))"
+        ),
+        normalized,
+        flags=re.IGNORECASE,
+    )
+
+
+def _search_invoice_amount_including_vat(prompt: str) -> re.Match[str] | None:
+    """Extract an amount with 'including VAT' qualifier."""
+    normalized = _normalize_prompt_text(prompt)
+    match = re.search(
+        (
+            r"(?:for|de|por|uber|pa|på)\s+(?P<value>\d+(?:[.,]\d+)?)\s*(?:nok|kr)\b"
+            r"(?:\s*(?:including vat|inc\.?\s*vat|incl\.?\s*vat|inklusiv mva|inkl\.?\s*mva|"
+            r"med mva|avec tva|con iva|com iva|mit mwst|inkl\.?\s*mwst))"
+        ),
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match
+    return re.search(
+        (
+            r"(?:nok|kr)\s+(?P<value>\d+(?:[.,]\d+)?)"
+            r"(?:\s*(?:including vat|inc\.?\s*vat|incl\.?\s*vat|inklusiv mva|inkl\.?\s*mva|"
+            r"med mva|avec tva|con iva|com iva|mit mwst|inkl\.?\s*mwst))"
         ),
         normalized,
         flags=re.IGNORECASE,

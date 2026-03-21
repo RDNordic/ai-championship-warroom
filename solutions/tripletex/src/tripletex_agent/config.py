@@ -53,13 +53,8 @@ class AppSettings:
 
     tripletex_base_url: str | None
     tripletex_session_token: str | None
-    planner_model: str
-    enable_keyword_fallback: bool
-    enable_api_call_plan: bool
-    api_call_plan_model: str
     anthropic_api_key: str | None
     llm_executor_model: str
-    enable_llm_executor: bool
     host: str
     port: int
     log_level: str
@@ -72,15 +67,10 @@ class AppSettings:
         return cls(
             tripletex_base_url=os.getenv("TRIPLETEX_BASE_URL"),
             tripletex_session_token=os.getenv("TRIPLETEX_SESSION_TOKEN"),
-            planner_model=os.getenv("PLANNER_MODEL", "claude-haiku-4-5-20251001"),
-            enable_keyword_fallback=_env_bool("ENABLE_KEYWORD_FALLBACK", default=True),
-            enable_api_call_plan=_env_bool("ENABLE_API_CALL_PLAN", default=False),
-            api_call_plan_model=os.getenv("API_CALL_PLAN_MODEL", "gpt-5-mini"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
             llm_executor_model=os.getenv(
-                "LLM_EXECUTOR_MODEL", "claude-haiku-4-5-20251001"
+                "LLM_EXECUTOR_MODEL", "claude-sonnet-4-6"
             ),
-            enable_llm_executor=_env_bool("ENABLE_LLM_EXECUTOR", default=True),
             host=os.getenv("HOST", "0.0.0.0"),
             port=int(os.getenv("PORT", "8000")),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
@@ -100,10 +90,3 @@ class AppSettings:
             base_url=self.tripletex_base_url,
             session_token=self.tripletex_session_token,
         )
-
-
-def _env_bool(name: str, *, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}

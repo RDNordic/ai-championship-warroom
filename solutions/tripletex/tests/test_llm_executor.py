@@ -194,7 +194,7 @@ class TestApiCallValidator:
     def test_ledger_voucher_reverse(self):
         step = {
             "step_id": "1",
-            "method": "POST",
+            "method": "PUT",
             "path": "/ledger/voucher/5/:reverse",
             "json_body": {"date": "2026-03-20"},
         }

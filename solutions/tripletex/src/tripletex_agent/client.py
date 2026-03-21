@@ -181,7 +181,11 @@ class TripletexClient:
 
         content_type = response.headers.get("content-type", "")
         if "json" in content_type:
-            return response.json()
+            try:
+                return response.json()
+            except Exception:
+                # Error responses may not be valid JSON despite content-type header
+                return response.text
 
         return response.text
 

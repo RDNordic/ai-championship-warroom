@@ -320,7 +320,9 @@ Tripletex flow: look up invoice → `POST /invoice/{id}/:createCreditNote` or eq
 7. **`comment` fields**: Only populate if the prompt explicitly asks for a comment, note, or remark to be attached. Never put extracted data (amounts, VAT, descriptions) into comment fields.
 8. **Files**: If `files` are present in the request, note their existence but the extraction focuses on the prompt text. The executor handles file parsing separately. If the prompt references data "in the attached file" without specifying values inline, extract what you can from the prompt and set file-dependent fields to `null`.
 9. **Ambiguity**: If the prompt could match multiple tasks, pick the most likely one and lower confidence. If truly ambiguous (< 0.3 confidence), return `unknown`.
-10. **Out of scope**: Travel expenses, vouchers, ledger postings, bank reconciliation, year-end closing, and any task not listed above → return `unknown`.
+10. **Out of scope**: Travel expenses, vouchers, ledger postings, bank reconciliation, year-end closing, supplier/vendor invoices (leverandørfaktura), payroll/salary runs, reversing payments, and any task not listed above → return `unknown`.
+11. **"Reverse payment" ≠ "credit note"**: If the prompt asks to reverse, undo, or cancel a *payment* (e.g., "reverse the payment", "reverser betalingen", "payment was returned by bank"), return `unknown`. A credit note is only for reversing an *invoice* itself (e.g., "create credit note for invoice 1052", "opprett kreditnota").
+12. **Invoice descriptions are NOT invoice numbers**: Quoted text like `"Cloud Storage"` or `"Webdesign"` that describes what the invoice is *for* is a description, NOT an invoice number. Invoice numbers are purely numeric (e.g., "1052", "INV-2026-001"). If the prompt only describes the invoice by its content/description and customer, set `invoiceNumber` to `null`.
 
 ---
 
