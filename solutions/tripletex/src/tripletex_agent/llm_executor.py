@@ -444,50 +444,60 @@ def _voucher_balances_in_tripletex(json_body: dict[str, Any]) -> bool:
 
 
 def _fix_voucher_vat_amounts(json_body: dict[str, Any], step_fixes: list[str]) -> None:
-    """Correct voucher posting net amounts when vatType rows use gross as amount."""
+    """Ensure voucher postings have correct net amounts based on VAT type.
+
+    For postings WITH vatType: amount = amountGross / (1 + rate)
+    For postings WITHOUT vatType: amount = amountGross (no VAT component)
+    """
     postings = json_body.get("postings")
     if not isinstance(postings, list):
         return
 
     vat_rates = {
-        1: 1.25,
-        3: 1.25,
-        5: 1.15,
-        6: 1.0,
-        12: 1.15,
-        31: 1.12,
+        1: 1.25, 3: 1.25,   # 25% (input/output)
+        5: 1.15, 12: 1.15,  # 15% (food)
+        31: 1.12,            # 12%
+        6: 1.0, 0: 1.0,     # 0% (exempt)
     }
 
+    any_fixed = False
     for posting in postings:
-        if not isinstance(posting, dict) or "vatType" not in posting:
+        if not isinstance(posting, dict):
             continue
 
-        amount = posting.get("amount")
         amount_gross = posting.get("amountGross")
-        if not isinstance(amount, (int, float)) or not isinstance(amount_gross, (int, float)):
+        if not isinstance(amount_gross, (int, float)):
             continue
-        if round(float(amount), 2) != round(float(amount_gross), 2):
-            continue
+        gross = float(amount_gross)
 
-        vat_type = posting.get("vatType")
-        vat_type_id: int | None = None
-        if isinstance(vat_type, dict):
-            vat_id_value = vat_type.get("id")
-            if isinstance(vat_id_value, int):
-                vat_type_id = vat_id_value
-            elif isinstance(vat_id_value, str) and vat_id_value.isdigit():
-                vat_type_id = int(vat_id_value)
-        elif isinstance(vat_type, int):
-            vat_type_id = vat_type
-        elif isinstance(vat_type, str) and vat_type.isdigit():
-            vat_type_id = int(vat_type)
+        if "vatType" in posting:
+            # Extract VAT type ID
+            vat_type = posting.get("vatType")
+            vat_type_id = None
+            if isinstance(vat_type, dict):
+                vid = vat_type.get("id")
+                vat_type_id = int(vid) if isinstance(vid, (int, str)) and str(vid).isdigit() else None
+            elif isinstance(vat_type, (int, str)) and str(vat_type).isdigit():
+                vat_type_id = int(vat_type)
 
-        divisor = vat_rates.get(vat_type_id, 1.25)
-        old_amount = float(amount)
-        new_amount = round(float(amount_gross) / divisor, 2)
-        posting["amount"] = new_amount
-        posting["amountCurrency"] = new_amount
-        step_fixes.append(f"Auto-corrected VAT: amount {old_amount:.2f} -> {new_amount:.2f}")
+            divisor = vat_rates.get(vat_type_id or 3, 1.25)
+            correct_amount = round(gross / divisor, 2)
+        else:
+            # No VAT: amount = amountGross
+            correct_amount = gross
+
+        old_amount = posting.get("amount")
+        if isinstance(old_amount, (int, float)) and round(float(old_amount), 2) == correct_amount:
+            continue  # Already correct
+
+        posting["amount"] = correct_amount
+        posting["amountCurrency"] = correct_amount
+        if isinstance(old_amount, (int, float)):
+            step_fixes.append(f"Auto-corrected VAT: amount {float(old_amount):.2f} -> {correct_amount:.2f}")
+            any_fixed = True
+
+    if any_fixed:
+        logger.info("VAT auto-correction applied to voucher postings")
 
 
 def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
