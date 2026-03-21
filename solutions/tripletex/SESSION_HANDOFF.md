@@ -1,10 +1,10 @@
 # SESSION_HANDOFF.md
 
-## Checkpoint (2026-03-21 ~21:20 CET)
+## Checkpoint (2026-03-21 ~22:00 CET)
 
 Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hitting 7-8/8 on simple/medium tasks, 6-7/10 on some complex tasks. Strategy: queue 3 runs at a time, fix root causes in bulk.
 
-**Current best scores: 8/8 consistently on simple tasks, 6-7/10 on medium, timesheet+invoice working.**
+**Current best scores: 8/8 consistently on simple tasks, 6-7/10 on medium, timesheet+invoice+credit notes working. 15 fixes deployed.**
 
 **Branch: `tripletex/complex-multi-step-project`**
 
@@ -44,6 +44,12 @@ Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hit
 | 21:12 | 7/7, 7/7, 6/10 | Consistent scoring |
 | 21:19 | 8/8, 6/7, 2/7 | Farming |
 | 21:21 | 8/8, 7/7, 2/7 | Consistent 7-8/8 |
+| 21:25 | 0/10, 6/7, 0/10 | Complex tasks still failing |
+| 21:37 | 8/8, 0/14, 2/10 | Farming |
+| 21:41 | 7/7, 7/7, 6/10 | Hot streak |
+| 21:46 | 0/10, 2/10, 7/7 | Farming |
+| 21:51 | 0/10, 2/10, 7/7 | Farming |
+| 21:57 | 8/8, 0/14, 2/10 | Farming |
 
 ## What Works
 
@@ -75,6 +81,9 @@ Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hit
 10. **Pre-flight bank account setup** — auto-configures bank account number on sandbox, unblocking all invoice creation.
 11. **Auto-inject orderDate/deliveryDate** — injects today's date into invoice order objects when LLM omits them.
 12. **Auto-inject voucher date** — injects today's date on voucher POSTs when date field is missing.
+13. **Expense voucher recipe in system prompt** — correct VAT math, employee refs, 2-posting pattern with account lookup guide.
+14. **Block unbalanced vouchers** — return failure immediately when postings don't sum to 0, so self-correction can fix instead of sending doomed request.
+15. **Auto-fallback on empty entity lookups** — department/employee/account GETs that return empty auto-retry with broader params (any dept, any employee, query search).
 
 ## All Fixes Deployed and Scoring
 
