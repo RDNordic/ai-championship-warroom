@@ -923,7 +923,7 @@ def test_openai_planner_uses_compatible_responses_parse_payload(monkeypatch) -> 
     payload = fake_client.responses.calls[0]
     assert payload["model"] == "gpt-5-mini"
     assert payload["text_format"] is PromptExtraction
-    assert "temperature" not in payload
+    assert payload["temperature"] == 0
 
 
 def test_fallback_planner_fail_closes_project_lifecycle_prompt_when_primary_misroutes() -> None:

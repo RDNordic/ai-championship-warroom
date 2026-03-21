@@ -112,6 +112,7 @@ class OpenAIApiCallPlanner:
                 },
             ],
             text_format=ApiCallPlan,
+            temperature=0,
         )
         return response.output_parsed
 

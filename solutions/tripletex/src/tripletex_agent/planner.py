@@ -651,6 +651,7 @@ class OpenAIPlanner:
                 },
             ],
             text_format=PromptExtraction,
+            temperature=0,
         )
         extraction = response.output_parsed
         if extraction is None:
@@ -951,6 +952,19 @@ def _action_completion_checks(
 def _lookup_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
     if extraction.lookup is not None:
         return extraction.lookup.model_dump(exclude_none=True)
+
+    # Voucher reverse tasks need customer name/org to do the
+    # customer → invoice → voucher lookup chain (Path 3 in VoucherReverseWorkflow).
+    # _payload_for_extraction has no voucher branch, so handle it explicitly.
+    if extraction.primary_entity_type == "voucher" and extraction.operation == Operation.REVERSE:
+        lookup: dict[str, object] = {}
+        if extraction.customer is not None:
+            cust = extraction.customer.model_dump(exclude_none=True)
+            if "name" in cust:
+                lookup["name"] = cust["name"]
+            if "organizationNumber" in cust:
+                lookup["organizationNumber"] = cust["organizationNumber"]
+        return lookup
 
     payload = _payload_for_extraction(extraction)
     keys = ("name", "email", "organizationNumber", "number", "firstName", "lastName")
