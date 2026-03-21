@@ -257,6 +257,12 @@ class SchemaValidator:
                     f"got {type(value).__name__}"
                 )
 
+        # 5. Voucher-specific: validate postings balance and amount fields
+        if norm_path == "/ledger/voucher" and method == "POST":
+            posting_fixes, posting_errors = _validate_voucher_postings(cleaned)
+            fixes.extend(posting_fixes)
+            errors.extend(posting_errors)
+
         valid = len(errors) == 0
         if fixes:
             logger.info("Auto-fixed json_body for %s %s: %s", method, path, fixes)
@@ -337,6 +343,16 @@ class SchemaValidator:
         return value
 
 
+    def validate_voucher_postings(self, json_body: dict[str, Any]) -> SchemaValidationResult:
+        """Public interface for voucher posting validation (for testing)."""
+        fixes, errors = _validate_voucher_postings(json_body)
+        return SchemaValidationResult(
+            cleaned_body=json_body,
+            valid=len(errors) == 0,
+            errors=errors,
+            fixes_applied=fixes,
+        )
+
     def describe_endpoint_fields(self, method: str, path: str) -> str:
         """Return a human-readable description of accepted fields for an endpoint."""
         norm_path = _normalize_path(path)
@@ -367,6 +383,130 @@ class SchemaValidator:
             lines.append("Optional:")
             lines.extend(optional)
         return "\n".join(lines) if lines else "No writable fields found"
+
+
+# Known non-existent fields that LLMs hallucinate on Posting objects
+_INVALID_POSTING_FIELDS = {"amountVatCurrency", "amountVat", "vatAmount", "grossAmount"}
+
+# Fields that ARE valid on Posting (from swagger)
+_VALID_POSTING_FIELDS = {
+    "account", "amount", "amountCurrency", "amountGross", "amountGrossCurrency",
+    "amortizationAccount", "amortizationEndDate", "amortizationStartDate",
+    "closeGroup", "currency", "customer", "date", "department", "description",
+    "employee", "id", "invoiceNumber", "postingRuleId", "product", "project",
+    "quantityAmount1", "quantityAmount2", "quantityType1", "quantityType2",
+    "row", "supplier", "termOfPayment", "vatType", "version",
+}
+
+
+def _validate_voucher_postings(
+    body: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """Validate and fix voucher postings before sending.
+
+    Returns (fixes_applied, errors).
+    """
+    fixes: list[str] = []
+    errors: list[str] = []
+
+    postings = body.get("postings")
+    if not isinstance(postings, list) or len(postings) == 0:
+        errors.append("Voucher must have at least 2 postings")
+        return fixes, errors
+
+    if len(postings) < 2:
+        errors.append("Voucher must have at least 2 postings to balance")
+        return fixes, errors
+
+    sum_amount = 0.0
+    sum_amount_currency = 0.0
+    sum_amount_gross = 0.0
+    sum_amount_gross_currency = 0.0
+
+    for i, posting in enumerate(postings):
+        if not isinstance(posting, dict):
+            continue
+
+        # Remove invalid/hallucinated fields from postings
+        invalid_keys = [k for k in posting if k in _INVALID_POSTING_FIELDS]
+        for k in invalid_keys:
+            del posting[k]
+            fixes.append(f"Removed invalid posting field '{k}' from row {i+1}")
+
+        # Remove unknown fields from postings
+        unknown_keys = [k for k in posting if k not in _VALID_POSTING_FIELDS]
+        for k in unknown_keys:
+            del posting[k]
+            fixes.append(f"Removed unknown posting field '{k}' from row {i+1}")
+
+        # Ensure all 4 amount fields are present
+        amount = posting.get("amount")
+        amount_currency = posting.get("amountCurrency")
+        amount_gross = posting.get("amountGross")
+        amount_gross_currency = posting.get("amountGrossCurrency")
+
+        # Auto-fill missing amount fields from available ones
+        if amount is not None and isinstance(amount, (int, float)):
+            if amount_currency is None:
+                posting["amountCurrency"] = amount
+                fixes.append(f"Set amountCurrency={amount} from amount in row {i+1}")
+                amount_currency = amount
+            if amount_gross is None:
+                # If no VAT type, gross = net
+                if "vatType" not in posting:
+                    posting["amountGross"] = amount
+                    fixes.append(f"Set amountGross={amount} from amount (no VAT) in row {i+1}")
+                    amount_gross = amount
+            if amount_gross is not None and amount_gross_currency is None:
+                posting["amountGrossCurrency"] = amount_gross
+                fixes.append(f"Set amountGrossCurrency={amount_gross} from amountGross in row {i+1}")
+                amount_gross_currency = amount_gross
+
+        elif amount_gross is not None and isinstance(amount_gross, (int, float)):
+            if amount_gross_currency is None:
+                posting["amountGrossCurrency"] = amount_gross
+                fixes.append(f"Set amountGrossCurrency={amount_gross} from amountGross in row {i+1}")
+                amount_gross_currency = amount_gross
+            if amount is None:
+                # If no VAT type, net = gross
+                if "vatType" not in posting:
+                    posting["amount"] = amount_gross
+                    posting["amountCurrency"] = amount_gross
+                    fixes.append(f"Set amount={amount_gross} from amountGross (no VAT) in row {i+1}")
+                    amount = amount_gross
+                    amount_currency = amount_gross
+
+        # Ensure row is set and not 0
+        row = posting.get("row")
+        if row == 0:
+            posting["row"] = i + 1
+            fixes.append(f"Changed row from 0 to {i+1}")
+        elif row is None:
+            posting["row"] = i + 1
+            fixes.append(f"Set missing row to {i+1}")
+
+        # Accumulate for balance check
+        if isinstance(amount, (int, float)):
+            sum_amount += amount
+        if isinstance(amount_currency, (int, float)):
+            sum_amount_currency += amount_currency
+        if isinstance(amount_gross, (int, float)):
+            sum_amount_gross += amount_gross
+        if isinstance(amount_gross_currency, (int, float)):
+            sum_amount_gross_currency += amount_gross_currency
+
+    # Check balance (with small tolerance for float rounding)
+    tolerance = 0.01
+    if abs(sum_amount) > tolerance:
+        errors.append(
+            f"Postings amount sum={sum_amount:.2f} does not balance to 0"
+        )
+    if abs(sum_amount_gross) > tolerance:
+        errors.append(
+            f"Postings amountGross sum={sum_amount_gross:.2f} does not balance to 0"
+        )
+
+    return fixes, errors
 
 
 # Sentinel for failed coercion
