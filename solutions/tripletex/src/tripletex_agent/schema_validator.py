@@ -210,7 +210,19 @@ class SchemaValidator:
                 removed.append(field_name)
                 fixes.append(f"Removed read-only field '{field_name}'")
 
-        # 2. Remove unknown fields (not in schema)
+        # 2. Rename common LLM field-name mistakes before removing unknowns
+        _FIELD_RENAMES = {
+            "voucherDate": "date",
+            "voucher_date": "date",
+            "invoiceDate": "date",
+            "address": "postalAddress",
+        }
+        for wrong_name, correct_name in _FIELD_RENAMES.items():
+            if wrong_name in cleaned and correct_name not in cleaned and correct_name in schema.fields:
+                cleaned[correct_name] = cleaned.pop(wrong_name)
+                fixes.append(f"Renamed '{wrong_name}' to '{correct_name}'")
+
+        # Remove unknown fields (not in schema)
         known_fields = set(schema.fields.keys())
         # Always allow 'id' and 'version' — they're used for updates
         known_fields.add("id")

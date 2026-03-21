@@ -654,6 +654,9 @@ class LLMApiExecutor:
         Returns None on success, or a dict with failure context.
         """
         for step in steps:
+            if not isinstance(step, dict):
+                logger.warning("Skipping non-dict step: %s", type(step).__name__)
+                continue
             step_id = step.get("step_id", "?")
             method = step.get("method", "GET")
             path = step.get("path", "")
