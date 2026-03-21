@@ -417,6 +417,10 @@ class LLMApiExecutor:
     ) -> WorkflowResult:
         """Plan API calls via LLM with tool use, validate, then execute them."""
 
+        # Pre-flight: ensure sandbox has a bank account configured
+        # (required for invoice creation, fails with 'bankkontonummer' error otherwise)
+        await self._ensure_bank_account(tripletex_client)
+
         system_prompt = _build_system_prompt()
         content_blocks = _build_user_content(prompt, attachments)
 
@@ -814,6 +818,45 @@ class LLMApiExecutor:
                         )
 
         return None
+
+    @staticmethod
+    async def _ensure_bank_account(tripletex_client: TripletexClient) -> None:
+        """Ensure the sandbox has a bank account number configured.
+
+        Without this, invoice creation fails with:
+        'Faktura kan ikke opprettes før selskapet har registrert et bankkontonummer.'
+        """
+        try:
+            payload = await tripletex_client.request(
+                "GET", "/ledger/account",
+                params={"isBankAccount": True, "count": 10, "sorting": "number"},
+                expected_status=(200,),
+            )
+            accounts = payload.get("values", []) if isinstance(payload, dict) else []
+            invoice_accounts = [
+                a for a in accounts
+                if isinstance(a, dict) and a.get("isInvoiceAccount")
+            ]
+            if not invoice_accounts:
+                return  # No invoice account found — can't fix, move on
+
+            account = invoice_accounts[0]
+            existing = account.get("bankAccountNumber")
+            if isinstance(existing, str) and existing.strip():
+                return  # Already configured
+
+            account_id = account.get("id")
+            if account_id is None:
+                return
+
+            await tripletex_client.request(
+                "PUT", f"/ledger/account/{account_id}",
+                json_body={"bankAccountNumber": "12345678903"},
+                expected_status=(200,),
+            )
+            logger.info("Pre-flight: configured bank account on ledger account %s", account_id)
+        except Exception as exc:
+            logger.warning("Pre-flight bank account setup failed (non-fatal): %s", exc)
 
     async def _request_correction(
         self,
