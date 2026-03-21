@@ -86,12 +86,21 @@ POST /invoice needs: invoiceDate, invoiceDueDate, embedded orders with orderLine
 CRITICAL: PUT /invoice/{{id}}/:payment uses QUERY PARAMS (paymentDate, paymentTypeId, paidAmount).
 GET /invoice REQUIRES invoiceDateFrom + invoiceDateTo.
 
+## Bank Reconciliation
+To find invoices, NEVER hardcode invoice numbers. Instead:
+1. GET /invoice?invoiceDateFrom=2020-01-01&invoiceDateTo={today}&count=100 to list ALL invoices
+2. Match by customer name and amount from the bank statement
+3. For supplier invoices: GET /supplierInvoice?invoiceDateFrom=2020-01-01&invoiceDateTo={today}&count=100
+4. PUT /invoice/{{id}}/:payment with paymentDate, paymentTypeId, paidAmount as QUERY PARAMS
+5. For supplier invoice payment: POST /supplierInvoice/{{id}}/:addPayment with paymentDate, paymentTypeId, paidAmount, paidAmountCurrency as QUERY PARAMS
+
 ## Invoice Credit Note
 CRITICAL: PUT /invoice/{{id}}/:createCreditNote uses QUERY PARAMS (date, sendToCustomer).
 
 ## Account Lookup
 Norwegian accounts are ALWAYS 4 digits. NEVER use 5-digit numbers.
-If unsure of the exact number, search by name: GET /ledger/account?query=<keyword>&count=5
+ALWAYS use the 'number' parameter for exact lookups: GET /ledger/account?number=1720
+Only use 'query' for text/name search when you don't know the number: GET /ledger/account?query=<keyword>&count=5
 Common Norwegian expense accounts:
 - 1240: Inventar (furniture/fixtures)
 - 1920: Bankinnskudd (bank deposit)
@@ -869,6 +878,25 @@ class LLMApiExecutor:
             if method == "GET" and isinstance(params, dict) and "fields" in params:
                 logger.info("Stripping 'fields' param from GET %s to avoid hallucinated field names", path)
                 del params["fields"]
+
+            # Fix account lookups: LLM uses 'query' with a number, but the
+            # Tripletex 'query' param does a text search and returns wrong
+            # accounts.  Convert to 'number' param for exact match.
+            if (
+                method == "GET"
+                and "/ledger/account" in path
+                and isinstance(params, dict)
+                and "query" in params
+                and "number" not in params
+            ):
+                q = str(params["query"]).strip()
+                if q.isdigit() and 3 <= len(q) <= 4:
+                    logger.info(
+                        "Converting account lookup query=%s to number=%s for exact match",
+                        q, q,
+                    )
+                    params["number"] = q
+                    del params["query"]
 
             # Validate and clean json_body against swagger schema
             step_fixes: list[str] = []
