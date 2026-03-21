@@ -205,10 +205,20 @@ def _build_user_content(
 
 
 def _resolve_value(obj: Any, path: str) -> Any:
-    """Extract a value from a nested dict using a dot-separated path."""
-    parts = path.split(".")
+    """Extract a value from a nested dict using a dot-separated path.
+
+    Handles:
+    - Dot-separated paths: "values.0.id"
+    - Bracket notation: "values[0].id"
+    - Single-object responses: tries "value.id" if "values.0.id" fails
+    """
+    # Normalize bracket notation: "values[0].id" → "values.0.id"
+    normalized = re.sub(r"\[(\d+)\]", r".\1", path)
+    parts = normalized.split(".")
     current = obj
     for part in parts:
+        if current is None:
+            return None
         if isinstance(current, dict):
             current = current.get(part)
         elif isinstance(current, list) and part.isdigit():
@@ -216,7 +226,16 @@ def _resolve_value(obj: Any, path: str) -> Any:
             current = current[idx] if idx < len(current) else None
         else:
             return None
-    return current
+    if current is not None:
+        return current
+
+    # Fallback: if path starts with "values.0.", try "value." instead
+    # (single-object POST responses use "value", not "values")
+    if normalized.startswith("values.0."):
+        alt_path = "value." + normalized[len("values.0."):]
+        return _resolve_value(obj, alt_path)
+
+    return None
 
 
 def _substitute_vars(obj: Any, saved_vars: dict[str, Any]) -> Any:
@@ -287,17 +306,29 @@ def _normalize_save_fields(save_fields: dict[str, str]) -> dict[str, str]:
     Correct format: {"my_var_name": "value.id"}
     Inverted format: {"value.id": "my_var_name"}
 
-    Heuristic: if the key contains a dot (like "value.id" or "values.0.id"),
-    it's probably a response path that should be the value, not the key.
+    Heuristic: the value should be a response path (contains dots or brackets),
+    the key should be a variable name (no dots).
     """
     normalized = {}
     for key, val in save_fields.items():
         if not isinstance(val, str):
             normalized[key] = str(val)
-        elif "." in key and "." not in val:
-            # Key looks like a path, value looks like a var name → flip
+            continue
+
+        key_is_path = "." in key or "[" in key
+        val_is_path = "." in val or "[" in val
+
+        if key_is_path and not val_is_path:
+            # Inverted: {"value.id": "my_var"} → flip
             normalized[val] = key
+        elif val_is_path and not key_is_path:
+            # Correct: {"my_var": "value.id"} → keep
+            normalized[key] = val
+        elif key_is_path and val_is_path:
+            # Both look like paths — keep as-is, best guess
+            normalized[key] = val
         else:
+            # Neither has dots — assume value is a simple field name
             normalized[key] = val
     return normalized
 
@@ -622,6 +653,10 @@ class LLMApiExecutor:
             if method in ("GET", "DELETE"):
                 json_body = None
 
+            # Validate and clean json_body against swagger schema
+            step_fixes: list[str] = []
+            step_removed: list[str] = []
+
             # Check for unresolved $variable references — don't send if found
             unresolved = _find_unresolved_vars(path, params, json_body)
             if unresolved:
@@ -637,10 +672,6 @@ class LLMApiExecutor:
                     "auto_fixes": step_fixes,
                     "fields_removed": step_removed,
                 }
-
-            # Validate and clean json_body against swagger schema
-            step_fixes: list[str] = []
-            step_removed: list[str] = []
             if json_body and isinstance(json_body, dict) and method in ("POST", "PUT"):
                 schema_result = self._schema_validator.validate_and_clean(
                     method, path, json_body

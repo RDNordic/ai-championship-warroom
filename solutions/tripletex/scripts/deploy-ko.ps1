@@ -21,7 +21,7 @@ if ($LASTEXITCODE -ne 0) { throw "Deploy failed" }
 $SERVICE_URL = gcloud run services describe $SERVICE --region $REGION --project $PROJECT --format="value(status.url)"
 Write-Host ""
 Write-Host "=== Clearing old logs ==="
-Invoke-WebRequest -Uri "$SERVICE_URL/logs" -Method DELETE
+Invoke-WebRequest -Uri "$SERVICE_URL/logs" -Method DELETE -UseBasicParsing
 
 Write-Host ""
 Write-Host "=== Deploy complete ==="
