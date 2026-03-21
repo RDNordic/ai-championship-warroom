@@ -481,17 +481,51 @@ class KeywordTaskPlanner:
                 "reverse posting",
                 "reverse entry",
                 "credit note voucher",
+                "reverse payment",
+                "cancel the payment",
+                "payment returned",
+                "returned by the bank",
+                "annuler betalingen",
+                "annuller betalingen",
+                "betalingen ble returnert",
+                "paiement retourne",
+                "retourne par la banque",
+                "annulez le paiement",
+                "revierta el pago",
+                "pago devuelto",
+                "devuelto por el banco",
+                "reverta o pagamento",
+                "pagamento devolvido",
+                "devolvido pelo banco",
+                "zahlung zuruckgebucht",
+                "zahlung storniert",
                 "storno",
             ),
         ),
     )
 
     def plan(self, prompt: str, attachments: list[AttachmentFile]) -> TaskPlan:
-        normalized_prompt = _EMAIL_RE.sub("<email>", prompt.lower())
+        normalized_prompt = _normalize_prompt_text(_EMAIL_RE.sub("<email>", prompt))
         attachment_facts = _attachment_facts(attachments)
 
+        if _requires_fail_closed_unknown(normalized_prompt, attachment_facts):
+            logger.info("Prompt matched unsupported fail-closed family; returning unknown")
+            return TaskPlan.unknown(attachment_facts=attachment_facts)
+
         for rule in self._rules:
-            if any(keyword in normalized_prompt for keyword in rule.keywords):
+            if rule.family != TaskFamily.CORRECTIONS or rule.operation != Operation.REVERSE:
+                continue
+            if any(_normalize_prompt_text(keyword) in normalized_prompt for keyword in rule.keywords):
+                return self._build_rule_plan(
+                    prompt=prompt,
+                    family=rule.family,
+                    operation=rule.operation,
+                    entity_type=rule.entity_type,
+                    attachment_facts=attachment_facts,
+                )
+
+        for rule in self._rules:
+            if any(_normalize_prompt_text(keyword) in normalized_prompt for keyword in rule.keywords):
                 return self._build_rule_plan(
                     prompt=prompt,
                     family=rule.family,
@@ -579,6 +613,8 @@ class KeywordTaskPlanner:
             return _extract_project_payload(prompt)
         if entity_type == "travel_expense":
             return _extract_travel_expense_payload(prompt)
+        if entity_type == "voucher":
+            return _extract_voucher_lookup(prompt)
         return {}
 
 
@@ -630,11 +666,21 @@ class FallbackPlanner:
         self._fallback = fallback
 
     def plan(self, prompt: str, attachments: list[AttachmentFile]) -> TaskPlan:
+        normalized_prompt = _normalize_prompt_text(_EMAIL_RE.sub("<email>", prompt))
+        attachment_facts = _attachment_facts(attachments)
+
         try:
             plan = self._primary.plan(prompt, attachments)
         except Exception as exc:
+            if _requires_fail_closed_unknown(normalized_prompt, attachment_facts):
+                logger.info("Unsupported prompt family hit planner error; returning unknown")
+                return TaskPlan.unknown(attachment_facts=attachment_facts)
             logger.warning("Primary planner failed; falling back to keyword planner: %s", exc)
             return self._fallback.plan(prompt, attachments)
+
+        if _requires_fail_closed_unknown(normalized_prompt, attachment_facts):
+            logger.info("Prompt matched unsupported fail-closed family; returning unknown")
+            return TaskPlan.unknown(attachment_facts=attachment_facts)
 
         if plan.task_family == TaskFamily.UNKNOWN:
             logger.info("Primary planner returned unknown; using keyword fallback")
@@ -1235,10 +1281,12 @@ Important rules:
   - create invoice for an existing customer with one line item
   - register invoice payment
   - create credit note for an existing invoice
-  - create travel expense report
-  - delete travel expense report
-  - reverse a voucher/posting (use operation=reverse, primary_entity_type=voucher)
+- create travel expense report
+- delete travel expense report
+- reverse a voucher/posting (use operation=reverse, primary_entity_type=voucher)
 - For voucher reverse tasks, extract the voucher id or voucherNumber into the lookup field.
+- If a voucher reverse task only identifies the paid invoice by customer name and/or organization
+  number, put those values into lookup.name and lookup.organizationNumber.
 - Module activation tasks are not yet implemented.
 - For department create tasks with multiple departments (e.g. "create departments X, Y, Z"),
   put all department names into the names list field, not just name.
@@ -1736,6 +1784,127 @@ def _mentions_register_payment_after_invoice(prompt: str) -> bool:
     )
 
 
+def _requires_fail_closed_unknown(
+    normalized_prompt: str,
+    attachment_facts: list[AttachmentFact],
+) -> bool:
+    return (
+        _mentions_unsupported_project_lifecycle_prompt(normalized_prompt)
+        or _mentions_unsupported_period_close_prompt(normalized_prompt)
+        or _mentions_unsupported_employee_attachment_prompt(
+            normalized_prompt,
+            attachment_facts,
+        )
+    )
+
+
+def _mentions_unsupported_project_lifecycle_prompt(normalized_prompt: str) -> bool:
+    if not re.search(r"\b(?:project|prosjekt|projet|proyecto|projeto)\b", normalized_prompt):
+        return False
+
+    has_lifecycle_phrase = re.search(
+        (
+            r"\b(?:lifecycle|life cycle|cycle de vie|ciclo de vida|"
+            r"ciclo de vida completo|project lifecycle)\b"
+        ),
+        normalized_prompt,
+    )
+    has_time_registration = re.search(
+        (
+            r"\b(?:register|registrer|enregistrer|registre|registrar|registe)\w*\b"
+            r".{0,40}\b(?:time|timesheet|hours?|heures?|horas?|timer|temps)\b"
+        ),
+        normalized_prompt,
+    )
+    has_supplier_cost = re.search(
+        (
+            r"\b(?:supplier cost|supplier invoice|vendor bill|cout fournisseur|"
+            r"coste del proveedor|custo do fornecedor|leverandorkost)\b|"
+            r"\b(?:supplier|vendor|fornecedor|proveedor|fournisseur|leverandor)\b"
+            r".{0,40}\b(?:cost|invoice|bill|cout|costo|custo)\b"
+        ),
+        normalized_prompt,
+    )
+    has_client_invoice = re.search(
+        (
+            r"\b(?:client invoice|customer invoice|facture client|factura cliente|"
+            r"fatura cliente)\b|"
+            r"\b(?:invoice|faktura|facture|factura|fatura|rechnung)\b"
+            r".{0,40}\b(?:project|prosjekt|projet|proyecto|projeto)\b"
+        ),
+        normalized_prompt,
+    )
+
+    return bool(
+        has_lifecycle_phrase or (has_time_registration and has_supplier_cost and has_client_invoice)
+    )
+
+
+def _mentions_unsupported_period_close_prompt(normalized_prompt: str) -> bool:
+    has_period_close = re.search(
+        (
+            r"\b(?:month[- ]end|month end close|monthly close|period close|closing entries|"
+            r"monatsabschluss|periodeavslutning|manedsavslutning)\b"
+        ),
+        normalized_prompt,
+    )
+    if not has_period_close:
+        return False
+
+    related_signal_count = sum(
+        1
+        for pattern in (
+            r"\b(?:accrual|rechnungsabgrenzung|periodisering|periodization)\b",
+            r"\b(?:depreciation|abschreibung|avskrivning)\b",
+            r"\b(?:balance sheet|trial balance|saldenbilanz|balanse)\b",
+            r"\b(?:salary accrual|gehaltsruckstellung|lonnsavsetning|payroll accrual)\b",
+        )
+        if re.search(pattern, normalized_prompt)
+    )
+    return related_signal_count >= 2
+
+
+def _mentions_unsupported_employee_attachment_prompt(
+    normalized_prompt: str,
+    attachment_facts: list[AttachmentFact],
+) -> bool:
+    if not attachment_facts:
+        return False
+
+    has_employee_signal = re.search(
+        (
+            r"\b(?:employee|new employee|new hire|employee onboarding|onboarding|"
+            r"funcionario|empregado|empleado|ansatt|mitarbeiter|employe)\b"
+        ),
+        normalized_prompt,
+    )
+    if not has_employee_signal:
+        return False
+
+    has_attachment_reference = re.search(
+        (
+            r"\b(?:pdf|attachment|attached|annex|anexo|anexo pdf|vedlegg|"
+            r"offer letter|carta de oferta|tilbudsbrev)\b"
+        ),
+        normalized_prompt,
+    )
+    if not has_attachment_reference:
+        return False
+
+    setup_signal_count = sum(
+        1
+        for pattern in (
+            r"\b(?:department|departamento|avdeling)\b",
+            r"\b(?:salary|annual salary|salario anual|salario|lonn)\b",
+            r"\b(?:working hours|standard working hours|horas de trabalho|arbeidstid)\b",
+            r"\b(?:employment details|detalhes de emprego|integracao|integration)\b",
+            r"\b(?:percentage|percentagem|prosent)\b",
+        )
+        if re.search(pattern, normalized_prompt)
+    )
+    return setup_signal_count >= 2
+
+
 def _mentions_supplier_invoice_prompt(prompt: str) -> bool:
     normalized_prompt = _normalize_prompt_text(prompt)
 
@@ -1937,6 +2106,68 @@ def _extract_invoice_lookup(prompt: str) -> dict[str, object]:
         customer_lookup.setdefault("organizationNumber", organization_number)
     if customer_lookup:
         lookup["customerLookup"] = customer_lookup
+
+    return lookup
+
+
+def _extract_voucher_lookup(prompt: str) -> dict[str, object]:
+    lookup: dict[str, object] = {}
+
+    voucher_id = _extract_named_value(
+        prompt,
+        [
+            r"(?:voucher id|voucher-id|bilagsid|bilag id)\s+(?P<value>\d+)",
+        ],
+    )
+    if voucher_id:
+        lookup["id"] = int(voucher_id)
+
+    voucher_number = _extract_named_value(
+        prompt,
+        [
+            r"(?:voucher number|voucher no\.?|voucher nr\.?|bilagsnummer|bilag nr\.?)\s*#?(?P<value>\d+)",
+            r"(?:voucher|bilag)\s*#(?P<value>\d+)",
+        ],
+    )
+    if voucher_number:
+        lookup["voucherNumber"] = voucher_number
+
+    customer_name = _extract_named_value(
+        prompt,
+        [
+            (
+                r"payment\s+(?:from|of|for)\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|for\s+the\s+invoice\b|for\s+invoice\b|invoice\b|was\b|$))"
+            ),
+            (
+                r"betaling(?:en|a)?\s+(?:fra|for)\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|for\s+faktura\b|faktura(?:en)?\b|ble\b|$))"
+            ),
+            (
+                r"paiement\s+de\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|pour\s+la\s+facture\b|la\s+facture\b|a\b|$))"
+            ),
+            (
+                r"pago\s+de\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|por\s+la\s+factura\b|la\s+factura\b|fue\b|$))"
+            ),
+            (
+                r"pagamento\s+de\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|para\s+a\s+fatura\b|a\s+fatura\b|foi\b|$))"
+            ),
+            (
+                r"zahlung\s+von\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|fur\s+die\s+rechnung\b|die\s+rechnung\b|wurde\b|$))"
+            ),
+            r"(?:customer|kunde(?:n)?|client|cliente)\s+(?P<value>[^,\n(]+)",
+        ],
+    )
+    if customer_name:
+        lookup["name"] = _strip_voucher_customer_suffixes(customer_name)
+
+    organization_number = _extract_org_number(prompt)
+    if organization_number:
+        lookup["organizationNumber"] = organization_number
 
     return lookup
 
@@ -2307,6 +2538,19 @@ def _strip_invoice_line_suffixes(value: str) -> str:
             (
                 r"\b(?:product number|produktnummer|varenummer|price|pris|unit price|"
                 r"enhetspris|quantity|qty|count|antall|stk|description|beskrivelse)\b"
+            ),
+        ],
+    )
+
+
+def _strip_voucher_customer_suffixes(value: str) -> str:
+    return _strip_suffixes(
+        value,
+        [
+            (
+                r"\b(?:for|pour|por|para|fur)\s+(?:the\s+)?(?:invoice|facture|factura|fatura|rechnung)\b|"
+                r"\b(?:invoice|facture|factura|fatura|rechnung)\b|"
+                r"\b(?:was|ble|fue|foi|wurde)\b"
             ),
         ],
     )
