@@ -12,6 +12,7 @@ from typing import Any
 
 from .api_validator import ApiCallValidator
 from .client import TripletexAPIError, TripletexClient
+from .endpoint_catalog import catalog_index_text
 from .models import AttachmentFile
 from .schema_validator import SchemaValidator
 from .swagger_tools import SWAGGER_TOOLS, SwaggerQueryService
@@ -33,96 +34,63 @@ produce the exact API calls needed.
 
 Today's date is {today}.
 
-IMPORTANT: You have tools to look up the exact API endpoint schemas. \
-ALWAYS use lookup_endpoint() to check the required fields, query params, \
-and body schema BEFORE generating your API steps. \
-Use search_endpoints() if you're unsure which endpoint to use. \
-Use get_model_schema() to check nested object schemas (e.g. Posting, OrderLine).
+AVAILABLE ENDPOINTS (use lookup_endpoint tool for full field details):
+{endpoint_index}
+
+TOOLS — use sparingly (max 3-5 lookups):
+- lookup_endpoint(method, path): Get full schema (fields, types, required). \
+Call this for each POST/PUT endpoint you plan to use.
+- get_model_schema(model_name): Get nested model fields (e.g. "Posting", "OrderLine").
+- search_endpoints(keyword): Only if you can't find an endpoint in the list above.
 
 RULES:
 - Minimize API calls — fewer is better. Every extra call hurts efficiency score.
-- Chain IDs: when step N needs an ID from step M, use \
-save_response_fields_as to save it, then reference as \
-"$variable_name" in later steps' json_body or path.
-- CRITICAL: For entity references in POST/PUT bodies, ALWAYS use nested \
-object format: {{"id": <id>}} or {{"id": "$saved_var"}}. \
-Examples: "customer": {{"id": 1}}, "projectManager": {{"id": 5}}.
-- NEVER use flat ID fields like "projectManagerId": 5 or "customerId": 1 \
-in POST/PUT bodies — always use the nested object form.
-- For dates, use ISO format: "YYYY-MM-DD". If the prompt says "today", use {today}.
-- Parse European dates: "3. mars 2026" → "2026-03-03", "03.03.2026" → "2026-03-03".
-- For currency/amounts, use numeric values (not strings). \
-Parse European format: "1.500,00" → 1500.00.
-- vatType should be an object like {{"id": 3}} for 25% MVA.
-- GET uses query params (flat IDs like customerId are OK in query params). \
-POST/PUT uses json_body (always nested objects for references).
-- For GET list responses: results are in "values" array. \
-For GET/POST single responses: result is in "value" object. \
-Use "values.0.id" to get the first match's ID from a list, \
-or "value.id" to get the ID from a single response.
-- Do NOT send read-only fields — they will be rejected.
+- Chain IDs: use save_response_fields_as to save IDs, reference as "$var_name".
+- CRITICAL: Entity references in POST/PUT bodies use nested object format: \
+{{"customer": {{"id": 1}}}}, NOT flat IDs like {{"customerId": 1}}.
+- Dates: ISO "YYYY-MM-DD". European: "3. mars 2026" → "2026-03-03".
+- Amounts: numeric, not strings. European: "1.500,00" → 1500.00.
+- vatType: {{"id": 3}} for 25% MVA.
+- GET list responses: "values" array → "values.0.id". \
+Single responses: "value" object → "value.id".
+- Do NOT send read-only fields.
 
-RECIPES (common patterns — use lookup_endpoint to verify exact fields):
-
-## Customer/Product/Department Creation
-Simple single POST. Look up the endpoint schema first.
+RECIPES:
 
 ## Employee Creation
-1. GET /department to find a department ID.
-2. POST /employee with firstName, lastName, department ref, userType: "NO_ACCESS".
+1. GET /department (find any). 2. POST /employee (firstName, lastName, department ref, userType: "NO_ACCESS").
 
 ## Project Creation
-1. GET /customer to find customer ID.
-2. GET /employee to find project manager.
-3. POST /project — requires name, projectManager, customer, startDate, isInternal.
+POST /project requires: name, projectManager, customer, startDate, isInternal.
 
 ## Invoice Creation
-1. GET /customer to find customer ID.
-2. POST /invoice with invoiceDate, invoiceDueDate, customer ref, \
-and embedded orders with orderLines.
-Use ?sendToCustomer=true|false query param.
+POST /invoice needs: invoiceDate, invoiceDueDate, embedded orders with orderLines. \
+?sendToCustomer=true|false. Bank account must be configured first for sending.
 
 ## Invoice Payment
-CRITICAL: PUT /invoice/{{id}}/:payment uses QUERY PARAMS, NOT json_body.
-1. GET /invoice (REQUIRES invoiceDateFrom + invoiceDateTo).
-2. GET /invoice/paymentType (fetch all, pick bank type).
-3. PUT /invoice/{{id}}/:payment with query params.
+CRITICAL: PUT /invoice/{{id}}/:payment uses QUERY PARAMS (paymentDate, paymentTypeId, paidAmount).
+GET /invoice REQUIRES invoiceDateFrom + invoiceDateTo.
 
 ## Invoice Credit Note
-CRITICAL: PUT /invoice/{{id}}/:createCreditNote uses QUERY PARAMS, NOT json_body.
+CRITICAL: PUT /invoice/{{id}}/:createCreditNote uses QUERY PARAMS (date, sendToCustomer).
 
-## Ledger Voucher (Journal Entry)
-CRITICAL: postings row numbering starts at 1 (NOT 0).
-Postings on 1500-series accounts MUST include customer ref.
-Postings on 2400-series accounts MUST include supplier ref.
-All amount fields (amount, amountCurrency, amountGross, amountGrossCurrency) \
-must be set consistently.
-Use get_model_schema("Posting") to see all available fields.
-
-## Travel Expense
-Use search_endpoints("travelExpense") to find all sub-resources \
-(cost, mileageAllowance, perDiemCompensation, accommodationAllowance).
+## Ledger Voucher
+Postings: row starts at 1 (NOT 0). All amount fields must match. \
+1500-accounts need customer ref. 2400-accounts need supplier ref.
 
 WORKFLOW:
-1. First, use the tools to look up the schemas for endpoints you plan to use.
-2. Then, return the final JSON array of API steps.
+1. Look up schemas for the 2-3 POST/PUT endpoints you need (use lookup_endpoint).
+2. Return the JSON array of API steps.
 
 OUTPUT FORMAT:
-Return a JSON array of steps. Each step has:
-- "step_id": string identifier (e.g., "1", "2", "3")
-- "method": "GET" | "POST" | "PUT" | "DELETE"
-- "path": the API path (e.g., "/customer")
-- "params": optional dict of query parameters
-- "json_body": optional dict of request body (for POST/PUT)
-- "save_response_fields_as": optional dict mapping var names \
-to response paths (e.g., {{"customer_id": "value.id"}})
-
-Return ONLY the JSON array, no markdown fences, no explanatory text."""
+JSON array of steps: [{{"step_id", "method", "path", "params", "json_body", \
+"save_response_fields_as"}}].
+Return ONLY the JSON array."""
 
 
 def _build_system_prompt() -> str:
     today = date.today().isoformat()
-    return _SYSTEM_PROMPT.format(today=today)
+    return _SYSTEM_PROMPT.format(today=today, endpoint_index=catalog_index_text())
 
 
 # Mime types that Claude can process as native content blocks
@@ -130,8 +98,8 @@ _PDF_TYPES = {"application/pdf"}
 _IMAGE_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
 _TEXT_TYPES = {"text/csv", "text/plain", "text/tab-separated-values"}
 
-# Max tool-use rounds to prevent infinite loops
-_MAX_TOOL_ROUNDS = 10
+# Max tool-use rounds — keep tight to avoid slow exploratory loops
+_MAX_TOOL_ROUNDS = 5
 
 
 def _build_user_content(
@@ -255,11 +223,14 @@ def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
 class LLMApiExecutor:
     """Unified executor: one LLM call with tool use to plan API steps."""
 
-    def __init__(self, *, api_key: str, model: str) -> None:
+    def __init__(
+        self, *, api_key: str, tool_model: str, executor_model: str
+    ) -> None:
         if anthropic is None:
             raise RuntimeError("anthropic package is required for LLMApiExecutor")
         self._client = anthropic.Anthropic(api_key=api_key)
-        self._model = model
+        self._tool_model = tool_model          # Haiku: fast tool calling
+        self._executor_model = executor_model  # Sonnet: precise step generation
         self._validator = ApiCallValidator()
         self._schema_validator = SchemaValidator()
         self._swagger_query = SwaggerQueryService()
@@ -277,8 +248,8 @@ class LLMApiExecutor:
         content_blocks = _build_user_content(prompt, attachments)
 
         logger.info(
-            "Calling LLM for API plan: model=%s prompt_len=%d attachments=%d",
-            self._model, len(prompt), len(attachments),
+            "Calling LLM for API plan: tool_model=%s executor_model=%s prompt_len=%d attachments=%d",
+            self._tool_model, self._executor_model, len(prompt), len(attachments),
         )
         messages: list[dict[str, Any]] = [{"role": "user", "content": content_blocks}]
 
@@ -308,7 +279,8 @@ class LLMApiExecutor:
         all_details: dict[str, Any] = {
             "steps_planned": len(steps),
             "steps_executed": 0,
-            "llm_model": self._model,
+            "tool_model": self._tool_model,
+            "executor_model": self._executor_model,
             "validation_errors": validation.errors,
         }
 
@@ -379,19 +351,21 @@ class LLMApiExecutor:
         messages: list[dict[str, Any]],
         system_prompt: str,
     ) -> list[dict[str, Any]] | None:
-        """Call the LLM in a tool-use loop until it produces the final JSON steps."""
+        """Two-phase LLM call: Haiku for tool lookups, Sonnet for step generation."""
         tool_calls_made = 0
+        tool_context_parts: list[str] = []
 
+        # Phase 1: Haiku does the tool calling (fast, cheap)
+        tool_messages = list(messages)
         for round_num in range(_MAX_TOOL_ROUNDS):
             response = self._client.messages.create(
-                model=self._model,
+                model=self._tool_model,
                 max_tokens=4096,
                 system=system_prompt,
-                messages=messages,
+                messages=tool_messages,
                 tools=SWAGGER_TOOLS,
             )
 
-            # Process response content blocks
             tool_use_blocks = []
             text_blocks = []
             for block in response.content:
@@ -400,53 +374,80 @@ class LLMApiExecutor:
                 elif block.type == "text":
                     text_blocks.append(block.text)
 
-            # If there are tool calls, handle them and continue the loop
-            if tool_use_blocks:
-                # Add assistant response to messages
-                messages.append({"role": "assistant", "content": response.content})
+            if not tool_use_blocks:
+                # Haiku is done with tools — move to phase 2
+                break
 
-                # Process each tool call
-                tool_results = []
-                for tool_block in tool_use_blocks:
-                    tool_result = self._handle_tool_call(
-                        tool_block.name, tool_block.input
-                    )
-                    tool_calls_made += 1
-                    logger.info(
-                        "Tool call %d: %s(%s) → %d chars",
-                        tool_calls_made,
-                        tool_block.name,
-                        json.dumps(tool_block.input),
-                        len(json.dumps(tool_result)),
-                    )
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_block.id,
-                        "content": json.dumps(tool_result, ensure_ascii=False),
-                    })
+            tool_messages.append({"role": "assistant", "content": response.content})
 
-                messages.append({"role": "user", "content": tool_results})
-                continue
-
-            # No tool calls — the LLM produced its final response
-            if text_blocks:
-                raw_text = "\n".join(text_blocks)
-                logger.info(
-                    "LLM response (after %d tool calls): %d chars",
-                    tool_calls_made, len(raw_text),
+            tool_results = []
+            for tool_block in tool_use_blocks:
+                tool_result = self._handle_tool_call(
+                    tool_block.name, tool_block.input
                 )
-                try:
-                    return _parse_steps(raw_text)
-                except (ValueError, json.JSONDecodeError) as exc:
-                    logger.error("Failed to parse LLM response: %s", exc)
-                    return None
+                tool_calls_made += 1
+                logger.info(
+                    "Tool call %d [%s]: %s(%s) → %d chars",
+                    tool_calls_made,
+                    self._tool_model,
+                    tool_block.name,
+                    json.dumps(tool_block.input),
+                    len(json.dumps(tool_result)),
+                )
+                # Collect tool results as context for Sonnet
+                tool_context_parts.append(
+                    f"## {tool_block.name}({json.dumps(tool_block.input)})\n"
+                    f"{json.dumps(tool_result, ensure_ascii=False, indent=2)}"
+                )
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_block.id,
+                    "content": json.dumps(tool_result, ensure_ascii=False),
+                })
 
-            # No text and no tool calls — unexpected
-            logger.error("LLM returned empty response (round %d)", round_num)
+            tool_messages.append({"role": "user", "content": tool_results})
+
+        logger.info(
+            "Phase 1 complete [%s]: %d tool calls. Starting phase 2 [%s]",
+            self._tool_model, tool_calls_made, self._executor_model,
+        )
+
+        # Phase 2: Sonnet generates the final steps (precise, with full schema context)
+        schema_context = "\n\n".join(tool_context_parts)
+        generation_content = list(messages[0]["content"])  # Copy original user content
+        if schema_context:
+            generation_content.append({
+                "type": "text",
+                "text": (
+                    f"\n\nAPI SCHEMA CONTEXT (from endpoint lookups):\n\n"
+                    f"{schema_context}\n\n"
+                    "Now produce the JSON array of API call steps. "
+                    "Use ONLY the field names shown in the schemas above. "
+                    "Return ONLY the JSON array."
+                ),
+            })
+
+        generation_messages: list[dict[str, Any]] = [
+            {"role": "user", "content": generation_content}
+        ]
+
+        response = self._client.messages.create(
+            model=self._executor_model,
+            max_tokens=4096,
+            system=system_prompt,
+            messages=generation_messages,
+        )
+
+        raw_text = response.content[0].text
+        logger.info(
+            "LLM response [%s] (after %d tool calls): %d chars",
+            self._executor_model, tool_calls_made, len(raw_text),
+        )
+        try:
+            return _parse_steps(raw_text)
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.error("Failed to parse LLM response: %s", exc)
             return None
-
-        logger.error("Exceeded max tool rounds (%d)", _MAX_TOOL_ROUNDS)
-        return None
 
     def _handle_tool_call(self, tool_name: str, tool_input: dict[str, Any]) -> Any:
         """Dispatch a tool call to the swagger query service."""
@@ -485,7 +486,21 @@ class LLMApiExecutor:
             path = step.get("path", "")
             params = step.get("params")
             json_body = step.get("json_body")
-            save_fields = step.get("save_response_fields_as", {})
+            save_fields_raw = step.get("save_response_fields_as", {})
+            # Haiku sometimes outputs save_response_fields_as as a list or string
+            # instead of a dict. Normalize it.
+            if isinstance(save_fields_raw, dict):
+                save_fields = save_fields_raw
+            elif isinstance(save_fields_raw, list):
+                # Try to convert list of {key: path} dicts
+                save_fields = {}
+                for item in save_fields_raw:
+                    if isinstance(item, dict):
+                        save_fields.update(item)
+            elif isinstance(save_fields_raw, str):
+                save_fields = {}
+            else:
+                save_fields = {}
 
             path = _substitute_vars(path, saved_vars)
             if params:
@@ -629,7 +644,7 @@ class LLMApiExecutor:
         logger.info("Requesting LLM correction for step %s", failed_step_id)
 
         response = self._client.messages.create(
-            model=self._model,
+            model=self._executor_model,
             max_tokens=4096,
             system=system_prompt,
             messages=correction_messages,

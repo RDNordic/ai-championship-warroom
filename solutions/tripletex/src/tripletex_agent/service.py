@@ -130,9 +130,13 @@ def build_default_service() -> SolverService:
 
     executor = LLMApiExecutor(
         api_key=settings.anthropic_api_key,
-        model=settings.llm_executor_model,
+        tool_model=settings.llm_tool_model,
+        executor_model=settings.llm_executor_model,
     )
-    logger.info("Unified executor initialized: model=%s", settings.llm_executor_model)
+    logger.info(
+        "Unified executor initialized: tool_model=%s executor_model=%s",
+        settings.llm_tool_model, settings.llm_executor_model,
+    )
 
     return SolverService(
         llm_executor=executor,

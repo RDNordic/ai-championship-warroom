@@ -54,6 +54,7 @@ class AppSettings:
     tripletex_base_url: str | None
     tripletex_session_token: str | None
     anthropic_api_key: str | None
+    llm_tool_model: str
     llm_executor_model: str
     host: str
     port: int
@@ -68,6 +69,9 @@ class AppSettings:
             tripletex_base_url=os.getenv("TRIPLETEX_BASE_URL"),
             tripletex_session_token=os.getenv("TRIPLETEX_SESSION_TOKEN"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            llm_tool_model=os.getenv(
+                "LLM_TOOL_MODEL", "claude-haiku-4-5-20251001"
+            ),
             llm_executor_model=os.getenv(
                 "LLM_EXECUTOR_MODEL", "claude-sonnet-4-6"
             ),

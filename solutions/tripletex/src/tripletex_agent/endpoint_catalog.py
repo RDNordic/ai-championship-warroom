@@ -243,5 +243,23 @@ def catalog_as_text(swagger: dict[str, Any] | None = None) -> str:
     return "\n".join(lines)
 
 
+def catalog_index_text(swagger: dict[str, Any] | None = None) -> str:
+    """Render a compact endpoint index (method + path + summary) for the system prompt.
+
+    This is lightweight (~2K tokens) and gives the LLM awareness of all
+    available endpoints without field-level detail. The LLM should then
+    use lookup_endpoint() to get full schemas for the endpoints it needs.
+    """
+    catalog = build_catalog(swagger)
+    lines: list[str] = []
+    for entry in catalog:
+        desc = entry.get("description", "")
+        desc = desc.split(".")[0] if desc else ""
+        if len(desc) > 60:
+            desc = desc[:57] + "..."
+        lines.append(f"{entry['method']:6s} {entry['path']:50s} {desc}")
+    return "\n".join(lines)
+
+
 # Pre-built catalog for the validator
 ENDPOINT_CATALOG = build_catalog()

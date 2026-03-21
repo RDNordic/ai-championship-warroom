@@ -119,7 +119,7 @@ class ApiCallValidator:
         # 5. Check save_response_fields_as references valid patterns
         save_fields = step.get("save_response_fields_as", {})
         if save_fields and not isinstance(save_fields, dict):
-            errors.append(f"Step {step_id}: save_response_fields_as must be a dict")
+            warnings.append(f"Step {step_id}: save_response_fields_as is not a dict, will normalize")
 
         return ValidationResult(
             valid=len(errors) == 0,
