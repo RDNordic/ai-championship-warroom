@@ -56,6 +56,8 @@ class CustomerCreateWorkflow(BaseWorkflow):
             {
                 "name": name.strip(),
                 "organizationNumber": _normalize_org_number(fields.get("organizationNumber")),
+                "isSupplier": fields.get("isSupplier"),
+                "isCustomer": fields.get("isCustomer"),
                 "email": fields.get("email"),
                 "invoiceEmail": fields.get("invoiceEmail"),
                 "phoneNumber": fields.get("phoneNumber"),
@@ -115,10 +117,128 @@ class ProductCreateWorkflow(BaseWorkflow):
         )
 
 
+class OrderInvoicePaymentWorkflow(BaseWorkflow):
+    family = TaskFamily.INVOICING
+    entity_type = "invoice"
+    supported_operations = (Operation.CREATE,)
+
+    def supports(self, plan: TaskPlan) -> bool:
+        if not super().supports(plan):
+            return False
+        payload = plan.primary_payload("invoice")
+        fields = payload.fields if payload is not None else {}
+        return (
+            fields.get("createOrder") is True
+            and fields.get("convertOrderToInvoice") is True
+        )
+
+    async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
+        fields = _require_payload(plan, "invoice")
+
+        customer_lookup = _as_dict(fields.get("customerLookup"))
+        if not customer_lookup:
+            raise WorkflowExecutionError("Order conversion requires a customer reference")
+        customer = await _find_single_customer(client, customer_lookup)
+        customer_id = _extract_id(customer)
+        if customer_id is None:
+            raise WorkflowExecutionError("Matched customer did not include an id")
+
+        line_fields_list = _invoice_line_field_list(fields)
+        order_lines = await _build_invoice_order_lines(client, line_fields_list)
+
+        invoice_date = _invoice_date(fields)
+        delivery_date = _invoice_delivery_date(fields, invoice_date)
+
+        order_body = _compact_mapping(
+            {
+                "customer": {"id": customer_id},
+                "orderDate": invoice_date,
+                "deliveryDate": delivery_date,
+                "invoiceComment": fields.get("invoiceComment"),
+                "orderLines": order_lines,
+            }
+        )
+        order_response = await client.post("/order", json_body=order_body)
+        created_order = client.unwrap_value(order_response)
+        order_id = _extract_id(created_order)
+        if order_id is None:
+            raise WorkflowExecutionError("Created order did not include an id")
+
+        invoice_response = await client.put(f"/order/{order_id}/:invoice")
+        created_invoice = await _invoice_from_order_conversion(
+            client=client,
+            payload=client.unwrap_value(invoice_response),
+            customer_lookup=customer_lookup,
+            invoice_date=invoice_date,
+        )
+        invoice_id = _extract_id(created_invoice)
+        if invoice_id is None:
+            raise WorkflowExecutionError("Created invoice did not include an id")
+
+        result_details: dict[str, Any] = {
+            "entity": "invoice",
+            "customerId": customer_id,
+            "orderId": order_id,
+            "invoiceId": invoice_id,
+            "invoiceNumber": created_invoice.get("invoiceNumber"),
+            "createdOrder": created_order,
+            "createdInvoice": created_invoice,
+        }
+        intended_operations = ["GET /customer"]
+        if any(_as_dict(lf.get("productLookup")) for lf in line_fields_list):
+            intended_operations.append("GET /product")
+        intended_operations.extend(["POST /order", "PUT /order/{id}/:invoice"])
+
+        if fields.get("registerPayment") is True:
+            payment_date = _normalize_date(fields.get("paymentDate")) or date.today().isoformat()
+            paid_amount = _resolve_invoice_payment_amount(fields, created_invoice, order_lines)
+            payment_type_lookup = _as_dict(fields.get("paymentTypeLookup"))
+            payment_type = await _find_invoice_payment_type(client, payment_type_lookup)
+            payment_type_id = _extract_id(payment_type)
+            if payment_type_id is None:
+                raise WorkflowExecutionError("Matched payment type did not include an id")
+
+            payment_response = await client.put(
+                f"/invoice/{invoice_id}/:payment",
+                params=_compact_mapping(
+                    {
+                        "paymentDate": payment_date,
+                        "paymentTypeId": payment_type_id,
+                        "paidAmount": paid_amount,
+                        "paidAmountCurrency": _coerce_number(fields.get("paidAmountCurrency")),
+                    }
+                ),
+            )
+            result_details.update(
+                {
+                    "paymentTypeId": payment_type_id,
+                    "paidAmount": paid_amount,
+                    "paymentUpdated": client.unwrap_value(payment_response),
+                }
+            )
+            intended_operations.extend(
+                ["GET /invoice/paymentType", "PUT /invoice/{id}/:payment"]
+            )
+
+        return WorkflowResult(
+            name="order_invoice_payment",
+            intended_operations=intended_operations,
+            resource_ids=[order_id, invoice_id],
+            details=result_details,
+        )
+
+
 class InvoiceCreateWorkflow(BaseWorkflow):
     family = TaskFamily.INVOICING
     entity_type = "invoice"
     supported_operations = (Operation.CREATE,)
+
+    def supports(self, plan: TaskPlan) -> bool:
+        if not super().supports(plan):
+            return False
+        payload = plan.primary_payload("invoice")
+        fields = payload.fields if payload is not None else {}
+        return fields.get("supplierInvoice") is not True
 
     async def execute(self, *, plan: TaskPlan, client: TripletexClient) -> WorkflowResult:
         fields = _require_payload(plan, "invoice")
@@ -132,28 +252,11 @@ class InvoiceCreateWorkflow(BaseWorkflow):
         if customer_id is None:
             raise WorkflowExecutionError("Matched customer did not include an id")
 
-        # Support both single line and multi-line invoices
-        lines_raw = fields.get("lines")
-        if isinstance(lines_raw, list) and lines_raw:
-            line_fields_list = [_as_dict(l) or {} for l in lines_raw]
-        else:
-            single = _as_dict(fields.get("line")) or {}
-            line_fields_list = [single]
-
-        needs_vat = any(
-            _coerce_number(lf.get("vatPercent")) is not None for lf in line_fields_list
-        )
-        vat_types = await _fetch_vat_types(client) if needs_vat else []
-        order_lines = [
-            await _build_invoice_order_line(client, lf, vat_types=vat_types)
-            for lf in line_fields_list
-        ]
-
-        invoice_date = _normalize_date(fields.get("invoiceDate")) or date.today().isoformat()
-        due_date = _normalize_date(fields.get("invoiceDueDate")) or _add_days(
-            invoice_date, _DEFAULT_INVOICE_DUE_DAYS
-        )
-        delivery_date = _normalize_date(fields.get("deliveryDate")) or invoice_date
+        line_fields_list = _invoice_line_field_list(fields)
+        order_lines = await _build_invoice_order_lines(client, line_fields_list)
+        invoice_date = _invoice_date(fields)
+        due_date = _invoice_due_date(fields, invoice_date)
+        delivery_date = _invoice_delivery_date(fields, invoice_date)
 
         bank_account_id: int | None = None
         bank_account_was_updated = False
@@ -231,13 +334,7 @@ class InvoicePaymentWorkflow(BaseWorkflow):
             raise WorkflowExecutionError("Matched invoice did not include an id")
 
         payment_date = _normalize_date(fields.get("paymentDate")) or date.today().isoformat()
-        paid_amount = _coerce_number(fields.get("paidAmount"))
-        if paid_amount is None:
-            paid_amount = _coerce_number(invoice.get("amountOutstanding"))
-        if paid_amount is None:
-            paid_amount = _coerce_number(invoice.get("amount"))
-        if paid_amount is None or paid_amount <= 0:
-            raise WorkflowExecutionError("Invoice payment requires a positive paid amount")
+        paid_amount = _resolve_invoice_payment_amount(fields, invoice)
 
         payment_type_lookup = _as_dict(fields.get("paymentTypeLookup"))
         payment_type = await _find_invoice_payment_type(client, payment_type_lookup)
@@ -1153,6 +1250,8 @@ async def _find_single_invoice(
                 "invoiceNumber",
                 "invoiceDate",
                 "amount",
+                "amountExcludingVat",
+                "amountExcludingVatCurrency",
                 "amountOutstanding",
                 "isCreditNote",
                 "isCredited",
@@ -1360,6 +1459,125 @@ async def _find_single_employee(
     if len(matches) > 1:
         raise WorkflowExecutionError(f"Employee lookup was ambiguous for {lookup!r}")
     return matches[0]
+
+
+def _invoice_line_field_list(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    lines_raw = fields.get("lines")
+    if isinstance(lines_raw, list) and lines_raw:
+        return [_as_dict(line) or {} for line in lines_raw]
+    return [_as_dict(fields.get("line")) or {}]
+
+
+async def _build_invoice_order_lines(
+    client: TripletexClient,
+    line_fields_list: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    needs_vat = any(_coerce_number(line.get("vatPercent")) is not None for line in line_fields_list)
+    vat_types = await _fetch_vat_types(client) if needs_vat else []
+    return [
+        await _build_invoice_order_line(client, line_fields, vat_types=vat_types)
+        for line_fields in line_fields_list
+    ]
+
+
+def _invoice_date(fields: dict[str, Any]) -> str:
+    return _normalize_date(fields.get("invoiceDate")) or date.today().isoformat()
+
+
+def _invoice_due_date(fields: dict[str, Any], invoice_date: str) -> str:
+    return _normalize_date(fields.get("invoiceDueDate")) or _add_days(
+        invoice_date, _DEFAULT_INVOICE_DUE_DAYS
+    )
+
+
+def _invoice_delivery_date(fields: dict[str, Any], invoice_date: str) -> str:
+    return _normalize_date(fields.get("deliveryDate")) or invoice_date
+
+
+async def _invoice_from_order_conversion(
+    *,
+    client: TripletexClient,
+    payload: Any,
+    customer_lookup: dict[str, Any],
+    invoice_date: str,
+) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        if _extract_id(payload) is not None:
+            return payload
+        for key in ("invoice", "createdInvoice"):
+            nested = payload.get(key)
+            if isinstance(nested, dict) and _extract_id(nested) is not None:
+                return nested
+        invoice_id = _coerce_int(payload.get("invoiceId"))
+        if invoice_id is not None:
+            return await _find_single_invoice(client, {"id": invoice_id})
+
+    return await _find_single_invoice(
+        client,
+        {
+            "customerLookup": customer_lookup,
+            "invoiceDate": invoice_date,
+        },
+    )
+
+
+def _resolve_invoice_payment_amount(
+    fields: dict[str, Any],
+    invoice: dict[str, Any],
+    order_lines: list[dict[str, Any]] | None = None,
+) -> float:
+    paid_amount = _coerce_number(fields.get("paidAmount"))
+    if paid_amount is not None and paid_amount > 0:
+        normalized_paid_amount = _normalize_invoice_payment_amount(
+            paid_amount=paid_amount,
+            invoice=invoice,
+            paid_amount_excluding_vat=fields.get("paidAmountExcludingVat") is True,
+        )
+        if normalized_paid_amount > 0:
+            return normalized_paid_amount
+
+    paid_amount = _coerce_number(invoice.get("amountOutstanding"))
+    if paid_amount is not None and paid_amount > 0:
+        return paid_amount
+
+    paid_amount = _coerce_number(invoice.get("amount"))
+    if paid_amount is not None and paid_amount > 0:
+        return paid_amount
+
+    total = 0.0
+    for line in order_lines or []:
+        count = _coerce_number(line.get("count")) or 1.0
+        unit_price = _coerce_number(line.get("unitPriceExcludingVatCurrency"))
+        if unit_price is not None:
+            total += count * unit_price
+    if total <= 0:
+        raise WorkflowExecutionError("Invoice payment requires a positive paid amount")
+    return total
+
+
+def _normalize_invoice_payment_amount(
+    *,
+    paid_amount: float,
+    invoice: dict[str, Any],
+    paid_amount_excluding_vat: bool,
+) -> float:
+    if not paid_amount_excluding_vat:
+        return paid_amount
+
+    outstanding = _coerce_number(invoice.get("amountOutstanding"))
+    if outstanding is None or outstanding <= 0:
+        return paid_amount
+
+    amount_excluding_vat = _coerce_number(invoice.get("amountExcludingVat"))
+    if amount_excluding_vat is None:
+        amount_excluding_vat = _coerce_number(invoice.get("amountExcludingVatCurrency"))
+
+    tolerance = 0.01
+    if amount_excluding_vat is not None and abs(amount_excluding_vat - paid_amount) <= tolerance:
+        if outstanding + tolerance >= paid_amount:
+            return outstanding
+
+    return paid_amount
 
 
 async def _fetch_vat_types(client: TripletexClient) -> list[dict[str, Any]]:

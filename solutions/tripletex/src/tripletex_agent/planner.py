@@ -228,6 +228,20 @@ class KeywordTaskPlanner:
 
     _rules = (
         IntentRule(
+            TaskFamily.INVOICING,
+            Operation.CREATE,
+            "invoice",
+            (
+                "convert order to invoice",
+                "convert the order to invoice",
+                "order to invoice",
+                "konverter ordren til faktura",
+                "konverter ordre til faktura",
+                "konverter ordren til ein faktura",
+                "konverter ordre til ein faktura",
+            ),
+        ),
+        IntentRule(
             TaskFamily.DEPARTMENTS,
             Operation.CREATE,
             "department",
@@ -266,6 +280,13 @@ class KeywordTaskPlanner:
                 "betal faktura",
                 "betale faktura",
                 "innbetaling",
+                "register payment",
+                "register the payment",
+                "registe o pagamento",
+                "registre o pagamento",
+                "registrar o pagamento",
+                "registre el pago",
+                "registrar el pago",
             ),
         ),
         IntentRule(
@@ -305,9 +326,20 @@ class KeywordTaskPlanner:
             (
                 "customer",
                 "kunde",
+                "supplier",
+                "vendor",
+                "leverandør",
+                "leverandor",
+                "fornecedor",
+                "proveedor",
+                "fournisseur",
                 "register customer",
+                "register supplier",
+                "add supplier",
                 "add customer",
                 "registrer kunde",
+                "registrer leverandør",
+                "registrer leverandor",
                 "legg til kunde",
             ),
         ),
@@ -455,7 +487,7 @@ class KeywordTaskPlanner:
     )
 
     def plan(self, prompt: str, attachments: list[AttachmentFile]) -> TaskPlan:
-        normalized_prompt = prompt.lower()
+        normalized_prompt = _EMAIL_RE.sub("<email>", prompt.lower())
         attachment_facts = _attachment_facts(attachments)
 
         for rule in self._rules:
@@ -609,6 +641,12 @@ class FallbackPlanner:
             return self._fallback.plan(prompt, attachments)
 
         fallback_plan = self._fallback.plan(prompt, attachments)
+        if plan.operation == Operation.UNKNOWN and fallback_plan.operation != Operation.UNKNOWN:
+            logger.info("Primary planner returned unknown operation; using keyword fallback")
+            return fallback_plan
+        if plan.primary_entity_type() is None and fallback_plan.primary_entity_type() is not None:
+            logger.info("Primary planner returned no primary entity; using keyword fallback")
+            return fallback_plan
         return _merge_with_fallback_plan(plan, fallback_plan)
 
 
@@ -817,6 +855,8 @@ def _invoice_lookup_and_fields_from_payload(
             fields["paymentDate"] = payload["paymentDate"]
         if "paidAmount" in payload:
             fields["paidAmount"] = payload["paidAmount"]
+        if "paidAmountExcludingVat" in payload:
+            fields["paidAmountExcludingVat"] = payload["paidAmountExcludingVat"]
         if "paidAmountCurrency" in payload:
             fields["paidAmountCurrency"] = payload["paidAmountCurrency"]
         if "paymentTypeLookup" in payload:
@@ -1275,6 +1315,9 @@ _SEND_INTENT_POSITIVE_PATTERNS: tuple[str, ...] = (
 
 def _extract_customer_payload(prompt: str) -> dict[str, object]:
     payload: dict[str, object] = {}
+    if _mentions_supplier_party_prompt(prompt):
+        payload["isSupplier"] = True
+        payload["isCustomer"] = False
     name = _extract_named_value(
         prompt,
         [
@@ -1289,6 +1332,17 @@ def _extract_customer_payload(prompt: str) -> dict[str, object]:
             (
                 r"(?:create|register|add)\s+(?:a|an)\s+customer"
                 r"(?:\s+(?:named|called|with name))?\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:supplier|vendor|leverand[oø]r|fornecedor|proveedor|fournisseur)\s+"
+                r"(?:named|med navn|with name|som heter|called)?\s*"
+                r"(?P<value>.+?)(?=\s+(?:com|with|med)\b|\s*(?:,|$))"
+            ),
+            (
+                r"(?:register|add|create|registrer|legg til|registe|registre|registrar)\s+"
+                r"(?:the\s+)?(?:supplier|vendor|leverand[oø]r|fornecedor|proveedor|fournisseur)"
+                r"(?:\s+(?:named|called|with name))?\s+"
+                r"(?P<value>.+?)(?=\s+(?:com|with|med)\b|\s*(?:,|$))"
             ),
         ],
     )
@@ -1501,6 +1555,8 @@ def _extract_product_payload(prompt: str) -> dict[str, object]:
 
 def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     payload: dict[str, object] = {}
+    if _mentions_supplier_invoice_prompt(prompt):
+        payload["supplierInvoice"] = True
     customer_lookup: dict[str, object] = {}
     customer_name = _extract_invoice_customer_name(prompt)
     if customer_name:
@@ -1558,6 +1614,16 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     if comment:
         payload["comment"] = comment
 
+    lines = _extract_structured_invoice_lines(prompt)
+    if lines:
+        payload["lines"] = lines
+
+    if _mentions_order_to_invoice_conversion(prompt):
+        payload["createOrder"] = True
+        payload["convertOrderToInvoice"] = True
+        if _mentions_register_payment_after_invoice(prompt):
+            payload["registerPayment"] = True
+
     line: dict[str, object] = {}
     product_name = _extract_named_value(
         prompt,
@@ -1604,10 +1670,133 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     if line and "count" not in line:
         line["count"] = 1.0
 
-    if line:
+    if line and "lines" not in payload:
         payload["line"] = line
 
     return payload
+
+
+def _extract_structured_invoice_lines(prompt: str) -> list[dict[str, object]]:
+    matches = list(
+        re.finditer(
+            (
+                r"(?P<name>[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 '&+./-]*?)\s*"
+                r"\((?P<number>[A-Z0-9._-]+)\)\s+"
+                r"(?:til|for|de|por|uber)\s+"
+                r"(?P<price>\d+(?:[.,]\d+)?)\s*(?:kr|nok)\b"
+                r"(?:\s+med\s+(?P<vat>\d+(?:[.,]\d+)?)\s*%\s*"
+                r"(?:mva|vat|tva|iva|mwst))?"
+            ),
+            prompt,
+            flags=re.IGNORECASE,
+        )
+    )
+    if len(matches) < 2:
+        return []
+
+    lines: list[dict[str, object]] = []
+    for match in matches:
+        line: dict[str, object] = {
+            "count": 1.0,
+            "unitPriceExcludingVatCurrency": _parse_decimal(match.group("price")),
+            "productLookup": {
+                "name": _clean_structured_line_name(match.group("name")),
+                "productNumber": _clean_extracted_value(match.group("number")),
+            },
+        }
+        vat_raw = match.group("vat")
+        if vat_raw is not None:
+            line["vatPercent"] = _parse_decimal(vat_raw)
+        lines.append(line)
+
+    return lines
+
+
+def _mentions_order_to_invoice_conversion(prompt: str) -> bool:
+    normalized_prompt = _normalize_prompt_text(prompt)
+    if not re.search(r"\b(?:order|ordre)\b", normalized_prompt):
+        return False
+    return bool(
+        re.search(
+            r"\b(?:convert|konverter)\w*\b.*\b(?:invoice|faktura)\b",
+            normalized_prompt,
+        )
+    )
+
+
+def _mentions_register_payment_after_invoice(prompt: str) -> bool:
+    normalized_prompt = _normalize_prompt_text(prompt)
+    if re.search(r"\b(?:full|heil|hele|complete)\s+(?:payment|betaling)\b", normalized_prompt):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:register|registrer|mark|betal)\w*\b.*\b(?:payment|betaling|paid|betalt)\b",
+            normalized_prompt,
+        )
+    )
+
+
+def _mentions_supplier_invoice_prompt(prompt: str) -> bool:
+    normalized_prompt = _normalize_prompt_text(prompt)
+
+    explicit_patterns = (
+        r"\bsupplier invoice\b",
+        r"\bpurchase invoice\b",
+        r"\bvendor bill\b",
+        r"\bincoming invoice\b",
+        r"\bleverandorfaktura\b",
+        r"\bfactura del proveedor\b",
+        r"\bfactura de proveedor\b",
+        r"\bfatura do fornecedor\b",
+        r"\bfacture fournisseur\b",
+    )
+    if any(re.search(pattern, normalized_prompt) for pattern in explicit_patterns):
+        return True
+
+    has_invoice_word = re.search(
+        r"\b(?:invoice|faktura|factura|facture|fatura|rechnung)\b",
+        normalized_prompt,
+    )
+    if not has_invoice_word:
+        return False
+
+    has_supplier_word = re.search(
+        r"\b(?:supplier|vendor|leverandor|proveedor|fornecedor|fournisseur)\b",
+        normalized_prompt,
+    )
+    if has_supplier_word:
+        return True
+
+    has_received_word = re.search(
+        r"\b(?:received|mottatt|recibid[oa]|recebid[oa])\b",
+        normalized_prompt,
+    )
+    has_account_word = re.search(r"\b(?:account|cuenta|konto)\b", normalized_prompt)
+    return bool(has_received_word and has_account_word)
+
+
+def _mentions_supplier_party_prompt(prompt: str) -> bool:
+    normalized_prompt = _normalize_prompt_text(prompt)
+    return bool(
+        re.search(
+            r"\b(?:supplier|vendor|leverandor|fornecedor|proveedor|fournisseur)\b",
+            normalized_prompt,
+        )
+    )
+
+
+def _clean_structured_line_name(value: str) -> str:
+    cleaned = _clean_extracted_value(value)
+    cleaned = re.sub(
+        (
+            r"^(?:med\s+tre\s+produktlinjer:\s*|med\s+produktlinjer:\s*|"
+            r"med\s+produkta\s+|med\s+produkter\s+|og\s+)"
+        ),
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return _clean_extracted_value(cleaned)
 
 
 def _extract_invoice_action_components(
@@ -1661,8 +1850,12 @@ def _extract_invoice_action_components(
                 prompt,
                 flags=re.IGNORECASE,
             )
+        if amount_match is None:
+            amount_match = _search_invoice_amount_excluding_vat(prompt)
         if amount_match:
             fields["paidAmount"] = _parse_decimal(amount_match.group("value"))
+            if _search_invoice_amount_excluding_vat(prompt) is not None:
+                fields["paidAmountExcludingVat"] = True
 
         if "paymentTypeLookup" not in fields:
             if re.search(r"\b(?:bank|bankkonto|bank account)\b", prompt, flags=re.IGNORECASE):
@@ -1959,7 +2152,7 @@ def _extract_invoice_customer_name(prompt: str) -> str | None:
         prompt,
         [
             (
-                r"(?:for|to)\s+(?:customer|kunde)\s+(?P<value>.+?)"
+                r"(?:for|to)\s+(?:customer|kunde(?:n)?)\s+(?P<value>.+?)"
                 r"(?=\s*(?:\(|for\s+\d+(?:[.,]\d+)?\s*nok\b|invoice\s+(?:is\s+)?for\b|$))"
             ),
             (
@@ -2048,6 +2241,7 @@ def _strip_customer_suffixes(value: str) -> str:
                 r"organization number|organisasjonsnummer|orgnr|phone|telefon|mobile|"
                 r"mobil(?:nummer)?|language|språk|description|beskrivelse)\b"
             ),
+            r"\b(?:numero de organiza(?:c(?:ao|ão)|cion)|n[úu]mero de organiza(?:ç|c)[ãa]o|n[úu]mero de organizaci[oó]n)\b",
         ],
     )
 
