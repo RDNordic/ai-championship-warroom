@@ -35,6 +35,11 @@ The failing endpoint {failed_method} {failed_path} accepts these fields:
 - PUT /invoice/{{id}}/:createCreditNote uses QUERY PARAMS (date, comment, sendToCustomer), NOT json_body
 - Do not send read-only fields — they were already stripped by the validator
 - Use only field names from the endpoint schema above
+- If "Unresolved variables" error: a previous GET returned empty results. \
+Try a broader search (e.g. GET /department?count=1&sorting=id instead of searching by name). \
+Or create the missing entity first (e.g. POST /department to create it).
+- save_response_fields_as format: key=your_variable_name, value=response_path. \
+For lists: "values.0.id". For single objects: "value.id".
 
 ## Your task
 Fix the failed step and return the corrected REMAINING steps as a JSON array.

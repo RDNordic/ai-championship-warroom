@@ -68,7 +68,12 @@ name, value is the dot-path into the response. For lists: "values.0.id".
 RECIPES:
 
 ## Employee Creation
-1. GET /department (find any). 2. POST /employee (firstName, lastName, department ref, userType: "NO_ACCESS").
+1. If a specific department is named: GET /department?name=X. \
+If that returns empty, GET /department?count=1&sorting=id to get ANY department. \
+If no department is named: GET /department?count=1&sorting=id directly. \
+A department is ALWAYS required — never skip this step.
+2. POST /employee with firstName, lastName, department: {{"id": $dept_id}}, \
+userType: "NO_ACCESS", dateOfBirth (if known), email, etc.
 
 ## Project Creation
 POST /project requires: name, projectManager, customer, startDate, isInternal.
