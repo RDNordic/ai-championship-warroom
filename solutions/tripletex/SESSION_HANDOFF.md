@@ -1,10 +1,10 @@
 # SESSION_HANDOFF.md
 
-## Checkpoint (2026-03-21 ~22:00 CET)
+## Checkpoint (2026-03-21 ~22:30 CET)
 
-Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hitting 7-8/8 on simple/medium tasks, 6-7/10 on some complex tasks. Strategy: queue 3 runs at a time, fix root causes in bulk.
+Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hitting 8/8 on simple/medium tasks. Strategy: queue 3 runs at a time, fix root causes in bulk. 17 fixes deployed.
 
-**Current best scores: 8/8 consistently on simple tasks, 6-7/10 on medium, timesheet+invoice+credit notes working. 15 fixes deployed.**
+**Current best scores: 8/8 consistently. Tasks we ace: employee, customer, product, department, project, invoice, credit note, timesheet+invoice, agio/exchange rate. Remaining gap: voucher/expense VAT math.**
 
 **Branch: `tripletex/complex-multi-step-project`**
 
@@ -50,6 +50,10 @@ Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hit
 | 21:46 | 0/10, 2/10, 7/7 | Farming |
 | 21:51 | 0/10, 2/10, 7/7 | Farming |
 | 21:57 | 8/8, 0/14, 2/10 | Farming |
+| 22:09 | 6/6, 0/13, 13/22 | 13/22 on complex task! (may be KO's run) |
+| 22:12 | 0/10, 0/13, 2/8 | Voucher VAT math failures |
+| 22:17 | 0/10, 2/10, 0/13 | Same pattern |
+| 22:29 | 8/8, 8/8, 0/13 | Back on track, dept fallback + employee inject working |
 
 ## What Works
 
@@ -84,6 +88,8 @@ Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hit
 13. **Expense voucher recipe in system prompt** — correct VAT math, employee refs, 2-posting pattern with account lookup guide.
 14. **Block unbalanced vouchers** — return failure immediately when postings don't sum to 0, so self-correction can fix instead of sending doomed request.
 15. **Auto-fallback on empty entity lookups** — department/employee/account GETs that return empty auto-retry with broader params (any dept, any employee, query search).
+16. **Account lookup recipe in system prompt** — common 4-digit Norwegian account numbers to prevent hallucinated 5-digit numbers.
+17. **Auto-inject employee refs into voucher postings** — propagates employee ref across all postings, or finds one from saved_vars. Fixes 'Ansatt mangler' errors.
 
 ## All Fixes Deployed and Scoring
 
