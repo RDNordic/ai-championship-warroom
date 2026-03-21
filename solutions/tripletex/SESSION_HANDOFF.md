@@ -1,10 +1,10 @@
 # SESSION_HANDOFF.md
 
-## Checkpoint (2026-03-21 ~19:00 CET)
+## Checkpoint (2026-03-21 ~21:20 CET)
 
-Tripletex agent is deployed to Google Cloud Run and actively scoring. Deploy-score-fix cycle running from Windows/PowerShell. Chris has a parallel instance (`tripletex-agent`).
+Tripletex agent deployed to Cloud Run, actively farming scores. Consistently hitting 7-8/8 on simple/medium tasks, 6-7/10 on some complex tasks. Strategy: queue 3 runs at a time, fix root causes in bulk.
 
-**Current best score: 8/8 on simple tasks. Complex tasks (travel expense, bank reconciliation, ledger corrections) still failing.**
+**Current best scores: 8/8 consistently on simple tasks, 6-7/10 on medium, timesheet+invoice working.**
 
 **Branch: `tripletex/complex-multi-step-project`**
 
@@ -37,6 +37,13 @@ Tripletex agent is deployed to Google Cloud Run and actively scoring. Deploy-sco
 | 17:41 | 0/10, 0/13, 0/14 | Complex tasks + 500 crash on string correction steps |
 | 17:46 | 8/8 | Employee creation, clean |
 | 17:54 | 8/8 + 0/10 | Customer creation OK, cost analysis used placeholder names |
+| 18:13 | 0/10, 7/10, 0/7 | Agio task 7/10! Bank account still blocking invoices |
+| 18:44 | 5/8, 0/8, 0/8 | Bank account pre-flight working, VAT codes wrong |
+| 19:24 | 2/11, 8/8, 0/10 | Date injection working |
+| 20:05 | 2/11, 8/8, 0/10 | Timesheet+invoice 8/8! Invoice creation unblocked |
+| 21:12 | 7/7, 7/7, 6/10 | Consistent scoring |
+| 21:19 | 8/8, 6/7, 2/7 | Farming |
+| 21:21 | 8/8, 7/7, 2/7 | Consistent 7-8/8 |
 
 ## What Works
 
@@ -63,13 +70,13 @@ Tripletex agent is deployed to Google Cloud Run and actively scoring. Deploy-sco
 5. **Better error logging** — `repr(exc)` fallback for empty exception messages.
 6. **Non-dict correction steps** — skip gracefully instead of 500 crash.
 7. **Field name renames** — `voucherDate→date`, `address→postalAddress` in schema validator.
-8. **Strip `fields` param from GETs** — prevents hallucinated field names (NOT YET SCORED).
-9. **Retry on proxy timeouts** — 3 attempts with backoff on ConnectTimeout (NOT YET SCORED).
+8. **Strip `fields` param from GETs** — prevents hallucinated field names causing silent failures.
+9. **Retry on proxy timeouts** — 3 attempts with backoff on ConnectTimeout.
+10. **Pre-flight bank account setup** — auto-configures bank account number on sandbox, unblocking all invoice creation.
+11. **Auto-inject orderDate/deliveryDate** — injects today's date into invoice order objects when LLM omits them.
+12. **Auto-inject voucher date** — injects today's date on voucher POSTs when date field is missing.
 
-## Latest Unscored Fixes (deployed but not yet submitted against)
-
-- Strip `fields` query param from all GET requests (prevents hallucinated field names)
-- Retry with exponential backoff on Tripletex proxy ConnectTimeout/ReadTimeout
+## All Fixes Deployed and Scoring
 
 ## Cloud Run Logs
 
