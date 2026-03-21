@@ -258,12 +258,11 @@ class SolverService:
             workflow_name,
             len(api_call_plan.steps),
             api_call_plan.confidence,
-        )
+            )
 
 
-def build_default_service() -> SolverService:
-    settings = AppSettings.load()
-    workflows = WorkflowRegistry(
+def build_default_workflow_registry() -> WorkflowRegistry:
+    return WorkflowRegistry(
         workflows=[
             # Creates
             CustomerCreateWorkflow(),
@@ -290,6 +289,11 @@ def build_default_service() -> SolverService:
         ],
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )
+
+
+def build_default_service() -> SolverService:
+    settings = AppSettings.load()
+    workflows = build_default_workflow_registry()
 
     return SolverService(
         planner=build_default_planner(settings),

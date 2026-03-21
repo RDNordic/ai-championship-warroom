@@ -24,7 +24,7 @@ class _FakeOpenAIClient:
         self.responses = _FakeResponses(parsed)
 
 
-def test_build_default_api_call_planner_requires_flag_and_api_key(tmp_path: Path) -> None:
+def test_build_default_api_call_planner_requires_flag_and_api_key() -> None:
     settings = AppSettings(
         tripletex_base_url=None,
         tripletex_session_token=None,
@@ -35,7 +35,7 @@ def test_build_default_api_call_planner_requires_flag_and_api_key(tmp_path: Path
         host="0.0.0.0",
         port=8000,
         log_level="INFO",
-        solve_event_log_path=tmp_path / "solve-events.jsonl",
+        solve_event_log_path=Path("solve-events.test.jsonl"),
     )
 
     assert build_default_api_call_planner(settings) is None
@@ -80,3 +80,4 @@ def test_openai_api_call_planner_returns_structured_plan(monkeypatch) -> None:
     payload = fake_client.responses.calls[0]
     assert payload["model"] == "gpt-5-mini"
     assert payload["text_format"] is ApiCallPlan
+    assert "temperature" not in payload

@@ -9,7 +9,6 @@ from ..client import TripletexAPIError, TripletexClient
 from ..task_plan import Operation, TaskFamily, TaskPlan
 from .base import BaseWorkflow, WorkflowExecutionError, WorkflowResult
 
-_DEFAULT_INVOICE_BANK_ACCOUNT_NUMBER = "12345678903"
 _DEFAULT_INVOICE_DUE_DAYS = 14
 _DEFAULT_INVOICE_LOOKUP_DATE_FROM = "2000-01-01"
 _DEFAULT_INVOICE_LOOKUP_DATE_TO = "2100-01-01"
@@ -258,14 +257,6 @@ class InvoiceCreateWorkflow(BaseWorkflow):
         due_date = _invoice_due_date(fields, invoice_date)
         delivery_date = _invoice_delivery_date(fields, invoice_date)
 
-        bank_account_id: int | None = None
-        bank_account_was_updated = False
-        if send_to_customer:
-            bank_account, bank_account_was_updated = await _ensure_invoice_bank_account_configured(
-                client
-            )
-            bank_account_id = _extract_id(bank_account)
-
         body = _compact_mapping(
             {
                 "invoiceDate": invoice_date,
@@ -297,11 +288,6 @@ class InvoiceCreateWorkflow(BaseWorkflow):
         intended_operations = ["GET /customer", "POST /invoice"]
         if any(_as_dict(lf.get("productLookup")) for lf in line_fields_list):
             intended_operations.insert(1, "GET /product")
-        if send_to_customer:
-            ledger_index = 1 if "GET /product" not in intended_operations else 2
-            intended_operations.insert(ledger_index, "GET /ledger/account")
-        if bank_account_was_updated:
-            intended_operations.insert(len(intended_operations) - 1, "PUT /ledger/account/{id}")
 
         return WorkflowResult(
             name="invoice_create",
@@ -312,8 +298,8 @@ class InvoiceCreateWorkflow(BaseWorkflow):
                 "customerId": customer_id,
                 "invoiceId": created_id,
                 "sendToCustomer": send_to_customer,
-                "invoiceBankAccountId": bank_account_id,
-                "invoiceBankAccountUpdated": bank_account_was_updated,
+                "invoiceBankAccountId": None,
+                "invoiceBankAccountUpdated": False,
                 "created": created,
             },
         )
@@ -1653,53 +1639,6 @@ async def _build_invoice_order_line(
             "vatType": {"id": vat_type_id} if vat_type_id is not None else None,
         }
     )
-
-
-async def _ensure_invoice_bank_account_configured(
-    client: TripletexClient,
-) -> tuple[dict[str, Any], bool]:
-    payload = await client.get(
-        "/ledger/account",
-        params={
-            "isBankAccount": True,
-            "count": 10,
-            "sorting": "number",
-            "fields": client.select_fields(
-                "id",
-                "number",
-                "name",
-                "isBankAccount",
-                "isInvoiceAccount",
-                "bankAccountNumber",
-            ),
-        },
-    )
-    accounts = client.unwrap_values(payload)
-    invoice_accounts = [
-        account
-        for account in accounts
-        if isinstance(account, dict) and account.get("isInvoiceAccount")
-    ]
-    if not invoice_accounts:
-        raise WorkflowExecutionError("No invoice bank account was available")
-
-    account = invoice_accounts[0]
-    existing_number = account.get("bankAccountNumber")
-    if isinstance(existing_number, str) and existing_number.strip():
-        return account, False
-
-    account_id = _extract_id(account)
-    if account_id is None:
-        raise WorkflowExecutionError("Invoice bank account did not include an id")
-
-    updated = await client.put(
-        f"/ledger/account/{account_id}",
-        json_body={"bankAccountNumber": _DEFAULT_INVOICE_BANK_ACCOUNT_NUMBER},
-    )
-    unwrapped = client.unwrap_value(updated)
-    if isinstance(unwrapped, dict):
-        return unwrapped, True
-    raise WorkflowExecutionError("Invoice bank account update did not return an account payload")
 
 
 def _extract_id(payload: Any) -> int | None:

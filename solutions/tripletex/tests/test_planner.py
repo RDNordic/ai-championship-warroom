@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from tripletex_agent.models import AttachmentFile
-from tripletex_agent.planner import FallbackPlanner, KeywordTaskPlanner
+from tripletex_agent.planner import (
+    FallbackPlanner,
+    KeywordTaskPlanner,
+    LookupExtraction,
+    OpenAIPlanner,
+    PromptExtraction,
+)
 from tripletex_agent.task_plan import (
     ActionSemantics,
     CompletionCheck,
     EntityPayload,
+    EntityReference,
     Operation,
     TaskFamily,
     TaskPlan,
@@ -21,6 +30,21 @@ class StaticPlanner:
     def plan(self, prompt: str, attachments: list[AttachmentFile]) -> TaskPlan:
         del prompt, attachments
         return self._plan
+
+
+class _FakePromptResponses:
+    def __init__(self, parsed: PromptExtraction) -> None:
+        self.parsed = parsed
+        self.calls: list[dict[str, object]] = []
+
+    def parse(self, **kwargs):  # noqa: ANN003
+        self.calls.append(kwargs)
+        return SimpleNamespace(output_parsed=self.parsed)
+
+
+class _FakePromptOpenAIClient:
+    def __init__(self, *, parsed: PromptExtraction) -> None:
+        self.responses = _FakePromptResponses(parsed)
 
 
 def test_planner_detects_employee_creation() -> None:
@@ -128,6 +152,88 @@ def test_planner_extracts_credit_note_payload() -> None:
     assert plan.entities_to_find[0].lookup == {"invoiceNumber": "1001"}
     assert plan.fields_to_set["creditNoteDate"] == "2026-03-20"
     assert plan.fields_to_set["comment"] == "Customer cancellation"
+
+
+def test_planner_extracts_voucher_lookup_from_returned_payment_prompt() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        (
+            'Le paiement de Rivière SARL (nº org. 937044488) pour la facture "Design web" '
+            "(33050 NOK HT) a été retourné par la banque. "
+            "Annulez le paiement afin que la facture affiche à nouveau le montant impayé."
+        ),
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.CORRECTIONS
+    assert plan.operation == Operation.REVERSE
+    assert plan.entities_to_find[0].entity_type == "voucher"
+    assert plan.entities_to_find[0].lookup == {
+        "name": "Rivière SARL",
+        "organizationNumber": "937044488",
+    }
+
+
+def test_planner_fail_closes_project_lifecycle_prompt() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        (
+            "Executez le cycle de vie complet du projet 'Migration Cloud Colline' "
+            "(Colline SARL, org. 910455052) : 1) Le projet a un budget de 323050 NOK. "
+            "2) Enregistrez le temps : Jules Durand 46 heures et Hugo Durand 46 heures. "
+            "3) Enregistrez un cout fournisseur de 36900 NOK de Lumiere SARL "
+            "(org. 985264287). 4) Creez une facture client pour le projet."
+        ),
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.UNKNOWN
+    assert plan.operation == Operation.UNKNOWN
+
+
+def test_planner_fail_closes_month_end_close_prompt() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        (
+            "Fuhren Sie den Monatsabschluss fur Marz 2026 durch. "
+            "Buchen Sie die Rechnungsabgrenzung (2200 NOK pro Monat von Konto 1720 auf Aufwand). "
+            "Erfassen Sie die monatliche Abschreibung fur eine Anlage mit Anschaffungskosten "
+            "291700 NOK und Nutzungsdauer 5 Jahre. Uberprufen Sie, ob die Saldenbilanz null ergibt. "
+            "Buchen Sie ausserdem eine Gehaltsruckstellung."
+        ),
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.UNKNOWN
+    assert plan.operation == Operation.UNKNOWN
+
+
+def test_planner_fail_closes_attachment_led_employee_onboarding_prompt() -> None:
+    planner = KeywordTaskPlanner()
+    attachments = [
+        AttachmentFile(
+            filename="files/tilbudsbrev_pt_03.pdf",
+            content_base64="aGVsbG8=",
+            mime_type="application/pdf",
+        )
+    ]
+
+    plan = planner.plan(
+        (
+            "Voce recebeu uma carta de oferta (ver PDF anexo) para um novo funcionario. "
+            "Complete a integracao: crie o funcionario, atribua o departamento correto, "
+            "configure os detalhes de emprego com percentagem e salario anual, "
+            "e configure as horas de trabalho padrao."
+        ),
+        attachments,
+    )
+
+    assert plan.task_family == TaskFamily.UNKNOWN
+    assert plan.operation == Operation.UNKNOWN
+    assert len(plan.attachment_facts) == 1
 
 
 def test_planner_extracts_product_payload() -> None:
@@ -605,6 +711,28 @@ def test_fallback_planner_adds_send_intent_for_logged_french_invoice_prompt() ->
     }
 
 
+def test_fallback_planner_recovers_voucher_lookup_from_returned_payment_prompt() -> None:
+    prompt = (
+        'Le paiement de Rivière SARL (nº org. 937044488) pour la facture "Design web" '
+        "(33050 NOK HT) a été retourné par la banque. "
+        "Annulez le paiement afin que la facture affiche à nouveau le montant impayé."
+    )
+    primary_plan = TaskPlan(
+        task_family=TaskFamily.CORRECTIONS,
+        operation=Operation.REVERSE,
+        entities_to_find=[EntityReference(entity_type="voucher", lookup={})],
+        confidence=0.85,
+    )
+    planner = FallbackPlanner(primary=StaticPlanner(primary_plan), fallback=KeywordTaskPlanner())
+
+    merged_plan = planner.plan(prompt, [])
+
+    assert merged_plan.entities_to_find[0].lookup == {
+        "name": "Rivière SARL",
+        "organizationNumber": "937044488",
+    }
+
+
 def test_fallback_planner_uses_keyword_plan_when_primary_operation_is_unknown() -> None:
     prompt = (
         "Opprett en faktura til kunden Havbris AS (org.nr 924693576) med tre produktlinjer: "
@@ -770,3 +898,112 @@ def test_planner_extracts_travel_expense_dates() -> None:
     fields = plan.entities_to_create[0].fields
     assert fields.get("departureDate") == "2026-03-15"
     assert fields.get("returnDate") == "2026-03-17"
+
+
+def test_openai_planner_uses_compatible_responses_parse_payload(monkeypatch) -> None:
+    parsed = PromptExtraction(
+        task_family=TaskFamily.CORRECTIONS,
+        operation=Operation.REVERSE,
+        primary_entity_type="voucher",
+        lookup=LookupExtraction(name="Rivière SARL", organizationNumber="937044488"),
+        confidence=0.82,
+    )
+    fake_client = _FakePromptOpenAIClient(parsed=parsed)
+    monkeypatch.setattr(
+        "tripletex_agent.planner.OpenAI",
+        lambda api_key: fake_client,
+    )
+
+    planner = OpenAIPlanner(api_key="placeholder", model="gpt-5-mini")
+    plan = planner.plan("Reverse the payment for Rivière SARL", [])
+
+    assert plan.task_family == TaskFamily.CORRECTIONS
+    assert plan.operation == Operation.REVERSE
+    assert len(fake_client.responses.calls) == 1
+    payload = fake_client.responses.calls[0]
+    assert payload["model"] == "gpt-5-mini"
+    assert payload["text_format"] is PromptExtraction
+    assert "temperature" not in payload
+
+
+def test_fallback_planner_fail_closes_project_lifecycle_prompt_when_primary_misroutes() -> None:
+    prompt = (
+        "Executez le cycle de vie complet du projet 'Migration Cloud Colline' "
+        "(Colline SARL, org. 910455052) : 1) Le projet a un budget de 323050 NOK. "
+        "2) Enregistrez le temps : Jules Durand 46 heures et Hugo Durand 46 heures. "
+        "3) Enregistrez un cout fournisseur de 36900 NOK de Lumiere SARL "
+        "(org. 985264287). 4) Creez une facture client pour le projet."
+    )
+    primary_plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.CREATE,
+        entities_to_create=[EntityPayload(entity_type="invoice", fields={})],
+        confidence=0.45,
+    )
+    planner = FallbackPlanner(primary=StaticPlanner(primary_plan), fallback=KeywordTaskPlanner())
+
+    merged_plan = planner.plan(prompt, [])
+
+    assert merged_plan.task_family == TaskFamily.UNKNOWN
+    assert merged_plan.operation == Operation.UNKNOWN
+
+
+def test_fallback_planner_fail_closes_month_end_prompt_when_primary_misroutes() -> None:
+    prompt = (
+        "Fuhren Sie den Monatsabschluss fur Marz 2026 durch. "
+        "Buchen Sie die Rechnungsabgrenzung (2200 NOK pro Monat von Konto 1720 auf Aufwand). "
+        "Erfassen Sie die monatliche Abschreibung fur eine Anlage mit Anschaffungskosten "
+        "291700 NOK und Nutzungsdauer 5 Jahre. Uberprufen Sie, ob die Saldenbilanz null ergibt. "
+        "Buchen Sie ausserdem eine Gehaltsruckstellung."
+    )
+    primary_plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.CREATE,
+        entities_to_create=[EntityPayload(entity_type="invoice", fields={})],
+        confidence=0.45,
+    )
+    planner = FallbackPlanner(primary=StaticPlanner(primary_plan), fallback=KeywordTaskPlanner())
+
+    merged_plan = planner.plan(prompt, [])
+
+    assert merged_plan.task_family == TaskFamily.UNKNOWN
+    assert merged_plan.operation == Operation.UNKNOWN
+
+
+def test_fallback_planner_fail_closes_attachment_led_employee_onboarding_prompt() -> None:
+    prompt = (
+        "Voce recebeu uma carta de oferta (ver PDF anexo) para um novo funcionario. "
+        "Complete a integracao: crie o funcionario, atribua o departamento correto, "
+        "configure os detalhes de emprego com percentagem e salario anual, "
+        "e configure as horas de trabalho padrao."
+    )
+    attachments = [
+        AttachmentFile(
+            filename="files/tilbudsbrev_pt_03.pdf",
+            content_base64="aGVsbG8=",
+            mime_type="application/pdf",
+        )
+    ]
+    primary_plan = TaskPlan(
+        task_family=TaskFamily.EMPLOYEES,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="employee",
+                fields={
+                    "comments": (
+                        "Offer letter attached: files/tilbudsbrev_pt_03.pdf. "
+                        "Create the employee and configure employment details."
+                    )
+                },
+            )
+        ],
+        confidence=0.8,
+    )
+    planner = FallbackPlanner(primary=StaticPlanner(primary_plan), fallback=KeywordTaskPlanner())
+
+    merged_plan = planner.plan(prompt, attachments)
+
+    assert merged_plan.task_family == TaskFamily.UNKNOWN
+    assert merged_plan.operation == Operation.UNKNOWN
+    assert len(merged_plan.attachment_facts) == 1
