@@ -62,6 +62,59 @@ def test_planner_extracts_invoice_payment_payload() -> None:
     assert plan.fields_to_set["paymentTypeLookup"] == {"description": "Betalt til bank"}
 
 
+def test_planner_marks_invoice_payment_amount_as_excluding_vat() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        (
+            'O cliente Floresta Lda (org. nº 864828442) tem uma fatura pendente de '
+            '29100 NOK sem IVA por "Design web". Registe o pagamento total desta fatura.'
+        ),
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.INVOICING
+    assert plan.operation == Operation.REGISTER_PAYMENT
+    assert plan.fields_to_set["paidAmount"] == 29100.0
+    assert plan.fields_to_set["paidAmountExcludingVat"] is True
+
+
+def test_planner_flags_supplier_invoice_prompt_as_incoming() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        (
+            "Hemos recibido la factura INV-2026-8702 del proveedor Sierra SL "
+            "(org. nº 933305228) por 6850 NOK con IVA incluido. "
+            "El importe corresponde a servicios de oficina (cuenta 6590). "
+            "Registre la factura del proveedor con el IVA soportado correcto (25 %)."
+        ),
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.INVOICING
+    assert plan.operation == Operation.CREATE
+    assert plan.entities_to_create[0].fields["supplierInvoice"] is True
+    assert plan.entities_to_create[0].fields["customerLookup"]["organizationNumber"] == "933305228"
+
+
+def test_planner_marks_supplier_registration_with_supplier_flags() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        "Registe o fornecedor Luz do Sol Lda com número de organização 962006930. E-mail: faktura@luzdosollda.no.",
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.CUSTOMERS_PRODUCTS
+    assert plan.operation == Operation.CREATE
+    fields = plan.entities_to_create[0].fields
+    assert fields["name"] == "Luz do Sol Lda"
+    assert fields["organizationNumber"] == "962006930"
+    assert fields["isSupplier"] is True
+    assert fields["isCustomer"] is False
+
+
 def test_planner_extracts_credit_note_payload() -> None:
     planner = KeywordTaskPlanner()
 
@@ -229,6 +282,70 @@ def test_planner_extracts_invoice_description_line_variant() -> None:
     assert fields["line"]["description"] == "Consulting services"
     assert fields["line"]["count"] == 2.0
     assert fields["line"]["unitPriceExcludingVatCurrency"] == 1500.0
+
+
+def test_planner_extracts_order_to_invoice_with_full_payment() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        (
+            "Opprett ein ordre for kunden Strandvik AS (org.nr 911845016) med produkta "
+            "Skylagring (7865) til 38500 kr og Datarådgjeving (3949) til 18500 kr. "
+            "Konverter ordren til faktura og registrer full betaling."
+        ),
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.INVOICING
+    assert plan.operation == Operation.CREATE
+    fields = plan.entities_to_create[0].fields
+    assert fields["customerLookup"] == {
+        "customerName": "Strandvik AS",
+        "organizationNumber": "911845016",
+    }
+    assert fields["createOrder"] is True
+    assert fields["convertOrderToInvoice"] is True
+    assert fields["registerPayment"] is True
+    assert len(fields["lines"]) == 2
+    assert fields["lines"][0]["productLookup"] == {"name": "Skylagring", "productNumber": "7865"}
+    assert fields["lines"][0]["unitPriceExcludingVatCurrency"] == 38500.0
+    assert fields["lines"][1]["productLookup"] == {
+        "name": "Datarådgjeving",
+        "productNumber": "3949",
+    }
+    assert fields["lines"][1]["unitPriceExcludingVatCurrency"] == 18500.0
+
+
+def test_planner_extracts_multiline_invoice_prompt_with_vat() -> None:
+    planner = KeywordTaskPlanner()
+
+    plan = planner.plan(
+        (
+            "Opprett en faktura til kunden Havbris AS (org.nr 924693576) med tre produktlinjer: "
+            "Opplæring (3296) til 5400 kr med 25 % MVA, Skylagring (6620) til 6850 kr med "
+            "15 % MVA (næringsmiddel), og Analyserapport (8441) til 13750 kr med 0 % MVA "
+            "(avgiftsfri)."
+        ),
+        [],
+    )
+
+    assert plan.task_family == TaskFamily.INVOICING
+    assert plan.operation == Operation.CREATE
+    fields = plan.entities_to_create[0].fields
+    assert fields["customerLookup"] == {
+        "customerName": "Havbris AS",
+        "organizationNumber": "924693576",
+    }
+    assert len(fields["lines"]) == 3
+    assert fields["lines"][0]["productLookup"] == {"name": "Opplæring", "productNumber": "3296"}
+    assert fields["lines"][0]["vatPercent"] == 25.0
+    assert fields["lines"][1]["productLookup"] == {"name": "Skylagring", "productNumber": "6620"}
+    assert fields["lines"][1]["vatPercent"] == 15.0
+    assert fields["lines"][2]["productLookup"] == {
+        "name": "Analyserapport",
+        "productNumber": "8441",
+    }
+    assert fields["lines"][2]["vatPercent"] == 0.0
 
 
 def test_planner_distinguishes_create_invoice_from_create_and_send_invoice() -> None:
@@ -486,6 +603,26 @@ def test_fallback_planner_adds_send_intent_for_logged_french_invoice_prompt() ->
         "customerName": "Lumière SARL",
         "organizationNumber": "827689114",
     }
+
+
+def test_fallback_planner_uses_keyword_plan_when_primary_operation_is_unknown() -> None:
+    prompt = (
+        "Opprett en faktura til kunden Havbris AS (org.nr 924693576) med tre produktlinjer: "
+        "Opplæring (3296) til 5400 kr med 25 % MVA, Skylagring (6620) til 6850 kr med 15 % "
+        "MVA, og Analyserapport (8441) til 13750 kr med 0 % MVA."
+    )
+    primary_plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.UNKNOWN,
+        confidence=0.6,
+    )
+    planner = FallbackPlanner(primary=StaticPlanner(primary_plan), fallback=KeywordTaskPlanner())
+
+    merged_plan = planner.plan(prompt, [])
+
+    assert merged_plan.task_family == TaskFamily.INVOICING
+    assert merged_plan.operation == Operation.CREATE
+    assert len(merged_plan.entities_to_create[0].fields["lines"]) == 3
 
 
 def test_fallback_planner_drops_stale_french_product_lookup_trace() -> None:
