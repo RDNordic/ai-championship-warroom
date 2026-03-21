@@ -53,6 +53,20 @@ _RELEVANT_PATHS: set[str] = {
     "/ledger/voucher/historical/:reverseHistoricalVouchers",
     "/ledger/vatType", "/ledger/vatType/{id}",
     "/ledger/paymentTypeOut", "/ledger/paymentTypeOut/{id}",
+    # Supplier
+    "/supplier", "/supplier/{id}",
+    # Supplier invoice
+    "/supplierInvoice", "/supplierInvoice/{id}",
+    "/supplierInvoice/{invoiceId}/:addPayment",
+    "/supplierInvoice/{invoiceId}/:approve",
+    # Timesheet
+    "/timesheet/entry", "/timesheet/entry/{id}",
+    "/timesheet/entry/list",
+    "/timesheet/month/{id}",
+    "/timesheet/month/:approve", "/timesheet/month/:complete",
+    "/timesheet/month/:reopen",
+    # Activity (needed for timesheet)
+    "/activity", "/activity/{id}",
     # Company modules
     "/company/salesmodules",
 }

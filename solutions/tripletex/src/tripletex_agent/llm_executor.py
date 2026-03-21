@@ -99,6 +99,17 @@ CRITICAL posting rules:
   Row 1 (expense): amount=10000, amountGross=12500, vatType:{{"id":3}}
   Row 2 (payable): amount=-12500, amountGross=-12500, supplier:{{"id":$id}}
 
+## Timesheet Entry
+1. GET /employee (by email or name) to find employee ID.
+2. GET /project (by name or customer) to find project ID.
+3. GET /activity (by name) to find activity ID.
+4. POST /timesheet/entry with: employee ref, project ref, activity ref, \
+date, hours. Use lookup_endpoint to check exact fields.
+
+## Supplier Registration
+POST /supplier (NOT /customer) with name, organizationNumber, email. \
+Use isSupplier: true only on /customer if creating a customer who is also a supplier.
+
 WORKFLOW:
 1. Look up schemas for the 2-3 POST/PUT endpoints you need (use lookup_endpoint).
 2. Return the JSON array of API steps.
