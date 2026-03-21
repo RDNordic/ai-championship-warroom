@@ -341,19 +341,56 @@ def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
         text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
         text = text.strip()
 
+    # Try direct parse first
     try:
         parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
     except json.JSONDecodeError:
-        match = re.search(r"\[.*\]", text, re.DOTALL)
-        if match:
+        pass
+
+    # Find the first complete JSON array using bracket matching
+    start = text.find("[")
+    if start != -1:
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\":
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(text[start:i + 1])
+                        if isinstance(parsed, list):
+                            return parsed
+                    except json.JSONDecodeError:
+                        break
+
+    # Last resort: greedy regex
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if match:
+        try:
             parsed = json.loads(match.group())
-        else:
-            raise ValueError(f"Could not parse LLM response as JSON array: {text[:200]}")
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            pass
 
-    if not isinstance(parsed, list):
-        raise ValueError(f"Expected JSON array, got {type(parsed).__name__}")
-
-    return parsed
+    raise ValueError(f"Could not parse LLM response as JSON array: {text[:200]}")
 
 
 class LLMApiExecutor:
