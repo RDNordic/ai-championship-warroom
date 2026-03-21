@@ -692,6 +692,12 @@ class LLMApiExecutor:
             # Never send json_body on GET/DELETE — proxies reject it
             if method in ("GET", "DELETE"):
                 json_body = None
+            # Strip 'fields' param from GETs — LLM often hallucinates field
+            # names (e.g. 'payments' on InvoiceDTO), causing silent failures
+            # where the needed field is absent from the response.
+            if method == "GET" and isinstance(params, dict) and "fields" in params:
+                logger.info("Stripping 'fields' param from GET %s to avoid hallucinated field names", path)
+                del params["fields"]
 
             # Validate and clean json_body against swagger schema
             step_fixes: list[str] = []

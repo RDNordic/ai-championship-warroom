@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
 import time
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0
 
 from .models import TripletexCredentials
 from .runtime_context import current_event_logger, current_request_context
@@ -150,29 +157,46 @@ class TripletexClient:
         json_body: Any | None = None,
         expected_status: tuple[int, ...] = (200,),
     ) -> Any:
-        started_at = time.perf_counter()
-        response = await self._client.request(method, path, params=params, json=json_body)
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        payload = self._decode_response(response)
-        self._record_call(
-            method=method,
-            path=path,
-            params=params,
-            json_body=json_body,
-            status_code=response.status_code,
-            duration_ms=duration_ms,
-            expected_status=expected_status,
-            response_payload=payload,
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                started_at = time.perf_counter()
+                response = await self._client.request(method, path, params=params, json=json_body)
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                payload = self._decode_response(response)
+                self._record_call(
+                    method=method,
+                    path=path,
+                    params=params,
+                    json_body=json_body,
+                    status_code=response.status_code,
+                    duration_ms=duration_ms,
+                    expected_status=expected_status,
+                    response_payload=payload,
+                )
+
+                if response.status_code not in expected_status:
+                    raise TripletexAPIError(
+                        f"Tripletex {method} {path} failed",
+                        status_code=response.status_code,
+                        detail=payload,
+                    )
+
+                return payload
+            except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as exc:
+                last_exc = exc
+                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "Tripletex %s %s transient error (attempt %d/%d), retrying in %.1fs: %s",
+                    method, path, attempt + 1, _MAX_RETRIES, delay, exc,
+                )
+                await asyncio.sleep(delay)
+
+        raise TripletexAPIError(
+            f"Tripletex {method} {path} failed after {_MAX_RETRIES} retries: {last_exc}",
+            status_code=None,
+            detail=str(last_exc),
         )
-
-        if response.status_code not in expected_status:
-            raise TripletexAPIError(
-                f"Tripletex {method} {path} failed",
-                status_code=response.status_code,
-                detail=payload,
-            )
-
-        return payload
 
     @staticmethod
     def _decode_response(response: httpx.Response) -> Any:
