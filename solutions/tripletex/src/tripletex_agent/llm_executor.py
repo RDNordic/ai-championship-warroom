@@ -880,35 +880,52 @@ class LLMApiExecutor:
                         if isinstance(value, int) and field_path.endswith(".id"):
                             resource_ids.append(value)
                     else:
-                        # Auto-retry: if GET /ledger/account returned empty, try name search
+                        # Auto-retry on empty GET responses
                         if (
                             method == "GET"
-                            and "/ledger/account" in path
                             and isinstance(response_payload, dict)
                             and response_payload.get("fullResultSize", -1) == 0
                             and isinstance(params, dict)
-                            and "number" in params
                         ):
-                            acct_number = params["number"]
-                            logger.info(
-                                "Account number %s returned empty, retrying with query search",
-                                acct_number,
-                            )
+                            retry_payload = None
+                            retry_desc = ""
                             try:
-                                retry_payload = await tripletex_client.request(
-                                    "GET", "/ledger/account",
-                                    params={"query": str(acct_number), "count": 5},
-                                    expected_status=(200,),
-                                )
-                                retry_value = _resolve_value(retry_payload, field_path)
-                                if retry_value is not None:
-                                    saved_vars[var_name] = retry_value
-                                    logger.info("Saved %s = %s (via query retry)", var_name, retry_value)
-                                    if isinstance(retry_value, int) and field_path.endswith(".id"):
-                                        resource_ids.append(retry_value)
-                                    continue
+                                if "/ledger/account" in path and "number" in params:
+                                    # Account lookup: retry with query search
+                                    retry_desc = f"account number {params['number']}"
+                                    retry_payload = await tripletex_client.request(
+                                        "GET", "/ledger/account",
+                                        params={"query": str(params["number"]), "count": 5},
+                                        expected_status=(200,),
+                                    )
+                                elif "/department" in path and "name" in params:
+                                    # Department lookup: retry getting any department
+                                    retry_desc = f"department '{params['name']}'"
+                                    retry_payload = await tripletex_client.request(
+                                        "GET", "/department",
+                                        params={"count": 1, "sorting": "id"},
+                                        expected_status=(200,),
+                                    )
+                                elif "/employee" in path:
+                                    # Employee lookup: retry getting any employee
+                                    retry_desc = "employee"
+                                    retry_payload = await tripletex_client.request(
+                                        "GET", "/employee",
+                                        params={"count": 1},
+                                        expected_status=(200,),
+                                    )
+
+                                if retry_payload is not None:
+                                    logger.info("Empty result for %s, retrying with broader search", retry_desc)
+                                    retry_value = _resolve_value(retry_payload, field_path)
+                                    if retry_value is not None:
+                                        saved_vars[var_name] = retry_value
+                                        logger.info("Saved %s = %s (via fallback retry)", var_name, retry_value)
+                                        if isinstance(retry_value, int) and field_path.endswith(".id"):
+                                            resource_ids.append(retry_value)
+                                        continue
                             except Exception as exc:
-                                logger.warning("Account query retry failed: %s", exc)
+                                logger.warning("Fallback retry failed for %s: %s", retry_desc, exc)
 
                         logger.warning(
                             "Could not extract %s from response via path '%s'",
