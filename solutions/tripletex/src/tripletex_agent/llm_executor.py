@@ -165,6 +165,31 @@ For payroll processing, create a voucher with MULTIPLE postings:
   (i.e., gross - tax - net = 0, so net = gross - tax)
 - If bonus is mentioned, add it to gross salary in posting 1
 
+## Travel Expense (Reiseregning)
+CRITICAL: To create a travel report (reiseregning), you MUST include travelDetails. \
+Without it, Tripletex creates an "ansattutlegg" (employee expense) which CANNOT \
+have per diem or mileage allowances.
+1. GET /employee (by email) to find employee ID
+2. POST /travelExpense with:
+   - employee: {{"id": $emp_id}}
+   - title: "description of trip"
+   - travelDetails: {{"departureDate": "YYYY-MM-DD", "returnDate": "YYYY-MM-DD", \
+     "destination": "city name", "departureFrom": "origin city", \
+     "purpose": "trip purpose"}}
+3. POST /travelExpense/perDiemCompensation (for daily allowances):
+   - travelExpense: {{"id": $travel_id}}
+   - rateCategory: {{"id": 1}}
+   - overnightAccommodation: "HOTEL"
+   - location: "city name"
+   - count: number_of_days
+4. POST /travelExpense/cost (for each expense like flight, taxi):
+   - travelExpense: {{"id": $travel_id}}
+   - date: "YYYY-MM-DD"
+   - description: "what was purchased"
+   - amount: cost_amount
+   - paymentType: "OWN"
+   - category: {{"id": $category_id}} — use GET /travelExpense/costCategory to find
+
 ## Timesheet Entry
 1. GET /employee (by email or name) to find employee ID.
 2. GET /project (by name or customer) to find project ID.
