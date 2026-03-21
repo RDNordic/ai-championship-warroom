@@ -21,14 +21,24 @@ from .solve_logging import SolveEventLogger, SolveRequestContext
 from .task_plan import TaskFamily, TaskPlan
 from .workflows import (
     CustomerCreateWorkflow,
+    CustomerDeleteWorkflow,
+    CustomerUpdateWorkflow,
     DepartmentCreateWorkflow,
+    DepartmentDeleteWorkflow,
     EmployeeCreateWorkflow,
+    EmployeeUpdateWorkflow,
     InvoiceCreateWorkflow,
     InvoiceCreditNoteWorkflow,
     InvoicePaymentWorkflow,
+    OrderInvoicePaymentWorkflow,
     ProductCreateWorkflow,
+    ProductDeleteWorkflow,
     ProjectCreateWorkflow,
+    ProjectDeleteWorkflow,
     StubWorkflow,
+    TravelExpenseCreateWorkflow,
+    TravelExpenseDeleteWorkflow,
+    VoucherReverseWorkflow,
     WorkflowRegistry,
 )
 
@@ -248,24 +258,42 @@ class SolverService:
             workflow_name,
             len(api_call_plan.steps),
             api_call_plan.confidence,
-        )
+            )
 
 
-def build_default_service() -> SolverService:
-    settings = AppSettings.load()
-    workflows = WorkflowRegistry(
+def build_default_workflow_registry() -> WorkflowRegistry:
+    return WorkflowRegistry(
         workflows=[
+            # Creates
             CustomerCreateWorkflow(),
             ProductCreateWorkflow(),
             EmployeeCreateWorkflow(),
             DepartmentCreateWorkflow(),
             ProjectCreateWorkflow(),
+            OrderInvoicePaymentWorkflow(),
             InvoiceCreateWorkflow(),
             InvoicePaymentWorkflow(),
             InvoiceCreditNoteWorkflow(),
+            TravelExpenseCreateWorkflow(),
+            # Updates
+            CustomerUpdateWorkflow(),
+            EmployeeUpdateWorkflow(),
+            # Deletes
+            CustomerDeleteWorkflow(),
+            ProductDeleteWorkflow(),
+            DepartmentDeleteWorkflow(),
+            ProjectDeleteWorkflow(),
+            TravelExpenseDeleteWorkflow(),
+            # Corrections
+            VoucherReverseWorkflow(),
         ],
         fallback=StubWorkflow(TaskFamily.UNKNOWN),
     )
+
+
+def build_default_service() -> SolverService:
+    settings = AppSettings.load()
+    workflows = build_default_workflow_registry()
 
     return SolverService(
         planner=build_default_planner(settings),

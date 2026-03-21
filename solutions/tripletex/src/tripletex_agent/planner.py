@@ -86,6 +86,7 @@ class DepartmentExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
+    names: list[str] | None = None  # for multi-department prompts
     departmentNumber: str | None = None
 
 
@@ -115,6 +116,36 @@ class ProductExtraction(BaseModel):
     costExcludingVatCurrency: float | None = None
 
 
+class TravelExpenseCostExtraction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str | None = None
+    amount: float | None = None
+    date: str | None = None
+
+
+class TravelExpenseMileageExtraction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    km: float | None = None
+    date: str | None = None
+    description: str | None = None
+
+
+class TravelExpenseExtraction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = None
+    departureDate: str | None = None
+    returnDate: str | None = None
+    employeeName: str | None = None
+    employeeEmail: str | None = None
+    projectName: str | None = None
+    departmentName: str | None = None
+    costs: list[TravelExpenseCostExtraction] | None = None
+    mileageAllowances: list[TravelExpenseMileageExtraction] | None = None
+
+
 class InvoiceLineExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -123,6 +154,7 @@ class InvoiceLineExtraction(BaseModel):
     description: str | None = None
     count: float | None = None
     unitPriceExcludingVatCurrency: float | None = None
+    vatPercent: float | None = None  # e.g. 25.0, 15.0, 0.0
 
 
 class InvoiceExtraction(BaseModel):
@@ -145,7 +177,8 @@ class InvoiceExtraction(BaseModel):
     comment: str | None = None
     invoiceComment: str | None = None
     sendToCustomer: bool | None = None
-    line: InvoiceLineExtraction | None = None
+    line: InvoiceLineExtraction | None = None  # single-line (legacy)
+    lines: list[InvoiceLineExtraction] | None = None  # multi-line
 
 
 class LookupExtraction(BaseModel):
@@ -184,6 +217,7 @@ class PromptExtraction(BaseModel):
     project: ProjectExtraction | None = None
     department: DepartmentExtraction | None = None
     invoice: InvoiceExtraction | None = None
+    travel_expense: TravelExpenseExtraction | None = None
     lookup: LookupExtraction | None = None
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)
     notes: str | None = None
@@ -193,6 +227,20 @@ class KeywordTaskPlanner:
     """A conservative keyword-based fallback used when LLM planning is unavailable."""
 
     _rules = (
+        IntentRule(
+            TaskFamily.INVOICING,
+            Operation.CREATE,
+            "invoice",
+            (
+                "convert order to invoice",
+                "convert the order to invoice",
+                "order to invoice",
+                "konverter ordren til faktura",
+                "konverter ordre til faktura",
+                "konverter ordren til ein faktura",
+                "konverter ordre til ein faktura",
+            ),
+        ),
         IntentRule(
             TaskFamily.DEPARTMENTS,
             Operation.CREATE,
@@ -232,6 +280,13 @@ class KeywordTaskPlanner:
                 "betal faktura",
                 "betale faktura",
                 "innbetaling",
+                "register payment",
+                "register the payment",
+                "registe o pagamento",
+                "registre o pagamento",
+                "registrar o pagamento",
+                "registre el pago",
+                "registrar el pago",
             ),
         ),
         IntentRule(
@@ -271,9 +326,20 @@ class KeywordTaskPlanner:
             (
                 "customer",
                 "kunde",
+                "supplier",
+                "vendor",
+                "leverandør",
+                "leverandor",
+                "fornecedor",
+                "proveedor",
+                "fournisseur",
                 "register customer",
+                "register supplier",
+                "add supplier",
                 "add customer",
                 "registrer kunde",
+                "registrer leverandør",
+                "registrer leverandor",
                 "legg til kunde",
             ),
         ),
@@ -291,10 +357,100 @@ class KeywordTaskPlanner:
             ),
         ),
         IntentRule(
+            TaskFamily.TRAVEL_EXPENSES,
+            Operation.DELETE,
+            "travel_expense",
+            (
+                "delete travel",
+                "remove travel",
+                "slett reise",
+                "fjern reise",
+                "ta bort reise",
+                "delete expense",
+                "slett utlegg",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.TRAVEL_EXPENSES,
+            Operation.CREATE,
+            "travel_expense",
+            ("travel expense", "expense report", "reiseregning", "reiseutlegg"),
+        ),
+        IntentRule(
             TaskFamily.EMPLOYEES,
             Operation.UPDATE,
             "employee",
-            ("update employee", "oppdater ansatt"),
+            (
+                "update employee",
+                "edit employee",
+                "change employee",
+                "modify employee",
+                "oppdater ansatt",
+                "endre ansatt",
+                "rediger ansatt",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.DELETE,
+            "customer",
+            (
+                "delete customer",
+                "remove customer",
+                "slett kunde",
+                "fjern kunde",
+                "ta bort kunde",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.UPDATE,
+            "customer",
+            (
+                "update customer",
+                "edit customer",
+                "change customer",
+                "modify customer",
+                "oppdater kunde",
+                "endre kunde",
+                "rediger kunde",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.CUSTOMERS_PRODUCTS,
+            Operation.DELETE,
+            "product",
+            (
+                "delete product",
+                "remove product",
+                "slett produkt",
+                "fjern produkt",
+                "ta bort produkt",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.DEPARTMENTS,
+            Operation.DELETE,
+            "department",
+            (
+                "delete department",
+                "remove department",
+                "slett avdeling",
+                "fjern avdeling",
+                "ta bort avdeling",
+            ),
+        ),
+        IntentRule(
+            TaskFamily.PROJECTS,
+            Operation.DELETE,
+            "project",
+            (
+                "delete project",
+                "remove project",
+                "slett prosjekt",
+                "fjern prosjekt",
+                "ta bort prosjekt",
+            ),
         ),
         IntentRule(
             TaskFamily.EMPLOYEES,
@@ -312,27 +468,64 @@ class KeywordTaskPlanner:
                 "ansett",
             ),
         ),
-        IntentRule(TaskFamily.CORRECTIONS, Operation.REVERSE, "voucher", ("reverse", "reverser")),
         IntentRule(
-            TaskFamily.TRAVEL_EXPENSES,
-            Operation.DELETE,
-            "travel_expense",
-            ("delete travel", "slett reise"),
-        ),
-        IntentRule(
-            TaskFamily.TRAVEL_EXPENSES,
-            Operation.CREATE,
-            "travel_expense",
-            ("travel expense", "expense report", "reiseregning", "reiseutlegg"),
+            TaskFamily.CORRECTIONS,
+            Operation.REVERSE,
+            "voucher",
+            (
+                "reverse voucher",
+                "reverse the voucher",
+                "reverser bilag",
+                "reverser bilaget",
+                "tilbakefør bilag",
+                "reverse posting",
+                "reverse entry",
+                "credit note voucher",
+                "reverse payment",
+                "cancel the payment",
+                "payment returned",
+                "returned by the bank",
+                "annuler betalingen",
+                "annuller betalingen",
+                "betalingen ble returnert",
+                "paiement retourne",
+                "retourne par la banque",
+                "annulez le paiement",
+                "revierta el pago",
+                "pago devuelto",
+                "devuelto por el banco",
+                "reverta o pagamento",
+                "pagamento devolvido",
+                "devolvido pelo banco",
+                "zahlung zuruckgebucht",
+                "zahlung storniert",
+                "storno",
+            ),
         ),
     )
 
     def plan(self, prompt: str, attachments: list[AttachmentFile]) -> TaskPlan:
-        normalized_prompt = prompt.lower()
+        normalized_prompt = _normalize_prompt_text(_EMAIL_RE.sub("<email>", prompt))
         attachment_facts = _attachment_facts(attachments)
 
+        if _requires_fail_closed_unknown(normalized_prompt, attachment_facts):
+            logger.info("Prompt matched unsupported fail-closed family; returning unknown")
+            return TaskPlan.unknown(attachment_facts=attachment_facts)
+
         for rule in self._rules:
-            if any(keyword in normalized_prompt for keyword in rule.keywords):
+            if rule.family != TaskFamily.CORRECTIONS or rule.operation != Operation.REVERSE:
+                continue
+            if any(_normalize_prompt_text(keyword) in normalized_prompt for keyword in rule.keywords):
+                return self._build_rule_plan(
+                    prompt=prompt,
+                    family=rule.family,
+                    operation=rule.operation,
+                    entity_type=rule.entity_type,
+                    attachment_facts=attachment_facts,
+                )
+
+        for rule in self._rules:
+            if any(_normalize_prompt_text(keyword) in normalized_prompt for keyword in rule.keywords):
                 return self._build_rule_plan(
                     prompt=prompt,
                     family=rule.family,
@@ -418,6 +611,10 @@ class KeywordTaskPlanner:
             return _extract_department_payload(prompt)
         if entity_type == "project":
             return _extract_project_payload(prompt)
+        if entity_type == "travel_expense":
+            return _extract_travel_expense_payload(prompt)
+        if entity_type == "voucher":
+            return _extract_voucher_lookup(prompt)
         return {}
 
 
@@ -469,17 +666,36 @@ class FallbackPlanner:
         self._fallback = fallback
 
     def plan(self, prompt: str, attachments: list[AttachmentFile]) -> TaskPlan:
+        normalized_prompt = _normalize_prompt_text(_EMAIL_RE.sub("<email>", prompt))
+        attachment_facts = _attachment_facts(attachments)
+
         try:
             plan = self._primary.plan(prompt, attachments)
         except Exception as exc:
+            if _requires_fail_closed_unknown(normalized_prompt, attachment_facts):
+                logger.info("Unsupported prompt family hit planner error; returning unknown")
+                return TaskPlan.unknown(attachment_facts=attachment_facts)
             logger.warning("Primary planner failed; falling back to keyword planner: %s", exc)
             return self._fallback.plan(prompt, attachments)
+
+        if _requires_fail_closed_unknown(normalized_prompt, attachment_facts):
+            logger.info("Prompt matched unsupported fail-closed family; returning unknown")
+            return TaskPlan.unknown(attachment_facts=attachment_facts)
 
         if plan.task_family == TaskFamily.UNKNOWN:
             logger.info("Primary planner returned unknown; using keyword fallback")
             return self._fallback.plan(prompt, attachments)
 
         fallback_plan = self._fallback.plan(prompt, attachments)
+        if plan.operation == Operation.UNKNOWN and fallback_plan.operation != Operation.UNKNOWN:
+            logger.info("Primary planner returned unknown operation; using keyword fallback")
+            return fallback_plan
+        if plan.primary_entity_type() is None and fallback_plan.primary_entity_type() is not None:
+            logger.info("Primary planner returned no primary entity; using keyword fallback")
+            return fallback_plan
+        if _should_prefer_fallback_plan(plan, fallback_plan):
+            logger.info("Primary planner missed richer order-invoice-payment fallback; using keyword fallback")
+            return fallback_plan
         return _merge_with_fallback_plan(plan, fallback_plan)
 
 
@@ -526,6 +742,10 @@ def _plan_from_extraction(
         lookup = _lookup_for_extraction(extraction)
         entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
         fields_to_set = payload
+
+    if extraction.operation in (Operation.DELETE, Operation.REVERSE) and entity_type != "unknown":
+        lookup = _lookup_for_extraction(extraction)
+        entities_to_find.append(EntityReference(entity_type=entity_type, lookup=lookup))
 
     if extraction.operation in (Operation.REGISTER_PAYMENT, Operation.CREATE_CREDIT_NOTE):
         if entity_type == "invoice":
@@ -581,6 +801,28 @@ def _payload_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
         return project_payload
     if extraction.primary_entity_type == "product" and extraction.product is not None:
         return extraction.product.model_dump(exclude_none=True)
+    if extraction.primary_entity_type == "travel_expense" and extraction.travel_expense is not None:
+        te_payload = extraction.travel_expense.model_dump(exclude_none=True)
+        te_employee_lookup: dict[str, object] = {}
+        employee_name = te_payload.pop("employeeName", None)
+        employee_email = te_payload.pop("employeeEmail", None)
+        if employee_name is not None:
+            names = employee_name.split()
+            if names:
+                te_employee_lookup["firstName"] = names[0]
+            if len(names) > 1:
+                te_employee_lookup["lastName"] = " ".join(names[1:])
+        if employee_email is not None:
+            te_employee_lookup["email"] = employee_email
+        if te_employee_lookup:
+            te_payload["employeeLookup"] = te_employee_lookup
+        project_name = te_payload.pop("projectName", None)
+        if project_name is not None:
+            te_payload["projectLookup"] = {"name": project_name}
+        department_name = te_payload.pop("departmentName", None)
+        if department_name is not None:
+            te_payload["departmentLookup"] = {"name": department_name}
+        return te_payload
     if extraction.primary_entity_type == "invoice" and extraction.invoice is not None:
         invoice_payload = extraction.invoice.model_dump(exclude_none=True)
         invoice_payload.pop("sendToCustomer", None)
@@ -605,6 +847,22 @@ def _payload_for_extraction(extraction: PromptExtraction) -> dict[str, object]:
                 product_lookup["productNumber"] = product_number
             if product_lookup:
                 line_payload["productLookup"] = product_lookup
+
+        # Multi-line: normalise each line the same way
+        lines_payload = invoice_payload.get("lines")
+        if isinstance(lines_payload, list):
+            for lp in lines_payload:
+                if not isinstance(lp, dict):
+                    continue
+                ml_product_lookup: dict[str, object] = {}
+                ml_product_name = lp.pop("productName", None)
+                ml_product_number = lp.pop("productNumber", None)
+                if ml_product_name is not None:
+                    ml_product_lookup["name"] = ml_product_name
+                if ml_product_number is not None:
+                    ml_product_lookup["productNumber"] = ml_product_number
+                if ml_product_lookup:
+                    lp["productLookup"] = ml_product_lookup
 
         payment_type_lookup: dict[str, object] = {}
         payment_type_id = invoice_payload.pop("paymentTypeId", None)
@@ -646,6 +904,8 @@ def _invoice_lookup_and_fields_from_payload(
             fields["paymentDate"] = payload["paymentDate"]
         if "paidAmount" in payload:
             fields["paidAmount"] = payload["paidAmount"]
+        if "paidAmountExcludingVat" in payload:
+            fields["paidAmountExcludingVat"] = payload["paidAmountExcludingVat"]
         if "paidAmountCurrency" in payload:
             fields["paidAmountCurrency"] = payload["paidAmountCurrency"]
         if "paymentTypeLookup" in payload:
@@ -756,6 +1016,25 @@ def _merge_with_fallback_plan(primary: TaskPlan, fallback: TaskPlan) -> TaskPlan
         update["completion_checks"] = merged_completion_checks
 
     return merged.model_copy(update=update) if update else merged
+
+
+def _should_prefer_fallback_plan(primary: TaskPlan, fallback: TaskPlan) -> bool:
+    if primary.task_family != TaskFamily.INVOICING or fallback.task_family != TaskFamily.INVOICING:
+        return False
+    if primary.primary_entity_type() != "invoice" or fallback.primary_entity_type() != "invoice":
+        return False
+    if primary.operation != Operation.REGISTER_PAYMENT or fallback.operation != Operation.CREATE:
+        return False
+
+    fallback_payload = fallback.primary_payload("invoice")
+    if fallback_payload is None:
+        return False
+    fallback_fields = fallback_payload.fields
+    return (
+        fallback_fields.get("createOrder") is True
+        and fallback_fields.get("convertOrderToInvoice") is True
+        and fallback_fields.get("registerPayment") is True
+    )
 
 
 def _sanitize_plan(plan: TaskPlan) -> TaskPlan:
@@ -1011,20 +1290,45 @@ Important rules:
 - If the prompt is outside the currently supported slice, return unknown.
 - The currently supported live implementation slice is:
   - create customer
+  - update customer (change name, email, phone, address, etc.)
+  - delete customer
   - create product
+  - delete product
   - create employee
+  - update employee (change name, email, phone, comments)
   - create department
+  - delete department
   - create project linked to an existing customer
+  - delete project
   - create invoice for an existing customer with one line item
   - register invoice payment
   - create credit note for an existing invoice
-- Travel expense, correction, and module tasks are not yet implemented.
+- create travel expense report
+- delete travel expense report
+- reverse a voucher/posting (use operation=reverse, primary_entity_type=voucher)
+- For voucher reverse tasks, extract the voucher id or voucherNumber into the lookup field.
+- If a voucher reverse task only identifies the paid invoice by customer name and/or organization
+  number, put those values into lookup.name and lookup.organizationNumber.
+- Module activation tasks are not yet implemented.
+- For department create tasks with multiple departments (e.g. "create departments X, Y, Z"),
+  put all department names into the names list field, not just name.
+- For travel expenses, put employee references into employeeName and/or employeeEmail.
+- For travel expenses, put cost items into the costs array with description, amount, and date.
+- For travel expenses, put mileage items into the mileageAllowances array with km, date, and
+  description.
+- For travel expenses, put the report title into title.
+- For travel expenses, put travel dates into departureDate and returnDate (YYYY-MM-DD format).
 - For people, split names into firstName and lastName when possible.
 - For projects, put customer references into customerName and/or customerOrganizationNumber.
 - For projects, put explicit project manager references into projectManagerName and/or
   projectManagerEmail.
 - For invoices, put customer references into customerName and/or customerOrganizationNumber.
 - For invoice lines, put product references into productName and/or productNumber.
+- For invoice create tasks with a single line, put it in the line field.
+- For invoice create tasks with multiple lines (e.g. "tre produktlinjer", "three product lines",
+  "plusieurs lignes"), put ALL lines in the lines list instead of line. Leave line null.
+- For each invoice line, put product references into productName and/or productNumber,
+  and put the VAT percentage (e.g. 25.0, 15.0, 0.0) into vatPercent.
 - For invoice create tasks, phrases like "invoice is for", "fakturaen gjelder", "la facture
   concerne", "la factura es para", "a fatura e para", or "die Rechnung betrifft" describe the
   free-text line description unless the prompt explicitly names a product.
@@ -1081,6 +1385,9 @@ _SEND_INTENT_POSITIVE_PATTERNS: tuple[str, ...] = (
 
 def _extract_customer_payload(prompt: str) -> dict[str, object]:
     payload: dict[str, object] = {}
+    if _mentions_supplier_party_prompt(prompt):
+        payload["isSupplier"] = True
+        payload["isCustomer"] = False
     name = _extract_named_value(
         prompt,
         [
@@ -1095,6 +1402,17 @@ def _extract_customer_payload(prompt: str) -> dict[str, object]:
             (
                 r"(?:create|register|add)\s+(?:a|an)\s+customer"
                 r"(?:\s+(?:named|called|with name))?\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:supplier|vendor|leverand[oø]r|fornecedor|proveedor|fournisseur)\s+"
+                r"(?:named|med navn|with name|som heter|called)?\s*"
+                r"(?P<value>.+?)(?=\s+(?:com|with|med)\b|\s*(?:,|$))"
+            ),
+            (
+                r"(?:register|add|create|registrer|legg til|registe|registre|registrar)\s+"
+                r"(?:the\s+)?(?:supplier|vendor|leverand[oø]r|fornecedor|proveedor|fournisseur)"
+                r"(?:\s+(?:named|called|with name))?\s+"
+                r"(?P<value>.+?)(?=\s+(?:com|with|med)\b|\s*(?:,|$))"
             ),
         ],
     )
@@ -1307,6 +1625,8 @@ def _extract_product_payload(prompt: str) -> dict[str, object]:
 
 def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     payload: dict[str, object] = {}
+    if _mentions_supplier_invoice_prompt(prompt):
+        payload["supplierInvoice"] = True
     customer_lookup: dict[str, object] = {}
     customer_name = _extract_invoice_customer_name(prompt)
     if customer_name:
@@ -1364,6 +1684,16 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     if comment:
         payload["comment"] = comment
 
+    lines = _extract_structured_invoice_lines(prompt)
+    if lines:
+        payload["lines"] = lines
+
+    if _mentions_order_to_invoice_conversion(prompt):
+        payload["createOrder"] = True
+        payload["convertOrderToInvoice"] = True
+        if _mentions_register_payment_after_invoice(prompt):
+            payload["registerPayment"] = True
+
     line: dict[str, object] = {}
     product_name = _extract_named_value(
         prompt,
@@ -1410,10 +1740,254 @@ def _extract_invoice_payload(prompt: str) -> dict[str, object]:
     if line and "count" not in line:
         line["count"] = 1.0
 
-    if line:
+    if line and "lines" not in payload:
         payload["line"] = line
 
     return payload
+
+
+def _extract_structured_invoice_lines(prompt: str) -> list[dict[str, object]]:
+    matches = list(
+        re.finditer(
+            (
+                r"(?P<name>[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 '&+./-]*?)\s*"
+                r"\((?P<number>[A-Z0-9._-]+)\)\s+"
+                r"(?:til|for|de|por|uber)\s+"
+                r"(?P<price>\d+(?:[.,]\d+)?)\s*(?:kr|nok)\b"
+                r"(?:\s+med\s+(?P<vat>\d+(?:[.,]\d+)?)\s*%\s*"
+                r"(?:mva|vat|tva|iva|mwst))?"
+            ),
+            prompt,
+            flags=re.IGNORECASE,
+        )
+    )
+    if len(matches) < 2:
+        return []
+
+    lines: list[dict[str, object]] = []
+    for match in matches:
+        line: dict[str, object] = {
+            "count": 1.0,
+            "unitPriceExcludingVatCurrency": _parse_decimal(match.group("price")),
+            "productLookup": {
+                "name": _clean_structured_line_name(match.group("name")),
+                "productNumber": _clean_extracted_value(match.group("number")),
+            },
+        }
+        vat_raw = match.group("vat")
+        if vat_raw is not None:
+            line["vatPercent"] = _parse_decimal(vat_raw)
+        lines.append(line)
+
+    return lines
+
+
+def _mentions_order_to_invoice_conversion(prompt: str) -> bool:
+    normalized_prompt = _normalize_prompt_text(prompt)
+    if not re.search(r"\b(?:order|ordre)\b", normalized_prompt):
+        return False
+    return bool(
+        re.search(
+            r"\b(?:convert|konverter)\w*\b.*\b(?:invoice|faktura)\b",
+            normalized_prompt,
+        )
+    )
+
+
+def _mentions_register_payment_after_invoice(prompt: str) -> bool:
+    normalized_prompt = _normalize_prompt_text(prompt)
+    if re.search(r"\b(?:full|heil|hele|complete)\s+(?:payment|betaling)\b", normalized_prompt):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:register|registrer|mark|betal)\w*\b.*\b(?:payment|betaling|paid|betalt)\b",
+            normalized_prompt,
+        )
+    )
+
+
+def _requires_fail_closed_unknown(
+    normalized_prompt: str,
+    attachment_facts: list[AttachmentFact],
+) -> bool:
+    return (
+        _mentions_unsupported_project_lifecycle_prompt(normalized_prompt)
+        or _mentions_unsupported_period_close_prompt(normalized_prompt)
+        or _mentions_unsupported_employee_attachment_prompt(
+            normalized_prompt,
+            attachment_facts,
+        )
+    )
+
+
+def _mentions_unsupported_project_lifecycle_prompt(normalized_prompt: str) -> bool:
+    if not re.search(r"\b(?:project|prosjekt|projet|proyecto|projeto)\b", normalized_prompt):
+        return False
+
+    has_lifecycle_phrase = re.search(
+        (
+            r"\b(?:lifecycle|life cycle|cycle de vie|ciclo de vida|"
+            r"ciclo de vida completo|project lifecycle)\b"
+        ),
+        normalized_prompt,
+    )
+    has_time_registration = re.search(
+        (
+            r"\b(?:register|registrer|enregistrer|registre|registrar|registe)\w*\b"
+            r".{0,40}\b(?:time|timesheet|hours?|heures?|horas?|timer|temps)\b"
+        ),
+        normalized_prompt,
+    )
+    has_supplier_cost = re.search(
+        (
+            r"\b(?:supplier cost|supplier invoice|vendor bill|cout fournisseur|"
+            r"coste del proveedor|custo do fornecedor|leverandorkost)\b|"
+            r"\b(?:supplier|vendor|fornecedor|proveedor|fournisseur|leverandor)\b"
+            r".{0,40}\b(?:cost|invoice|bill|cout|costo|custo)\b"
+        ),
+        normalized_prompt,
+    )
+    has_client_invoice = re.search(
+        (
+            r"\b(?:client invoice|customer invoice|facture client|factura cliente|"
+            r"fatura cliente)\b|"
+            r"\b(?:invoice|faktura|facture|factura|fatura|rechnung)\b"
+            r".{0,40}\b(?:project|prosjekt|projet|proyecto|projeto)\b"
+        ),
+        normalized_prompt,
+    )
+
+    return bool(
+        has_lifecycle_phrase or (has_time_registration and has_supplier_cost and has_client_invoice)
+    )
+
+
+def _mentions_unsupported_period_close_prompt(normalized_prompt: str) -> bool:
+    has_period_close = re.search(
+        (
+            r"\b(?:month[- ]end|month end close|monthly close|period close|closing entries|"
+            r"monatsabschluss|periodeavslutning|manedsavslutning)\b"
+        ),
+        normalized_prompt,
+    )
+    if not has_period_close:
+        return False
+
+    related_signal_count = sum(
+        1
+        for pattern in (
+            r"\b(?:accrual|rechnungsabgrenzung|periodisering|periodization)\b",
+            r"\b(?:depreciation|abschreibung|avskrivning)\b",
+            r"\b(?:balance sheet|trial balance|saldenbilanz|balanse)\b",
+            r"\b(?:salary accrual|gehaltsruckstellung|lonnsavsetning|payroll accrual)\b",
+        )
+        if re.search(pattern, normalized_prompt)
+    )
+    return related_signal_count >= 2
+
+
+def _mentions_unsupported_employee_attachment_prompt(
+    normalized_prompt: str,
+    attachment_facts: list[AttachmentFact],
+) -> bool:
+    if not attachment_facts:
+        return False
+
+    has_employee_signal = re.search(
+        (
+            r"\b(?:employee|new employee|new hire|employee onboarding|onboarding|"
+            r"funcionario|empregado|empleado|ansatt|mitarbeiter|employe)\b"
+        ),
+        normalized_prompt,
+    )
+    if not has_employee_signal:
+        return False
+
+    has_attachment_reference = re.search(
+        (
+            r"\b(?:pdf|attachment|attached|annex|anexo|anexo pdf|vedlegg|"
+            r"offer letter|carta de oferta|tilbudsbrev)\b"
+        ),
+        normalized_prompt,
+    )
+    if not has_attachment_reference:
+        return False
+
+    setup_signal_count = sum(
+        1
+        for pattern in (
+            r"\b(?:department|departamento|avdeling)\b",
+            r"\b(?:salary|annual salary|salario anual|salario|lonn)\b",
+            r"\b(?:working hours|standard working hours|horas de trabalho|arbeidstid)\b",
+            r"\b(?:employment details|detalhes de emprego|integracao|integration)\b",
+            r"\b(?:percentage|percentagem|prosent)\b",
+        )
+        if re.search(pattern, normalized_prompt)
+    )
+    return setup_signal_count >= 2
+
+
+def _mentions_supplier_invoice_prompt(prompt: str) -> bool:
+    normalized_prompt = _normalize_prompt_text(prompt)
+
+    explicit_patterns = (
+        r"\bsupplier invoice\b",
+        r"\bpurchase invoice\b",
+        r"\bvendor bill\b",
+        r"\bincoming invoice\b",
+        r"\bleverandorfaktura\b",
+        r"\bfactura del proveedor\b",
+        r"\bfactura de proveedor\b",
+        r"\bfatura do fornecedor\b",
+        r"\bfacture fournisseur\b",
+    )
+    if any(re.search(pattern, normalized_prompt) for pattern in explicit_patterns):
+        return True
+
+    has_invoice_word = re.search(
+        r"\b(?:invoice|faktura|factura|facture|fatura|rechnung)\b",
+        normalized_prompt,
+    )
+    if not has_invoice_word:
+        return False
+
+    has_supplier_word = re.search(
+        r"\b(?:supplier|vendor|leverandor|proveedor|fornecedor|fournisseur)\b",
+        normalized_prompt,
+    )
+    if has_supplier_word:
+        return True
+
+    has_received_word = re.search(
+        r"\b(?:received|mottatt|recibid[oa]|recebid[oa])\b",
+        normalized_prompt,
+    )
+    has_account_word = re.search(r"\b(?:account|cuenta|konto)\b", normalized_prompt)
+    return bool(has_received_word and has_account_word)
+
+
+def _mentions_supplier_party_prompt(prompt: str) -> bool:
+    normalized_prompt = _normalize_prompt_text(prompt)
+    return bool(
+        re.search(
+            r"\b(?:supplier|vendor|leverandor|fornecedor|proveedor|fournisseur)\b",
+            normalized_prompt,
+        )
+    )
+
+
+def _clean_structured_line_name(value: str) -> str:
+    cleaned = _clean_extracted_value(value)
+    cleaned = re.sub(
+        (
+            r"^(?:med\s+tre\s+produktlinjer:\s*|med\s+produktlinjer:\s*|"
+            r"med\s+produkta\s+|med\s+produkter\s+|og\s+)"
+        ),
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return _clean_extracted_value(cleaned)
 
 
 def _extract_invoice_action_components(
@@ -1467,8 +2041,12 @@ def _extract_invoice_action_components(
                 prompt,
                 flags=re.IGNORECASE,
             )
+        if amount_match is None:
+            amount_match = _search_invoice_amount_excluding_vat(prompt)
         if amount_match:
             fields["paidAmount"] = _parse_decimal(amount_match.group("value"))
+            if _search_invoice_amount_excluding_vat(prompt) is not None:
+                fields["paidAmountExcludingVat"] = True
 
         if "paymentTypeLookup" not in fields:
             if re.search(r"\b(?:bank|bankkonto|bank account)\b", prompt, flags=re.IGNORECASE):
@@ -1550,6 +2128,68 @@ def _extract_invoice_lookup(prompt: str) -> dict[str, object]:
         customer_lookup.setdefault("organizationNumber", organization_number)
     if customer_lookup:
         lookup["customerLookup"] = customer_lookup
+
+    return lookup
+
+
+def _extract_voucher_lookup(prompt: str) -> dict[str, object]:
+    lookup: dict[str, object] = {}
+
+    voucher_id = _extract_named_value(
+        prompt,
+        [
+            r"(?:voucher id|voucher-id|bilagsid|bilag id)\s+(?P<value>\d+)",
+        ],
+    )
+    if voucher_id:
+        lookup["id"] = int(voucher_id)
+
+    voucher_number = _extract_named_value(
+        prompt,
+        [
+            r"(?:voucher number|voucher no\.?|voucher nr\.?|bilagsnummer|bilag nr\.?)\s*#?(?P<value>\d+)",
+            r"(?:voucher|bilag)\s*#(?P<value>\d+)",
+        ],
+    )
+    if voucher_number:
+        lookup["voucherNumber"] = voucher_number
+
+    customer_name = _extract_named_value(
+        prompt,
+        [
+            (
+                r"payment\s+(?:from|of|for)\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|for\s+the\s+invoice\b|for\s+invoice\b|invoice\b|was\b|$))"
+            ),
+            (
+                r"betaling(?:en|a)?\s+(?:fra|for)\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|for\s+faktura\b|faktura(?:en)?\b|ble\b|$))"
+            ),
+            (
+                r"paiement\s+de\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|pour\s+la\s+facture\b|la\s+facture\b|a\b|$))"
+            ),
+            (
+                r"pago\s+de\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|por\s+la\s+factura\b|la\s+factura\b|fue\b|$))"
+            ),
+            (
+                r"pagamento\s+de\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|para\s+a\s+fatura\b|a\s+fatura\b|foi\b|$))"
+            ),
+            (
+                r"zahlung\s+von\s+(?P<value>.+?)"
+                r"(?=\s*(?:\(|fur\s+die\s+rechnung\b|die\s+rechnung\b|wurde\b|$))"
+            ),
+            r"(?:customer|kunde(?:n)?|client|cliente)\s+(?P<value>[^,\n(]+)",
+        ],
+    )
+    if customer_name:
+        lookup["name"] = _strip_voucher_customer_suffixes(customer_name)
+
+    organization_number = _extract_org_number(prompt)
+    if organization_number:
+        lookup["organizationNumber"] = organization_number
 
     return lookup
 
@@ -1645,6 +2285,87 @@ def _extract_project_payload(prompt: str) -> dict[str, object]:
     return payload
 
 
+def _extract_travel_expense_payload(prompt: str) -> dict[str, object]:
+    payload: dict[str, object] = {}
+
+    # Extract employee name
+    employee_name = _extract_named_value(
+        prompt,
+        [
+            (
+                r"(?:for|til)\s+(?:employee|ansatt|empleado|empregado|employ[eé]|mitarbeiter)"
+                r"\s+(?P<value>[^,\n]+)"
+            ),
+            (
+                r"(?:employee|ansatt|empleado|empregado|employ[eé]|mitarbeiter)"
+                r"\s+(?:named|med navn|with name|som heter|called)\s+(?P<value>[^,\n]+)"
+            ),
+        ],
+    )
+    if employee_name:
+        names = _strip_person_suffixes(employee_name).split()
+        employee_lookup: dict[str, object] = {}
+        if names:
+            employee_lookup["firstName"] = names[0]
+        if len(names) > 1:
+            employee_lookup["lastName"] = " ".join(names[1:])
+        if employee_lookup:
+            payload["employeeLookup"] = employee_lookup
+
+    # Extract title/description
+    title = _extract_named_value(
+        prompt,
+        [
+            r"(?:title|tittel|titulo|titre)\s+(?P<value>[^,\n]+)",
+            r"(?:description|beskrivelse)\s+(?P<value>[^,\n]+)",
+        ],
+    )
+    if title:
+        payload["title"] = title
+
+    # Extract departure date
+    departure_date = _extract_named_value(
+        prompt,
+        [
+            r"(?:departure|avreise|from|fra|del|du|von|ab)\s+(?P<value>\d{4}-\d{2}-\d{2})",
+        ],
+    )
+    if departure_date:
+        payload["departureDate"] = departure_date
+
+    # Extract return date
+    return_date = _extract_named_value(
+        prompt,
+        [
+            r"(?:return|retur|to|til|al|au|bis)\s+(?P<value>\d{4}-\d{2}-\d{2})",
+        ],
+    )
+    if return_date:
+        payload["returnDate"] = return_date
+
+    # Extract cost items from prompt
+    costs: list[dict[str, object]] = []
+    cost_matches = re.finditer(
+        r"(?P<description>[A-Za-zÀ-ÿ\s]+?)\s+(?P<amount>\d+(?:[.,]\d+)?)\s*(?:NOK|kr)\b",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    for match in cost_matches:
+        desc = match.group("description").strip()
+        amount = _parse_decimal(match.group("amount"))
+        if desc and amount > 0:
+            costs.append({"description": desc, "amount": amount})
+    if costs:
+        payload["costs"] = costs
+
+    # Extract email for employee lookup
+    email_match = _EMAIL_RE.search(prompt)
+    if email_match and "employeeLookup" not in payload:
+        payload["employeeLookup"] = {"email": email_match.group("email")}
+
+    return payload
+
+
 def _extract_named_value(prompt: str, patterns: list[str]) -> str | None:
     for pattern in patterns:
         match = re.search(pattern, prompt, flags=re.IGNORECASE)
@@ -1684,7 +2405,7 @@ def _extract_invoice_customer_name(prompt: str) -> str | None:
         prompt,
         [
             (
-                r"(?:for|to)\s+(?:customer|kunde)\s+(?P<value>.+?)"
+                r"(?:for|to)\s+(?:customer|kunde(?:n)?)\s+(?P<value>.+?)"
                 r"(?=\s*(?:\(|for\s+\d+(?:[.,]\d+)?\s*nok\b|invoice\s+(?:is\s+)?for\b|$))"
             ),
             (
@@ -1773,6 +2494,7 @@ def _strip_customer_suffixes(value: str) -> str:
                 r"organization number|organisasjonsnummer|orgnr|phone|telefon|mobile|"
                 r"mobil(?:nummer)?|language|språk|description|beskrivelse)\b"
             ),
+            r"\b(?:numero de organiza(?:c(?:ao|ão)|cion)|n[úu]mero de organiza(?:ç|c)[ãa]o|n[úu]mero de organizaci[oó]n)\b",
         ],
     )
 
@@ -1838,6 +2560,19 @@ def _strip_invoice_line_suffixes(value: str) -> str:
             (
                 r"\b(?:product number|produktnummer|varenummer|price|pris|unit price|"
                 r"enhetspris|quantity|qty|count|antall|stk|description|beskrivelse)\b"
+            ),
+        ],
+    )
+
+
+def _strip_voucher_customer_suffixes(value: str) -> str:
+    return _strip_suffixes(
+        value,
+        [
+            (
+                r"\b(?:for|pour|por|para|fur)\s+(?:the\s+)?(?:invoice|facture|factura|fatura|rechnung)\b|"
+                r"\b(?:invoice|facture|factura|fatura|rechnung)\b|"
+                r"\b(?:was|ble|fue|foi|wurde)\b"
             ),
         ],
     )

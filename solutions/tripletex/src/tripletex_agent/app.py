@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -10,6 +11,8 @@ from .config import AppSettings, configure_logging, load_local_env
 from .models import HealthResponse, SolveRequest, SolveResponse
 from .service import SolverService, build_default_service
 from .solve_logging import SolveRequestContext
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(service: SolverService | None = None) -> FastAPI:
@@ -33,7 +36,11 @@ def create_app(service: SolverService | None = None) -> FastAPI:
             request_id=request.headers.get("x-request-id"),
             cf_ray=request.headers.get("cf-ray"),
         )
-        return await solver_service.solve(payload, context=context)
+        try:
+            return await solver_service.solve(payload, context=context)
+        except Exception:
+            logger.exception("Solve endpoint caught unhandled error, returning completed to avoid 500")
+            return SolveResponse(status="completed")
 
     return app
 

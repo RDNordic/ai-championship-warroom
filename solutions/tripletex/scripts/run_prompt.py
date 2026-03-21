@@ -20,36 +20,8 @@ from tripletex_agent.client import (  # noqa: E402
 )
 from tripletex_agent.config import AppSettings  # noqa: E402
 from tripletex_agent.planner import build_default_planner  # noqa: E402
-from tripletex_agent.task_plan import TaskFamily  # noqa: E402
-from tripletex_agent.workflows import (  # noqa: E402
-    CustomerCreateWorkflow,
-    DepartmentCreateWorkflow,
-    EmployeeCreateWorkflow,
-    InvoiceCreateWorkflow,
-    InvoiceCreditNoteWorkflow,
-    InvoicePaymentWorkflow,
-    ProductCreateWorkflow,
-    ProjectCreateWorkflow,
-    StubWorkflow,
-    WorkflowRegistry,
-)
+from tripletex_agent.service import build_default_workflow_registry  # noqa: E402
 from tripletex_agent.workflows.base import WorkflowExecutionError  # noqa: E402
-
-
-def build_registry() -> WorkflowRegistry:
-    return WorkflowRegistry(
-        workflows=[
-            CustomerCreateWorkflow(),
-            ProductCreateWorkflow(),
-            EmployeeCreateWorkflow(),
-            DepartmentCreateWorkflow(),
-            ProjectCreateWorkflow(),
-            InvoiceCreateWorkflow(),
-            InvoicePaymentWorkflow(),
-            InvoiceCreditNoteWorkflow(),
-        ],
-        fallback=StubWorkflow(TaskFamily.UNKNOWN),
-    )
 
 
 async def main() -> int:
@@ -69,7 +41,7 @@ async def main() -> int:
     print("Task plan:")
     print(json.dumps(plan.model_dump(), indent=2))
 
-    registry = build_registry()
+    registry = build_default_workflow_registry()
     workflow = registry.for_plan(plan)
     print(f"Selected workflow: {workflow.__class__.__name__}")
 

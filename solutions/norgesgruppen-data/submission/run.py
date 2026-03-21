@@ -3,8 +3,6 @@ Challenge 3 — Object Detection inference script.
 
 Runs YOLOv8 on grocery shelf images and outputs COCO-format predictions.
 Post-processing: uses store-section priors to penalize misclassified predictions.
-Images come from 4 store sections (Egg, Frokost, Knekkebrød, Varmedrikker).
-Products from one section should not appear in another section's images.
 
 Usage:
     python run.py --input /data/images --output /output/predictions.json
@@ -16,8 +14,6 @@ import json
 from collections import Counter
 from pathlib import Path
 
-import cv2
-import numpy as np
 import torch
 
 # ultralytics 8.1.0 calls torch.load() without weights_only=False,
@@ -39,7 +35,6 @@ SECTION_CATS = {
     4: {1, 9, 16, 19, 20, 24, 25, 27, 28, 31, 32, 37, 40, 45, 46, 49, 54, 55, 56, 58, 63, 64, 65, 71, 74, 77, 81, 83, 87, 89, 98, 99, 100, 103, 106, 107, 111, 112, 114, 115, 118, 122, 124, 125, 126, 127, 133, 134, 136, 137, 141, 142, 144, 146, 147, 151, 153, 160, 165, 167, 169, 171, 172, 173, 174, 177, 178, 179, 182, 184, 189, 190, 192, 196, 198, 199, 200, 202, 203, 206, 210, 215, 219, 222, 225, 229, 238, 245, 247, 248, 249, 252, 255, 256, 259, 266, 272, 281, 282, 287, 292, 297, 298, 299, 304, 306, 309, 310, 314, 319, 320, 324, 325, 332, 334, 337, 339, 340, 341, 344, 347, 348, 350, 352, 353, 355},
 }
 
-# Category -> list of allowed sections (single int for 343 cats, list for 13 multi-section cats)
 CAT_SECTION = {
     0: 1, 1: 4, 2: 1, 3: 1, 4: 3, 5: 1, 6: 3, 7: 2, 8: 1, 9: 4,
     10: 3, 11: 1, 12: 1, 13: 1, 14: 2, 15: 2, 16: 4, 17: 1, 18: 3, 19: 4,
@@ -79,16 +74,12 @@ CAT_SECTION = {
     350: 4, 351: 3, 352: 4, 353: 4, 354: 1, 355: [1, 2, 4],
 }
 
-# Penalty factor for predictions whose category doesn't match image section
 SECTION_MISMATCH_PENALTY = 0.15
-# Only use predictions above this confidence for section voting
 SECTION_VOTE_CONF = 0.3
-# Minimum fraction of votes for a section to be considered dominant
 SECTION_MIN_DOMINANCE = 0.6
 
 
 def _get_cat_sections(cat_id):
-    """Return set of allowed sections for a category."""
     s = CAT_SECTION.get(cat_id)
     if s is None:
         return {1, 2, 3, 4}
@@ -98,7 +89,6 @@ def _get_cat_sections(cat_id):
 
 
 def _detect_image_section(preds):
-    """Determine store section using only high-confidence predictions."""
     section_scores = Counter()
     total_score = 0.0
     for p in preds:
@@ -110,14 +100,12 @@ def _detect_image_section(preds):
     if not section_scores or total_score == 0:
         return None
     best_section, best_score = section_scores.most_common(1)[0]
-    # Only assign section if it's clearly dominant
     if best_score / total_score < SECTION_MIN_DOMINANCE:
         return None
     return best_section
 
 
 def apply_section_prior(predictions):
-    """Penalize predictions whose category doesn't match the image's store section."""
     by_image = {}
     for p in predictions:
         by_image.setdefault(p["image_id"], []).append(p)
@@ -135,7 +123,6 @@ def apply_section_prior(predictions):
         allowed_cats = SECTION_CATS[section]
         for p in preds:
             if p["category_id"] not in allowed_cats and p["score"] < 0.3:
-                # Only penalize low-confidence cross-section predictions
                 p["score"] = round(p["score"] * SECTION_MISMATCH_PENALTY, 4)
                 total_penalized += 1
             corrected.append(p)
@@ -152,103 +139,13 @@ def parse_image_id(filename: str) -> int:
     return int(stem.replace("img_", ""))
 
 
-def compute_tile_grid(img_w: int, img_h: int, tile_size: int, overlap: float):
-    """Compute tile origins for an image. Returns list of (x, y) or None if no tiling needed."""
-    stride = int(tile_size * (1 - overlap))
-
-    if img_w <= tile_size and img_h <= tile_size:
-        return None
-
-    xs = []
-    x = 0
-    while x + tile_size < img_w:
-        xs.append(x)
-        x += stride
-    xs.append(max(0, img_w - tile_size))
-    xs = sorted(set(xs))
-
-    ys = []
-    y = 0
-    while y + tile_size < img_h:
-        ys.append(y)
-        y += stride
-    ys.append(max(0, img_h - tile_size))
-    ys = sorted(set(ys))
-
-    return [(x, y) for y in ys for x in xs]
-
-
-def nms_per_class(detections, iou_threshold=0.5):
-    """Apply per-class NMS on a list of detection dicts.
-
-    Each detection: {category_id, bbox [x,y,w,h], score}
-    Returns filtered list.
-    """
-    if not detections:
-        return []
-
-    # Group by class
-    by_class = {}
-    for d in detections:
-        by_class.setdefault(d["category_id"], []).append(d)
-
-    kept = []
-    for cat_id, dets in by_class.items():
-        if len(dets) == 1:
-            kept.extend(dets)
-            continue
-
-        # Convert to tensors for torchvision NMS
-        boxes_xyxy = []
-        scores = []
-        for d in dets:
-            x, y, w, h = d["bbox"]
-            boxes_xyxy.append([x, y, x + w, y + h])
-            scores.append(d["score"])
-
-        boxes_t = torch.tensor(boxes_xyxy, dtype=torch.float32)
-        scores_t = torch.tensor(scores, dtype=torch.float32)
-
-        from torchvision.ops import nms
-        keep_idx = nms(boxes_t, scores_t, iou_threshold)
-
-        for i in keep_idx.tolist():
-            kept.append(dets[i])
-
-    return kept
-
-
-def predict_on_crop(model, img_crop, confidence, imgsz):
-    """Run model on an image crop (numpy BGR array). Returns list of (x1, y1, x2, y2, conf, cls)."""
-    results = model.predict(
-        source=img_crop,
-        conf=confidence,
-        imgsz=imgsz,
-        max_det=1000,
-        augment=True,
-        verbose=False,
-    )
-    dets = []
-    for result in results:
-        boxes = result.boxes
-        if boxes is None or len(boxes) == 0:
-            continue
-        for i in range(len(boxes)):
-            x1, y1, x2, y2 = boxes.xyxy[i].tolist()
-            dets.append((x1, y1, x2, y2, float(boxes.conf[i]), int(boxes.cls[i])))
-    return dets
-
-
 def run_inference(
     input_dir: Path,
     output_path: Path,
     confidence: float = 0.25,
     imgsz: int = 1280,
-    tile_size: int = 1280,
-    tile_overlap: float = 0.2,
-    nms_iou: float = 0.5,
 ) -> None:
-    """Run YOLOv8 with SAHI-style tiled inference on all images."""
+    """Run YOLOv8 on all images in input_dir, write COCO predictions."""
     # Load model from same directory as this script
     script_dir = Path(__file__).resolve().parent
     model_path = script_dir / "best.pt"
@@ -270,76 +167,39 @@ def run_inference(
         output_path.write_text(json.dumps([]))
         return
 
-    print(f"Running tiled inference on {len(image_paths)} images (tile={tile_size}, overlap={tile_overlap})")
+    print(f"Running inference on {len(image_paths)} images with best.pt")
 
     predictions = []
-    total_tiles = 0
 
     for img_path in image_paths:
         image_id = parse_image_id(img_path.name)
-        img = cv2.imread(str(img_path))
-        if img is None:
-            print(f"WARNING: Could not read {img_path}")
-            continue
 
-        img_h, img_w = img.shape[:2]
-        tile_grid = compute_tile_grid(img_w, img_h, tile_size, tile_overlap)
+        results = model.predict(
+            source=str(img_path),
+            conf=confidence,
+            imgsz=imgsz,
+            max_det=1000,
+            augment=True,
+            verbose=False,
+        )
 
-        image_dets = []
+        for result in results:
+            boxes = result.boxes
+            if boxes is None or len(boxes) == 0:
+                continue
 
-        if tile_grid is None:
-            # Small image — single pass, no tiling
-            dets = predict_on_crop(model, img, confidence, imgsz)
-            for x1, y1, x2, y2, conf, cls in dets:
-                image_dets.append({
-                    "category_id": cls,
-                    "bbox": [round(x1, 2), round(y1, 2), round(x2 - x1, 2), round(y2 - y1, 2)],
-                    "score": round(conf, 4),
+            for i in range(len(boxes)):
+                # Get xyxy and convert to COCO [x, y, w, h]
+                x1, y1, x2, y2 = boxes.xyxy[i].tolist()
+                w = x2 - x1
+                h = y2 - y1
+
+                predictions.append({
+                    "image_id": image_id,
+                    "category_id": int(boxes.cls[i]),
+                    "bbox": [round(x1, 2), round(y1, 2), round(w, 2), round(h, 2)],
+                    "score": round(float(boxes.conf[i]), 4),
                 })
-        else:
-            # --- Tiled inference ---
-            for tx, ty in tile_grid:
-                tw = min(tile_size, img_w - tx)
-                th = min(tile_size, img_h - ty)
-                tile_crop = img[ty:ty + th, tx:tx + tw]
-
-                dets = predict_on_crop(model, tile_crop, confidence, imgsz)
-                total_tiles += 1
-
-                for x1, y1, x2, y2, conf, cls in dets:
-                    # Remap tile-local coords to full-image coords
-                    full_x1 = x1 + tx
-                    full_y1 = y1 + ty
-                    full_x2 = x2 + tx
-                    full_y2 = y2 + ty
-                    image_dets.append({
-                        "category_id": cls,
-                        "bbox": [
-                            round(full_x1, 2),
-                            round(full_y1, 2),
-                            round(full_x2 - full_x1, 2),
-                            round(full_y2 - full_y1, 2),
-                        ],
-                        "score": round(conf, 4),
-                    })
-
-            # --- Also run full-image pass for global context ---
-            full_dets = predict_on_crop(model, img, confidence, imgsz)
-            for x1, y1, x2, y2, conf, cls in full_dets:
-                image_dets.append({
-                    "category_id": cls,
-                    "bbox": [round(x1, 2), round(y1, 2), round(x2 - x1, 2), round(y2 - y1, 2)],
-                    "score": round(conf, 4),
-                })
-
-            # --- Merge with NMS across tiles ---
-            image_dets = nms_per_class(image_dets, iou_threshold=nms_iou)
-
-        for d in image_dets:
-            d["image_id"] = image_id
-            predictions.append(d)
-
-    print(f"Total tiles processed: {total_tiles}")
 
     # Apply store-section prior to penalize cross-section misclassifications
     predictions = apply_section_prior(predictions)
@@ -356,9 +216,6 @@ def main() -> None:
     parser.add_argument("--output", type=str, required=True, help="Output predictions JSON path")
     parser.add_argument("--confidence", type=float, default=0.01, help="Confidence threshold")
     parser.add_argument("--imgsz", type=int, default=1280, help="Inference image size")
-    parser.add_argument("--tile-size", type=int, default=1280, help="Tile size for SAHI inference")
-    parser.add_argument("--tile-overlap", type=float, default=0.2, help="Tile overlap fraction")
-    parser.add_argument("--nms-iou", type=float, default=0.5, help="NMS IoU threshold for merging tiles")
     args = parser.parse_args()
 
     run_inference(
@@ -366,9 +223,6 @@ def main() -> None:
         output_path=Path(args.output),
         confidence=args.confidence,
         imgsz=args.imgsz,
-        tile_size=args.tile_size,
-        tile_overlap=args.tile_overlap,
-        nms_iou=args.nms_iou,
     )
 
 

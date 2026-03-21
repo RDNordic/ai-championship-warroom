@@ -21,8 +21,11 @@ from tripletex_agent.workflows import (
     InvoiceCreateWorkflow,
     InvoiceCreditNoteWorkflow,
     InvoicePaymentWorkflow,
+    OrderInvoicePaymentWorkflow,
     ProductCreateWorkflow,
     ProjectCreateWorkflow,
+    TravelExpenseCreateWorkflow,
+    VoucherReverseWorkflow,
 )
 
 
@@ -64,6 +67,54 @@ async def test_customer_create_workflow_posts_expected_payload() -> None:
         result = await workflow.execute(plan=plan, client=client)
 
     assert result.resource_ids == [101]
+    assert len(recorded) == 1
+
+
+@pytest.mark.asyncio
+async def test_customer_create_workflow_can_create_supplier_typed_record() -> None:
+    recorded: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/v2/customer"
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["name"] == "Luz do Sol Lda"
+        assert payload["organizationNumber"] == "962006930"
+        assert payload["isSupplier"] is True
+        assert payload["isCustomer"] is False
+        return httpx.Response(
+            200,
+            json={"value": {"id": 102, "name": "Luz do Sol Lda", "isSupplier": True}},
+        )
+
+    workflow = CustomerCreateWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.CUSTOMERS_PRODUCTS,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="customer",
+                fields={
+                    "name": "Luz do Sol Lda",
+                    "organizationNumber": "962006930",
+                    "email": "faktura@luzdosollda.no",
+                    "isSupplier": True,
+                    "isCustomer": False,
+                },
+            )
+        ],
+        confidence=0.9,
+    )
+
+    async with TripletexClient(
+        base_url="https://example.test/v2",
+        session_token="token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await workflow.execute(plan=plan, client=client)
+
+    assert result.resource_ids == [102]
     assert len(recorded) == 1
 
 
@@ -212,7 +263,7 @@ async def test_invoice_create_workflow_posts_invoice_without_bank_account_mutati
 
 
 @pytest.mark.asyncio
-async def test_invoice_create_workflow_configures_bank_account_and_sends_invoice_when_requested(
+async def test_invoice_create_workflow_sends_invoice_without_bank_account_mutation(
 ) -> None:
     recorded: list[tuple[str, str]] = []
 
@@ -222,35 +273,6 @@ async def test_invoice_create_workflow_configures_bank_account_and_sends_invoice
             return httpx.Response(200, json={"values": [{"id": 555, "name": "ACME AS"}]})
         if request.method == "GET" and request.url.path == "/v2/product":
             return httpx.Response(200, json={"values": [{"id": 202, "name": "Consulting Hour"}]})
-        if request.method == "GET" and request.url.path == "/v2/ledger/account":
-            return httpx.Response(
-                200,
-                json={
-                    "values": [
-                        {
-                            "id": 11,
-                            "number": 1920,
-                            "name": "Bankinnskudd",
-                            "isBankAccount": True,
-                            "isInvoiceAccount": True,
-                            "bankAccountNumber": "",
-                        }
-                    ]
-                },
-            )
-        if request.method == "PUT" and request.url.path == "/v2/ledger/account/11":
-            payload = json.loads(request.content.decode("utf-8"))
-            assert payload["bankAccountNumber"] == "12345678903"
-            return httpx.Response(
-                200,
-                json={
-                    "value": {
-                        "id": 11,
-                        "isInvoiceAccount": True,
-                        "bankAccountNumber": "12345678903",
-                    }
-                },
-            )
         if request.method == "POST" and request.url.path == "/v2/invoice":
             assert request.url.params["sendToCustomer"] == "true"
             payload = json.loads(request.content.decode("utf-8"))
@@ -294,14 +316,106 @@ async def test_invoice_create_workflow_configures_bank_account_and_sends_invoice
 
     assert result.resource_ids == [909]
     assert result.details["sendToCustomer"] is True
-    assert result.details["invoiceBankAccountId"] == 11
-    assert result.details["invoiceBankAccountUpdated"] is True
+    assert result.details["invoiceBankAccountId"] is None
+    assert result.details["invoiceBankAccountUpdated"] is False
     assert recorded == [
         ("GET", "/v2/customer"),
         ("GET", "/v2/product"),
-        ("GET", "/v2/ledger/account"),
-        ("PUT", "/v2/ledger/account/11"),
         ("POST", "/v2/invoice"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_order_invoice_payment_workflow_creates_order_converts_and_registers_payment() -> None:
+    recorded: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/v2/customer":
+            return httpx.Response(200, json={"values": [{"id": 555, "name": "Strandvik AS"}]})
+        if request.method == "GET" and request.url.path == "/v2/product":
+            product_number = request.url.params.get("productNumber")
+            if product_number == "7865":
+                return httpx.Response(200, json={"values": [{"id": 202, "name": "Skylagring"}]})
+            if product_number == "3949":
+                return httpx.Response(
+                    200,
+                    json={"values": [{"id": 203, "name": "Datarådgjeving"}]},
+                )
+        if request.method == "POST" and request.url.path == "/v2/order":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["customer"] == {"id": 555}
+            assert len(payload["orderLines"]) == 2
+            assert payload["orderLines"][0]["product"] == {"id": 202}
+            assert payload["orderLines"][0]["unitPriceExcludingVatCurrency"] == 38500.0
+            assert payload["orderLines"][1]["product"] == {"id": 203}
+            assert payload["orderLines"][1]["unitPriceExcludingVatCurrency"] == 18500.0
+            return httpx.Response(201, json={"value": {"id": 701}})
+        if request.method == "PUT" and request.url.path == "/v2/order/701/:invoice":
+            return httpx.Response(
+                200,
+                json={"value": {"id": 909, "invoiceNumber": 12, "amount": 57000.0}},
+            )
+        if request.method == "GET" and request.url.path == "/v2/invoice/paymentType":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": 33535763, "description": "Betalt til bank"}]},
+            )
+        if request.method == "PUT" and request.url.path == "/v2/invoice/909/:payment":
+            assert request.url.params["paidAmount"] == "57000.0"
+            return httpx.Response(200, json={"value": {"id": 909, "amountOutstanding": 0.0}})
+        raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+    workflow = OrderInvoicePaymentWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="invoice",
+                fields={
+                    "customerLookup": {
+                        "customerName": "Strandvik AS",
+                        "organizationNumber": "911845016",
+                    },
+                    "createOrder": True,
+                    "convertOrderToInvoice": True,
+                    "registerPayment": True,
+                    "lines": [
+                        {
+                            "productLookup": {"name": "Skylagring", "productNumber": "7865"},
+                            "unitPriceExcludingVatCurrency": 38500.0,
+                        },
+                        {
+                            "productLookup": {"name": "Datarådgjeving", "productNumber": "3949"},
+                            "unitPriceExcludingVatCurrency": 18500.0,
+                        },
+                    ],
+                },
+            )
+        ],
+        confidence=0.9,
+    )
+
+    async with TripletexClient(
+        base_url="https://example.test/v2",
+        session_token="token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await workflow.execute(plan=plan, client=client)
+
+    assert result.resource_ids == [701, 909]
+    assert result.details["orderId"] == 701
+    assert result.details["invoiceId"] == 909
+    assert result.details["paidAmount"] == 57000.0
+    assert recorded == [
+        ("GET", "/v2/customer"),
+        ("GET", "/v2/product"),
+        ("GET", "/v2/product"),
+        ("POST", "/v2/order"),
+        ("PUT", "/v2/order/701/:invoice"),
+        ("GET", "/v2/invoice/paymentType"),
+        ("PUT", "/v2/invoice/909/:payment"),
     ]
 
 
@@ -376,6 +490,145 @@ async def test_invoice_payment_workflow_looks_up_invoice_and_registers_payment()
         ("GET", "/v2/invoice/paymentType"),
         ("PUT", "/v2/invoice/909/:payment"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_invoice_payment_workflow_grosses_up_excluding_vat_amount_to_outstanding() -> None:
+    recorded: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/v2/invoice":
+            return httpx.Response(
+                200,
+                json={
+                    "values": [
+                        {
+                            "id": 909,
+                            "invoiceNumber": 2,
+                            "amount": 36375.0,
+                            "amountExcludingVat": 29100.0,
+                            "amountOutstanding": 36375.0,
+                            "isCreditNote": False,
+                        }
+                    ]
+                },
+            )
+        if request.method == "GET" and request.url.path == "/v2/invoice/paymentType":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": 33535763, "description": "Betalt til bank"}]},
+            )
+        if request.method == "PUT" and request.url.path == "/v2/invoice/909/:payment":
+            assert request.url.params["paidAmount"] == "36375.0"
+            return httpx.Response(200, json={"value": {"id": 909, "amountOutstanding": 0.0}})
+        raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+    workflow = InvoicePaymentWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.REGISTER_PAYMENT,
+        entities_to_find=[EntityReference(entity_type="invoice", lookup={"invoiceNumber": "2"})],
+        fields_to_set={
+            "paymentDate": "2026-03-20",
+            "paidAmount": 29100.0,
+            "paidAmountExcludingVat": True,
+        },
+        confidence=0.9,
+    )
+
+    async with TripletexClient(
+        base_url="https://example.test/v2",
+        session_token="token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await workflow.execute(plan=plan, client=client)
+
+    assert result.resource_ids == [909]
+    assert result.details["paidAmount"] == 36375.0
+    assert recorded == [
+        ("GET", "/v2/invoice"),
+        ("GET", "/v2/invoice/paymentType"),
+        ("PUT", "/v2/invoice/909/:payment"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_voucher_reverse_workflow_finds_voucher_via_customer_lookup() -> None:
+    recorded: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/v2/customer":
+            assert request.url.params["organizationNumber"] == "937044488"
+            return httpx.Response(200, json={"values": [{"id": 555, "name": "Rivière SARL"}]})
+        if request.method == "GET" and request.url.path == "/v2/invoice":
+            assert request.url.params["customerId"] == "555"
+            return httpx.Response(
+                200,
+                json={
+                    "values": [
+                        {
+                            "id": 909,
+                            "invoiceNumber": 1,
+                            "voucher": {"id": 608871914, "voucherNumber": 1001},
+                        }
+                    ]
+                },
+            )
+        if request.method == "PUT" and request.url.path == "/v2/ledger/voucher/608871914/:reverse":
+            return httpx.Response(
+                200,
+                json={"value": {"id": 7001, "sourceVoucher": {"id": 608871914}}},
+            )
+        raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+    workflow = VoucherReverseWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.CORRECTIONS,
+        operation=Operation.REVERSE,
+        entities_to_find=[
+            EntityReference(
+                entity_type="voucher",
+                lookup={"name": "Rivière SARL", "organizationNumber": "937044488"},
+            )
+        ],
+        confidence=0.9,
+    )
+
+    async with TripletexClient(
+        base_url="https://example.test/v2",
+        session_token="token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await workflow.execute(plan=plan, client=client)
+
+    assert result.resource_ids == [608871914]
+    assert recorded == [
+        ("GET", "/v2/customer"),
+        ("GET", "/v2/invoice"),
+        ("PUT", "/v2/ledger/voucher/608871914/:reverse"),
+    ]
+
+
+def test_invoice_create_workflow_does_not_support_supplier_invoice_payload() -> None:
+    workflow = InvoiceCreateWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.INVOICING,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="invoice",
+                fields={
+                    "supplierInvoice": True,
+                    "customerLookup": {"organizationNumber": "933305228"},
+                },
+            )
+        ],
+        confidence=0.9,
+    )
+
+    assert workflow.supports(plan) is False
 
 
 @pytest.mark.asyncio
@@ -555,3 +808,160 @@ async def test_project_create_workflow_resolves_customer_before_posting() -> Non
 
     assert result.resource_ids == [777]
     assert recorded == [("GET", "/v2/customer"), ("GET", "/v2/employee"), ("POST", "/v2/project")]
+
+
+@pytest.mark.asyncio
+async def test_travel_expense_create_workflow_with_default_employee() -> None:
+    recorded: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/v2/employee":
+            return httpx.Response(
+                200,
+                json={
+                    "values": [
+                        {
+                            "id": 303,
+                            "firstName": "Ola",
+                            "lastName": "Nordmann",
+                            "displayName": "Ola Nordmann",
+                        }
+                    ]
+                },
+            )
+        if request.method == "POST" and request.url.path == "/v2/travelExpense":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["employee"] == {"id": 303}
+            assert payload["title"] == "Business trip to Bergen"
+            assert payload["date"] == "2026-03-15"
+            return httpx.Response(
+                201,
+                json={"value": {"id": 500, "title": "Business trip to Bergen"}},
+            )
+        if request.method == "GET" and request.url.path == "/v2/travelExpense/paymentType":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": 99, "description": "Privat utlegg"}]},
+            )
+        raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+    workflow = TravelExpenseCreateWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.TRAVEL_EXPENSES,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="travel_expense",
+                fields={
+                    "title": "Business trip to Bergen",
+                    "departureDate": "2026-03-15",
+                    "returnDate": "2026-03-17",
+                },
+            )
+        ],
+        confidence=0.8,
+    )
+
+    async with TripletexClient(
+        base_url="https://example.test/v2",
+        session_token="token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await workflow.execute(plan=plan, client=client)
+
+    assert result.resource_ids == [500]
+    assert result.details["employeeId"] == 303
+    assert result.details["expenseId"] == 500
+    assert result.details["delivered"] is False
+    assert recorded == [
+        ("GET", "/v2/employee"),
+        ("POST", "/v2/travelExpense"),
+        ("GET", "/v2/travelExpense/paymentType"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_travel_expense_create_workflow_with_employee_lookup_and_costs() -> None:
+    recorded: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/v2/employee":
+            return httpx.Response(
+                200,
+                json={
+                    "values": [
+                        {
+                            "id": 303,
+                            "firstName": "Kari",
+                            "lastName": "Hansen",
+                            "displayName": "Kari Hansen",
+                        }
+                    ]
+                },
+            )
+        if request.method == "POST" and request.url.path == "/v2/travelExpense":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["employee"] == {"id": 303}
+            return httpx.Response(
+                201,
+                json={"value": {"id": 500, "title": "Trip"}},
+            )
+        if request.method == "GET" and request.url.path == "/v2/travelExpense/paymentType":
+            return httpx.Response(
+                200,
+                json={"values": [{"id": 99, "description": "Privat utlegg"}]},
+            )
+        if request.method == "POST" and request.url.path == "/v2/travelExpense/cost":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["travelExpense"] == {"id": 500}
+            assert payload["amountCurrencyIncVat"] in [2000.0, 500.0]
+            assert payload["paymentType"] == {"id": 99}
+            return httpx.Response(
+                201,
+                json={"value": {"id": len(recorded) + 600}},
+            )
+        raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+    workflow = TravelExpenseCreateWorkflow()
+    plan = TaskPlan(
+        task_family=TaskFamily.TRAVEL_EXPENSES,
+        operation=Operation.CREATE,
+        entities_to_create=[
+            EntityPayload(
+                entity_type="travel_expense",
+                fields={
+                    "title": "Trip",
+                    "departureDate": "2026-03-15",
+                    "returnDate": "2026-03-17",
+                    "employeeLookup": {
+                        "firstName": "Kari",
+                        "lastName": "Hansen",
+                    },
+                    "costs": [
+                        {"description": "Hotel", "amount": 2000.0},
+                        {"description": "Meals", "amount": 500.0},
+                    ],
+                },
+            )
+        ],
+        confidence=0.8,
+    )
+
+    async with TripletexClient(
+        base_url="https://example.test/v2",
+        session_token="token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await workflow.execute(plan=plan, client=client)
+
+    assert result.resource_ids[0] == 500
+    assert len(result.details["childIds"]) == 2
+    assert recorded == [
+        ("GET", "/v2/employee"),
+        ("POST", "/v2/travelExpense"),
+        ("GET", "/v2/travelExpense/paymentType"),
+        ("POST", "/v2/travelExpense/cost"),
+        ("POST", "/v2/travelExpense/cost"),
+    ]

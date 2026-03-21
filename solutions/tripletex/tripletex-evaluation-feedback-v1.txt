@@ -1,0 +1,29 @@
+What the plan gets right
+The architecture instinct is sound. Constrained planner + deterministic workflow handlers is the correct call for this scoring system. The choice to not let the LLM invent free-form API sequences is exactly right given that 4xx errors directly penalize the efficiency bonus. The P0/P1/P2 severity ordering is also correct — the send-intent gap is genuinely the most costly failure right now.
+The live-evidence-wins rule is good discipline. The plan is grounded in real traces, not assumptions.
+
+The problems, bluntly
+The plan is written for a different competition than the one you're in.
+Look at what the scoring rules actually say. There are 30 task types across 3 tiers, with 56 variants each (7 languages × 8 data sets). Your plan has detailed workflow coverage for maybe 6–7 families. Travel expenses are stubbed. Corrections are one paragraph. Tier 3 — bank reconciliation from CSV, ledger error correction, year-end closing — gets zero implementation discussion despite opening today (Saturday) and carrying a 3× multiplier.
+Your current plan is optimising the invoice send flag while Tier 3 tasks are opening with 3–6× score ceilings and you have no strategy for them.
+The evidence base is dangerously thin and the plan treats it as authoritative.
+You have 8 traces, 2 of which are definitively your own internal probes, and several others that are still UNKNOWN in outcome. The plan references this as "evidence-updated" and makes architectural decisions from it. That's not evidence — it's noise. The "Current Evidence Snapshot" section confidently states "2 traced /solve requests, 1 internal probe, 1 real competition prompt" and then the full log has 8 traces. The plan is already out of date with itself.
+The StubWorkflow for travel expenses is a live scoring gap right now.
+The Spanish travel expense prompt in your own logs hit StubWorkflow with zero API calls and operation: unknown. That's a 0.0 score on a task you received during competition. Travel expenses are a 43-endpoint family and the plan says "lower priority until the prompt-to-API path is stable." Meanwhile the scorer is already assigning you travel expense tasks.
+The bank account mutation issue is classified P1 but it should be P0.
+Every invoice create currently fires GET /ledger/account + PUT /ledger/account/{id} unconditionally. That's two extra calls plus a spurious write on every single invoicing task. Given that the efficiency bonus only applies on perfect scores and is calculated against the minimum known call count, this is costing you the efficiency multiplier on every invoice task you otherwise solve correctly. That's not a P1 — it's bleeding points on your highest-volume task family.
+The plan conflates implementation work with validation theatre.
+The "Checklist-Driven Validation Rule" has 7 steps including "Verify sandbox read-only access" and "Validate raw API behavior for the workflow." In a hackathon with a rate limit of 10 submissions per task per day, that checklist would take longer to execute than you have time to iterate. The validation strategy needs to be automated and fast, not a manual gate.
+The LLM role section is fine in theory but the implementation evidence contradicts it.
+The plan says the model should not do "free-form API sequencing" or "trial-and-error discovery." But the log shows your planner non-deterministically producing productLookup vs description for identical French prompts. That's the model doing exactly what the plan says it shouldn't. The plan doesn't address why this is happening or how to prevent it — it just documents the failure.
+
+What's actually missing
+In priority order given that Tier 3 opens today:
+1. Tier 3 triage. You need to look at what Tier 3 tasks actually are and decide in the next hour whether any are tractable. Bank reconciliation from CSV is complex but potentially structured enough to handle. Year-end closing is probably a trap — too risky, too many unknowns. A plan that ignores the 3× multiplier tier is leaving the largest score pool untouched.
+2. Travel expense implementation. This is getting scored now. The workflow is understood — the context block already documents the state machine. It needs to move from StubWorkflow to a real implementation today.
+3. Temperature=0 on the planner. Not in the plan at all, should be a one-line fix that directly addresses the non-determinism causing your two failures.
+4. Remove the bank account mutation from the invoice path. This should be a 30-minute fix. Move it to an explicit bootstrap script or remove it entirely and test whether invoices succeed without it.
+5. A faster feedback loop. The plan's validation process is too slow for a hackathon. You need automated replay of your known prompt fixtures against the live endpoint with outcome diffing — not a 7-step manual checklist.
+
+Summary verdict
+The plan is well-written and thoughtful, but it's a plan for a team with a week left, not a team with hours left. It over-invests in process and under-invests in coverage. The two things that will move your score most today are: implementing travel expenses and removing the bank account mutation from invoices. Everything else is refinement on top of a narrow working base.

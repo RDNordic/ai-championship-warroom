@@ -1,173 +1,272 @@
 # SESSION_HANDOFF.md
 
-## Checkpoint
+## Read This First
 
-Tripletex still has the validated invoice create-and-send path from the public replay, and this session added a safe phase-1 prototype for unsupported tasks:
-- invoice create-and-send semantics remain anchored by public trace `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
-- multilingual project creation remains validated by public trace `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
-- multilingual travel expenses are still a real gap, shown by stub trace `c903bd9c-b11a-4d63-92f0-4e115baec310`
-- a new feature-flagged dry-run `ApiCallPlan` path now records structured candidate Tripletex call plans for stubbed tasks without changing the live executor
+This is now the single authoritative Tripletex handoff.
 
-The main source of truth for online behavior remains public `/solve` trace review in `solutions/tripletex/logs/solve-events.jsonl`.
+- Read this file first in the next chat.
+- `solutions/tripletex/next-steps.md` is intentionally only a pointer to this file.
+- Do not spend another submission until the public worker has been restarted onto current local code.
 
-## Handoff Contract
+## Current State
 
-- Current objective:
-  - Keep the validated invoice and project paths stable while using live traces to design safe coverage expansion for unsupported tasks, starting with travel expenses through the new dry-run `ApiCallPlan` path.
-- Exact artifact reference:
-  - Working tree in `solutions/tripletex/` on `2026-03-20` after:
-    - invoice comment pruning for redundant amount/VAT phrases
-    - stronger invoice extraction guidance for free-text description lines vs product references
-    - phase-1 dry-run `ApiCallPlan` prototype for stubbed task families
-    - trace/log tooling that can now surface a generated `api_call_plan`
-  - Public endpoint:
-    - `https://app-per-formerly-basement.trycloudflare.com/solve`
-  - Live trace log path:
-    - `solutions/tripletex/logs/solve-events.jsonl`
-  - Current live trace anchors:
-    - invoice success: `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
-    - project success: `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
-    - travel-expense stub: `c903bd9c-b11a-4d63-92f0-4e115baec310`
-  - Feature flag state:
-    - `ENABLE_API_CALL_PLAN=false`
-    - `API_CALL_PLAN_MODEL=gpt-5-mini`
-  - Key docs for the next session:
-    - `solutions/tripletex/PLAN.md`
-    - `solutions/tripletex/SUBMISSION_CHECKLIST.md`
-    - `solutions/tripletex/SESSION_HANDOFF.md`
-    - `solutions/tripletex/README.md`
-- What is proven:
-  - The online solver behavior for supported tasks is still anchored by live public traces:
-    - invoice trace `6c15b5a1-53d8-4b68-9cfe-384285fa632a` still proves `send_to_customer=true`, no `GET /product`, and empty invoice comments
-    - project trace `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457` still proves multilingual project extraction and execution
-  - The live gap is still real:
-    - travel-expense trace `c903bd9c-b11a-4d63-92f0-4e115baec310` planned `travel_expenses` but routed to `StubWorkflow` with no Tripletex API calls
-  - The fallback merge now removes redundant amount/VAT phrases from invoice comments when the extracted line amount already captures that information.
-  - The planner guidance now explicitly treats phrases like `La facture concerne ...` as free-text line descriptions unless the prompt explicitly names a product.
-  - The new dry-run `ApiCallPlan` path is feature-flagged and scoped safely:
-    - it only activates when the chosen workflow is `StubWorkflow`
-    - it records an `api_call_plan` event instead of executing new API calls
-    - live workflows skip it entirely
-  - Config defaults keep the prototype offline by default:
-    - `ENABLE_API_CALL_PLAN=false`
-    - `API_CALL_PLAN_MODEL=gpt-5-mini`
-  - Log tooling now surfaces generated dry-run plans:
-    - `SolveEventLogger` records `api_call_plan`
-    - `log_analysis.py` includes `api_call_plan` in trace summaries
-    - `scripts/inspect_solve_logs.py` prints the plan in text and JSON modes
-  - Focused validation for the new prototype succeeded:
-    - `./.venv/bin/ruff check src/tripletex_agent/config.py src/tripletex_agent/service.py src/tripletex_agent/solve_logging.py src/tripletex_agent/log_analysis.py src/tripletex_agent/api_call_plan.py src/tripletex_agent/api_call_planner.py scripts/inspect_solve_logs.py tests/test_config.py tests/test_service.py tests/test_api_call_planner.py tests/test_log_analysis.py`
-      - Result: passed
-    - `./.venv/bin/pytest -q tests/test_config.py tests/test_api_call_planner.py tests/test_log_analysis.py`
-      - Result: `10 passed`
-    - direct local service check for the stub path:
-      - Result: `{"status":"completed"}`
-      - logged events: `received`, `planned`, `api_call_plan`, `completed`
-- What is assumed:
-  - The dry-run `gpt-5-mini` plans will be good enough to guide executor design once we start replaying real stub prompts locally with the feature flag on.
-  - The current curated endpoint catalog in `api_call_planner.py` is enough for the first travel-expense iteration, but it will likely need refinement after reviewing real generated plans.
-  - Online behavior remains unchanged while `ENABLE_API_CALL_PLAN` stays off.
-- Next highest-priority task:
-  - Turn on `ENABLE_API_CALL_PLAN=true` locally only, replay the live travel-expense stub prompt `c903bd9c-b11a-4d63-92f0-4e115baec310`, inspect the generated `api_call_plan`, and refine the schema/prompt before attempting any executor work or online enablement.
+- Date: `2026-03-21`
+- Repo branch: `main`
+- Working tree: dirty, with uncommitted Tripletex changes
+- Last older confirmed leaderboard snapshot:
+  - score `5.0`
+  - rank `#221`
+  - solved `11/30`
+- Latest later user-reported submission outcomes on `2026-03-21` Oslo time:
+  - `0/14`
+  - `0/8`
 
-## Session Archive
+## Runtime Status
 
-- `solutions/tripletex/session_archive/2026-03-20-scaffold-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-invoice-create-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-validated-invoicing-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-pre-first-solve-submission-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-conversational-prompt-layer-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-log-observability-and-plan-refresh-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-invoice-send-semantics-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-invoice-drift-hardening-checkpoint.md`
-- `solutions/tripletex/session_archive/2026-03-20-pre-api-call-plan-dry-run-checkpoint.md`
+- Current supervisor state file says the active public endpoint is:
+  - `https://concerts-remarks-carol-display.trycloudflare.com/solve`
+- Supervisor state file:
+  - `solutions/tripletex/logs/public-endpoint-state-8003.json`
+- Supervisor log:
+  - `solutions/tripletex/logs/public-supervisor-8003.stdout.log`
+- Live service log:
+  - `solutions/tripletex/logs/public-uvicorn-8003.log`
+- Solve trace log:
+  - `solutions/tripletex/logs/solve-events.jsonl`
 
-## Latest Work
+Important:
 
-- Preserved the invoice drift-hardening work already in the tree:
-  - redundant amount/VAT phrasing is pruned out of invoice comments
-  - French description-line prompts stay in `line.description`
-  - trace-shaped invoice regressions were added around the stale-worker misses and successful replay
-- Added phase-1 dry-run `ApiCallPlan` support:
-  - new structured Pydantic schema for dry-run API call plans
-  - new OpenAI-backed planner that requests a strict structured plan from `gpt-5-mini`
-  - feature-flagged service hook that records a dry-run plan only for stubbed tasks
-  - new solve-log event type and trace-summary support for reviewing the generated plan
-- Added focused tests for:
-  - config defaults
-  - OpenAI dry-run planner output shaping
-  - service logging behavior for stub vs live workflows
-  - log-analysis handling of `api_call_plan`
+- the tunnel is not the current blocker
+- the current blocker is stale deployed runtime behavior
+- the currently running public worker is behind the current local code
 
-## Validation
+## What Is Proven Locally
 
-- Live trace review still anchors current online behavior:
-  - invoice success: `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
-  - project success: `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
-  - travel-expense stub: `c903bd9c-b11a-4d63-92f0-4e115baec310`
-- Focused code quality checks for the new dry-run path:
-  - `./.venv/bin/ruff check src/tripletex_agent/config.py src/tripletex_agent/service.py src/tripletex_agent/solve_logging.py src/tripletex_agent/log_analysis.py src/tripletex_agent/api_call_plan.py src/tripletex_agent/api_call_planner.py scripts/inspect_solve_logs.py tests/test_config.py tests/test_service.py tests/test_api_call_planner.py tests/test_log_analysis.py`
-    - Result: passed
-- Focused tests:
-  - `./.venv/bin/pytest -q tests/test_config.py tests/test_api_call_planner.py tests/test_log_analysis.py`
-    - Result: `10 passed`
-  - `timeout 20 ./.venv/bin/pytest -q tests/test_service.py -k api_call_plan -vv`
-    - Result: both new stub/live service tests passed before the local pytest process lingered in the sandbox
-- Direct stub-path service verification:
-  - local scripted call to `SolverService.solve(...)` with a stubbed travel-expense plan
-  - Result: `{"status":"completed"}`
-  - Event sequence: `received`, `planned`, `api_call_plan`, `completed`
-  - Confirmed the logged `api_call_plan` carried the structured dry-run steps
+Current narrow gate:
 
-## Important Findings
+```powershell
+cd solutions/tripletex
+.\.venv\Scripts\python.exe -m pytest -q tests\test_planner.py tests\test_workflows.py tests\test_api_call_planner.py --basetemp "C:\Users\John Brown\.codex\memories\tripletex-pytest-run"
+.\.venv\Scripts\python.exe scripts\replay_prompt_fixtures.py --keyword-only
+```
 
-- Translation is not the main problem in the live traffic:
-  - French invoice prompts solve
-  - German project prompts solve
-  - the Spanish travel-expense prompt was understood well enough to classify as `travel_expenses`
-- The main blocker is task-family coverage, not multilingual prompt understanding.
-- The new dry-run `ApiCallPlan` path gives us a way to inspect model-proposed Tripletex calls for unsupported tasks without risking online execution quality.
-- The online solver should remain behaviorally unchanged until the dry-run feature flag is explicitly enabled.
+Results:
 
-## Known Issues / Risks
+- `66 passed`
+- replay fixtures pass for:
+  - supplier invoice containment
+  - voucher reversal lookup extraction
+  - project-lifecycle fail-closed
+  - month-end fail-closed
+  - attachment-led employee onboarding fail-closed
 
-- The `ApiCallPlan` prototype does not execute anything yet.
-- The dry-run path has only been validated locally; it has not been exercised through the public endpoint because the feature flag remains off.
-- Travel expenses are still unimplemented in the live executor.
-- The public tunnel can still serve stale code if the local `uvicorn` worker is not restarted after edits.
-- Correction workflows are still unimplemented.
-- Module-activation workflows are still unimplemented.
-- PDF and CSV extraction are still deferred.
+Local planner behavior now intentionally fail-closes these unsupported families:
 
-## Next Steps
+1. project lifecycle / project delivery compound prompts
+2. month-end / period-close prompts
+3. attachment-led employee onboarding prompts that depend on PDF offer-letter contents
 
-1. Enable `ENABLE_API_CALL_PLAN=true` locally only and replay the live travel-expense stub prompt `c903bd9c-b11a-4d63-92f0-4e115baec310`.
-2. Inspect the generated `api_call_plan` in `solve-events.jsonl` and refine the schema or curated endpoint catalog before any executor work.
-3. Keep public `/solve` replay and trace review as the source of truth for supported live paths, especially invoice send semantics.
-4. After the dry-run plans look sane, decide whether to build a deterministic executor for one narrow travel-expense create shape.
+Practical meaning:
+
+- these families should now route to `unknown` / `StubWorkflow`
+- they should not hit live write workflows on the current local code
+
+## What Is Still Live-Proven Good
+
+1. Invoice payment with amount stated excluding VAT
+2. Invoice create-and-send
+3. Travel expense creation
+4. Basic customer creation
+5. Basic product creation
+
+These were proven in earlier live traces and are still the stable base.
+
+## Most Important New Live Traces
+
+### 1. Employee Onboarding Via PDF Hit Old Worker Behavior
+
+- `trace_id=c24268f2-b7c5-4fb8-9ce7-db3525b2770a`
+- received at `2026-03-21 13:48` Oslo time
+
+Prompt family:
+
+- Portuguese
+- attachment-led employee onboarding
+- PDF offer letter referenced
+- create employee
+- assign department
+- configure employment percentage
+- configure annual salary
+- configure standard working hours
+
+Observed live behavior:
+
+- planned to `EmployeeCreateWorkflow`
+- extracted only a generic `comments` field about the PDF
+- failed before any Tripletex API call with:
+  - `Employee creation requires firstName`
+
+Meaning:
+
+- the public worker was still serving old code after the local fail-closed patch existed
+- this is direct evidence of stale runtime, not just a planner-quality problem
+
+### 2. Order -> Invoice -> Payment Still Misroutes Live
+
+- `trace_id=702235e7-9398-4473-9da3-7936ab79814c`
+- received at `2026-03-21 14:00` Oslo time
+
+Prompt:
+
+```text
+Opprett en ordre for kunden Stormberg AS (org.nr 870531559) med produktene Vedlikehold (4665) til 35200 kr og Systemutvikling (7431) til 4400 kr. Konverter ordren til faktura og registrer full betaling.
+```
+
+Observed live behavior:
+
+- planned to `InvoicePaymentWorkflow`
+- operation became `register_payment`
+- order creation and invoice creation steps were lost
+- API calls:
+  - `GET /customer` -> matched Stormberg AS
+  - `GET /invoice` -> no results
+- failed with:
+  - `No invoice matched lookup {'customerLookup': {'customerName': 'Stormberg AS', 'organizationNumber': '870531559'}}`
+
+Meaning:
+
+- `order -> invoice -> payment` is still not live-proven
+- the live worker did not use the intended local route for this family
+- this is another sign the public worker is stale
+
+### 3. Older But Still Relevant Live Traces
+
+- `8ce83963-d7d7-4d55-ae1d-ecdd2e5d18e7`
+  - French project-lifecycle prompt
+  - old live worker degraded into invoice/supplier containment
+- `68855094-7ec9-4302-8da7-576c0afa7b6b`
+  - German month-end close
+  - old live worker degraded into `InvoiceCreateWorkflow`
+- `44e888d3-38c8-4b46-94d9-352b2280b179`
+  - voucher reversal
+  - old live worker lost lookup and failed before Tripletex API call
+
+These are still relevant as regression targets, but the immediate operational issue is stale deployment.
+
+## Current Highest-Priority Problems
+
+1. The live public worker is stale.
+2. The latest submissions were spent against code that does not match current local patches.
+3. `order -> invoice -> payment` still is not live-proven.
+4. Voucher reversal is still only partially validated live.
+5. Attachment/PDF tasks are only contained, not solved.
+
+## Current Objective
+
+Do not do more local planner work first.
+
+The next objective is:
+
+1. restart the public worker onto the current local code
+2. re-check local and public health
+3. submit once
+4. inspect `solve-events.jsonl` immediately
+
+## What The Next Submission Must Validate
+
+On the first fresh post-restart traces, verify:
+
+1. employee PDF onboarding now fails closed to `unknown` / `StubWorkflow`
+2. project-lifecycle prompts fail closed
+3. month-end close prompts fail closed
+4. `order -> invoice -> payment` routes to `OrderInvoicePaymentWorkflow`
+
+If `order -> invoice -> payment` still misroutes after restart, then it becomes the next code-fix target.
+
+## Recommended Action Sequence
+
+1. Restart the public worker.
+   - Do not assume the current uvicorn process picked up local edits.
+
+2. Re-check health.
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:8003/health
+Invoke-WebRequest https://concerts-remarks-carol-display.trycloudflare.com/health
+```
+
+3. Re-run the narrow local gate if needed.
+
+4. Submit once.
+
+5. Inspect logs immediately.
+
+```powershell
+cd solutions/tripletex
+.\.venv\Scripts\python.exe scripts\inspect_solve_logs.py recent --limit 20
+Get-Content logs\public-uvicorn-8003.log -Tail 120
+```
+
+## Key Files
+
+- planner: `solutions/tripletex/src/tripletex_agent/planner.py`
+- workflows: `solutions/tripletex/src/tripletex_agent/workflows/live.py`
+- service: `solutions/tripletex/src/tripletex_agent/service.py`
+- replay harness: `solutions/tripletex/scripts/replay_prompt_fixtures.py`
+- replay fixtures: `solutions/tripletex/fixtures/replay_prompt_fixtures.json`
+- public endpoint supervisor: `solutions/tripletex/scripts/run_public_endpoint.py`
+- solve trace log: `solutions/tripletex/logs/solve-events.jsonl`
+- live service log: `solutions/tripletex/logs/public-uvicorn-8003.log`
+
+## What Is Assumed
+
+- the current tunnel URL remains live until the current `cloudflared` process dies
+- the current local code is the desired version to deploy
+- the stale behavior is from an old worker process, not from missing local edits
+
+## Do Not Spend Time On
+
+- blaming the tunnel by default
+- broad new unsupported feature work before restarting the worker
+- implementing full PDF extraction right now
+- reading both handoff files; this file is enough
 
 ## Restart Prompt
 
 ```text
-Read solutions/tripletex/PLAN.md, solutions/tripletex/SUBMISSION_CHECKLIST.md, solutions/tripletex/SESSION_HANDOFF.md, solutions/tripletex/README.md, and solutions/tripletex/logs/solve-events.jsonl. Stay scoped to solutions/tripletex/.
+Read solutions/tripletex/SESSION_HANDOFF.md first. Do not read next-steps.md for detail; it is only a pointer.
 
-Start with the current live trace anchors:
-- invoice success: `6c15b5a1-53d8-4b68-9cfe-384285fa632a`
-- project success: `b5da5c8c-8bb0-4e3d-bf6c-8588c1f7d457`
-- travel-expense stub: `c903bd9c-b11a-4d63-92f0-4e115baec310`
+Current state:
+- Latest later user-reported runs on 2026-03-21 Oslo time: 0/14, then 0/8
+- Current public endpoint in the supervisor state file:
+  https://concerts-remarks-carol-display.trycloudflare.com/solve
+- Tunnel health is not the blocker
+- The blocker is stale public worker behavior relative to local code
+- Local narrow gate passes with 66 tests
+- Local replay fixtures pass for:
+  - project lifecycle fail-closed
+  - month-end fail-closed
+  - employee PDF onboarding fail-closed
 
-Current top priority:
-- preserve the validated invoice create-and-send semantics
-- keep public `/solve` trace review as the main source of truth for live behavior
-- use the dry-run `ApiCallPlan` path to study unsupported travel-expense prompts before building any executor
+Most important live traces:
+- c24268f2-b7c5-4fb8-9ce7-db3525b2770a
+  - Portuguese PDF-led employee onboarding
+  - live worker routed to EmployeeCreateWorkflow
+  - failed with Employee creation requires firstName
 
-Work checklist:
-1. Read the merged roadmap in `solutions/tripletex/PLAN.md`.
-2. Confirm the public worker is serving current code before trusting a replay.
-3. Turn on `ENABLE_API_CALL_PLAN=true` locally only and replay the travel-expense stub trace prompt to generate `api_call_plan` events.
-4. Review the generated dry-run steps in `solutions/tripletex/logs/solve-events.jsonl` and `scripts/inspect_solve_logs.py`.
-5. If the dry-run plan looks sane, scope one narrow deterministic executor candidate for travel expenses.
-6. If you update `SESSION_HANDOFF.md` again, archive the current handoff first in `solutions/tripletex/session_archive/`.
+- 702235e7-9398-4473-9da3-7936ab79814c
+  - Norwegian order -> invoice -> payment
+  - live worker routed to InvoicePaymentWorkflow
+  - it only did GET /customer then GET /invoice
+  - failed with No invoice matched lookup ...
 
-Keep PDF and CSV handling lower priority unless new live trace evidence points there directly.
+Goal for this chat:
+- restart the public worker onto current local code
+- re-check health
+- submit once
+- inspect fresh traces immediately
+- confirm whether:
+  - employee PDF onboarding now fails closed
+  - project/month-end now fail closed
+  - order -> invoice -> payment routes to OrderInvoicePaymentWorkflow
 ```
