@@ -21,6 +21,7 @@ venv/
 
 # Pre-competition prep (not part of submission)
 past-championships-data/
+submissions/
 
 # Generated run artifacts (solutions)
 solutions/grocerybot-trial-vs-code/logs/

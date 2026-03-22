@@ -1,5 +1,0 @@
-{
-  "actions": [
-    {"bot": 0, "action": "pick_up", "item_id": "item_1"}
-  ]
-}

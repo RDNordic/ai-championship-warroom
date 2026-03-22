@@ -1,9 +1,0 @@
-{
-  "actions": [
-    {"bot": 0, "action": "move_right"},
-    {"bot": 1, "action": "pick_up", "item_id": "item_4"},
-    {"bot": 2, "action": "drop_off"},
-    {"bot": 3, "action": "move_down"},
-    {"bot": 4, "action": "wait"}
-  ]
-}
