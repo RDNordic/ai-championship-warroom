@@ -8,12 +8,11 @@ Private prep repo for the Norwegian AI Championship (March 19-22, 2026).
 - Run a repeatable team workflow under competition pressure.
 
 ## Team
-- **Andrew Davidson** — Team Captain (governance, compliance, coordination)
-- **Christopher Coello** — ML/Data Science lead
-- **Patrick Lundebye** — Digitalization, process design, communication
-- **Oddar** — Infrastructure, cyber/security, compute
+- **Andrew Davidson** — Team Captain
+- **Christopher Coello** — NorgesGruppen Object Detection
+- **Oddar** — Tripletex Accounting Agent
 
-Full profiles and role assignments are in `AGENTS.md`.
+Role assignments are in `AGENTS.md`.
 
 ## Repo Layout
 - `CLAUDE.md`: Operating rules for AI coding assistants.

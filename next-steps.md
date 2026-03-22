@@ -6,7 +6,7 @@
 ---
 
 ## Session Log
-- **2026-03-19:** Challenges read and reviewed in full. Ownership assigned. Patrick out for personal reasons (kept in loop). Active build phase begun.
+- **2026-03-19:** Challenges read and reviewed in full. Ownership assigned. Active build phase begun.
 - **2026-03-19:** COMPETITION HAS BEGUN. Added `nmiai` MCP server (`https://mcp-docs.ainm.no/mcp`). Challenges released at 18:00.
 - **2026-03-17:** Rules published. Task 2 sponsor confirmed as Astar. GCP account applied.
 - **2026-03-13:** Meeting with Patrick. Intel gathered, Slack connected. See `comms/meeting-notes.md` and `comms/intel-sources.md`.
@@ -15,19 +15,11 @@
 
 ## Team
 
-| Member | Role | Challenge | Hardware |
-|--------|------|-----------|----------|
-| AD (Andrew) | PM / Governance | **Astar Island** (Challenge 2) | - |
-| Chris (Christopher) | Solver / Eval Lead | **NorgesGruppen Object Detection** (Challenge 3) | - |
-| KO (Oddar) | Infra / Red Team | **Tripletex Accounting Agent** (Challenge 1) | ASUS ROG Zephyrus G16 - RTX 5090 Mobile 24GB VRAM, Intel Core Ultra 9, 64GB RAM |
-| Patrick | Governance + Coordination | **Out - personal reasons. Kept in loop.** | Intel Core Ultra 5 135H, 96GB RAM, 54GB NPU |
-
-**Comms:** Signal for team updates. John keeps GitHub hub in sync.
-
-**Hardware strategy:**
-- GPU workloads (CV training, LLM inference, fine-tuning) -> KO's machine (RTX 5090 Mobile, 24GB VRAM)
-- CPU/analysis/Astar modelling -> AD's machine
-- Cloud burst -> Google infra (app.ainm.no)
+| Member | Role | Challenge |
+|--------|------|-----------|
+| AD (Andrew) | PM / Governance | **Astar Island** (Challenge 2) |
+| Chris (Christopher) | Solver / Eval Lead | **NorgesGruppen Object Detection** (Challenge 3) |
+| KO (Oddar) | Infra / Red Team | **Tripletex Accounting Agent** (Challenge 1) |
 
 ---
 
@@ -134,5 +126,4 @@
 - [x] Verification ladder and data handling defaults in `CLAUDE.md`
 - [x] `/session-handoff` and `/btw` slash commands created -> `.claude/commands/`
 - [x] Slack connected to official NM i AI workspace
-- [x] KO hardware confirmed: RTX 5090 Mobile 24GB VRAM (matches NorgesGruppen sandbox GPU exactly)
 - [x] MIT license added (`LICENSE` file, March 17)

@@ -4,6 +4,12 @@
 **/.token
 **/.gcloud-config/
 
+# Local IDE/tool settings
+.claude/settings.local.json
+
+# Screenshots / non-essential assets
+ops/google-cloud-application.png
+
 # Python bytecode / cache
 __pycache__/
 *.py[cod]
@@ -11,6 +17,9 @@ __pycache__/
 # Local virtual environments
 .venv/
 venv/
+
+# Pre-competition prep (not part of submission)
+past-championships-data/
 
 # Generated run artifacts (solutions)
 solutions/grocerybot-trial-vs-code/logs/

@@ -48,31 +48,7 @@ Source file: `past-championships-data/nora.ai-resources-faq.txt`
 
 ## Team Setup (4 Members)
 
-Full team enables parallel workstreams instead of role-cycling.
-
-### Members and Tools
-
-| Member | Role | AI Tools |
-|--------|------|----------|
-| **AD (Andrew)** | Project Manager | Claude Code, Codex |
-| **Chris (Christopher)** | Solver / Eval Lead | Claude Code |
-| **Patrick** | Governance / Coordination | Claude Code |
-| **KO (Oddar)** | Red Team / Infra | Claude Code, Codex, Perplexity |
-
-### Track Assignments
-
-- **Solver track** (Christopher lead, Patrick support): implement, instrument, iterate on models.
-- **Eval track** (Christopher lead, KO support): run fixed seed regression, compare checkpoints, automate scoring.
-- **Red team track** (KO lead, AD support): stress test edge cases, probe robustness, security review.
-- **Governance track** (AD lead, Patrick support): maintain compliance artifacts, risk register, AI Act checklist.
-- **Submission track** (AD lead, Patrick coordination, KO infra): package deliverables, dry-run submission, final gate checks.
-
-### Recommended Cadence
-
-- Parallel build + eval streams (Christopher + KO)
-- Governance and compliance running continuously (AD + Patrick)
-- Sync checkpoints every 2 hours during active competition
-- Final submission gate requires AD (compliance) + Christopher (technical) sign-off
+Full team enables parallel workstreams instead of role-cycling. See `AGENTS.md` for current assignments.
 
 ## Immediate Tasks (Do Today)
 
