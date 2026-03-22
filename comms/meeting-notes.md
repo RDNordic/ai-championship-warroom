@@ -33,39 +33,25 @@
 - No further tuning. All energy → championship prep.
 
 **Task Division Discussion:**
-- Chris = solver lead across all 3 challenges (primary technical driver)
-- KO = infra owner + GPU box (RTX 5080); owns deployment pipeline
-- Patrick = governance + coordination; support on NLP challenge
+- Chris = solver lead
+- KO = infra owner; owns deployment pipeline
+- Patrick = governance + coordination
 - Andrew = PM + compliance sign-off
-- John = CPU/NPU box (96GB RAM); data wrangling, tabular ML, comms hub
-
-**Hardware split:**
-- GPU-heavy (LLM inference, CV, fine-tuning) → KO
-- Tabular ML, large-context, data processing → John
-- Cloud burst → Google infra (confirm before March 19)
-
-**Interview questions NOT yet answered (resume next session):**
-- Full availability March 19–22 per team member
-- Is Signal group already set up?
-- Has deployment pipeline (local → public endpoint) been tested?
-- Chris's read on carrying 3 challenges — does he need support?
 
 ---
 
 ## Prep Checklist
 - [x] Grocery Bot closed — rank ~70/317, platform familiar
-- [x] Team members and hardware identified
+- [x] Team members identified
 - [x] Challenge hypotheses documented (comms/intel-sources.md)
 - [x] `/session-handoff` and `/btw` commands created
 - [x] next-steps.md cleaned and updated
 - [ ] Signal group confirmed with all 4 members
 - [ ] Google cloud access confirmed
-- [ ] KO: Ollama + Qwen2.5:27B installed and tested
-- [ ] FastAPI scaffold + ngrok deployment pipeline tested end-to-end
+- [ ] FastAPI scaffold + deployment pipeline tested end-to-end
 - [ ] All 4 members with GitHub push/PR access confirmed
 
 ## Action Items
-1. **John** — share `comms/intel-sources.md` and updated `next-steps.md` with team on Signal
-2. **KO** — confirm RTX 5080 has Ollama installed; test Qwen2.5:27B inference speed
-3. **Everyone** — check app.ainm.no for Google cloud access details
-4. **Next session** — finish interview: availability, Signal status, deployment pipeline test
+1. Share `comms/intel-sources.md` and updated `next-steps.md` with team
+2. Check app.ainm.no for Google cloud access details
+3. Finish prep: deployment pipeline test

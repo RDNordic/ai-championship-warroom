@@ -14,7 +14,7 @@ This file defines agent roles, team assignments, and handoff contracts for compe
 | Astar Island — Viking World Prediction | **AD (Andrew)** | Building | `solutions/astar-island/README.md` |
 | NorgesGruppen Data — Object Detection | **Chris** | Building | `solutions/norgesgruppen-data/README.md` |
 
-Patrick is out for personal reasons. Kept in loop via Signal. Do not assign him blocking tasks.
+Patrick is not active during competition week.
 
 ---
 
@@ -30,27 +30,16 @@ Patrick is out for personal reasons. Kept in loop via Signal. Do not assign him 
 ## Team Roster
 
 ### Andrew Davidson (AD) — Team Captain / Astar Island Owner
-- Background: R&D practitioner specialising in privacy, research ethics, AI governance, and organisational behavioural management. Cross-sector experience in higher education, health, public administration, and cultural/creative sectors (Norway and UK).
-- Key strengths: GDPR and EU AI Act practical implementation, RAG systems, evaluation frameworks, automation pipelines, agent-style workflows, privacy-by-design. Grant development (Norwegian Research Council, Horizon Europe, Erasmus+). Behavioural science and OBM.
-- Challenge role: Owns Astar Island (probabilistic ML, query strategy, parameter inference). Governance gate on all final submissions.
-- Style: Pragmatic, anti-theatre governance. Focused on making adoption real through behavioural change.
+- Owns Astar Island (probabilistic ML, query strategy, parameter inference). Governance gate on all final submissions.
 
 ### Christopher Coello (Chris) — NorgesGruppen Object Detection Owner
-- Background: Data scientist / ML engineer with 13+ years in quantitative mathematical modelling, machine learning, and software engineering.
-- Key strengths: End-to-end ML pipelines, production-ready Python, exploratory data analysis, mathematical modelling. Domain experience in precision farming, health, and energy.
-- Challenge role: Owns NorgesGruppen object detection. Trains YOLOv8, manages 3-submissions/day budget, local eval gating.
-- Style: Hands-on builder, systematic, communication-oriented.
+- Owns NorgesGruppen object detection. Trains YOLOv8, manages 3-submissions/day budget, local eval gating.
 
 ### Oddar / KO — Tripletex Accounting Agent Owner
-- Background: Sambandsoffiser (signals officer), Norwegian Army. Former head of Cyber Technician School (Cyberforsvaret). Bachelor from Krigsskolen.
-- Key strengths: Computer science (systems, networking, infrastructure), cyber operations, systems integration. High-end compute hardware (RTX 5090 Mobile 24GB VRAM). Has CSV parsing experience.
-- Challenge role: Owns Tripletex. Builds and maintains FastAPI `/solve` endpoint, LLM agent, cloudflared tunnel.
-- Style: Technical generalist, infrastructure-focused, security-minded, operationally disciplined.
+- Owns Tripletex. Builds and maintains FastAPI `/solve` endpoint, LLM agent, Cloud Run deployment.
 
-### Patrick Lundebye — OUT (personal reasons, kept in loop)
-- Background: Digitalization advisor (municipality sector). Former Telenor (2015–2022).
-- Key strengths: Digital transformation, process design, chatbot/RPA orchestration, stakeholder communication.
-- Status: Not available for active tasks. Ping via Signal for context/intel only.
+### Patrick Lundebye
+- Not active during competition week.
 
 ---
 
