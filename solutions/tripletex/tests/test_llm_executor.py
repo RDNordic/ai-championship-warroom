@@ -8,10 +8,14 @@ import pytest
 
 from tripletex_agent.api_validator import ApiCallValidator
 from tripletex_agent.llm_executor import (
+    _maybe_rebuild_supplier_vat_voucher,
     _maybe_fix_supplier_invoice_account,
+    _maybe_select_project_activity,
+    _normalize_invoice_vat_types,
     _parse_steps,
     _recover_unresolved_step_vars,
     _resolve_value,
+    _should_block_ledger_voucher,
     _substitute_vars,
 )
 
@@ -418,4 +422,174 @@ class TestApiCallValidator:
             "json_body": {"date": "2026-03-20"},
         }
         result = self.validator.validate_step(step)
+        assert result.valid
+
+
+class TestSupplierVoucherRepair:
+    def test_rebuilds_project_supplier_cost_with_explicit_input_vat(self):
+        client = _FakeTripletexClient([{"id": 271001}])
+        saved_vars = {}
+        json_body = {
+            "date": "2026-03-22",
+            "description": "Leverandorkostnad Tindra AS - Systemoppgradering Brattli",
+            "postings": [
+                {
+                    "row": 1,
+                    "account": {"id": 496755318},
+                    "project": {"id": 402071932},
+                    "amount": 31160,
+                    "amountCurrency": 31160,
+                    "amountGross": 38950,
+                    "amountGrossCurrency": 38950,
+                    "vatType": {"id": 3},
+                    "description": "Leverandorkostnad Tindra AS",
+                },
+                {
+                    "row": 2,
+                    "account": {"id": 496755107},
+                    "supplier": {"id": 108568110},
+                    "amount": -38950,
+                    "amountCurrency": -38950,
+                    "amountGross": -38950,
+                    "amountGrossCurrency": -38950,
+                    "description": "Leverandorgjeld Tindra AS",
+                },
+            ],
+        }
+        fixes = []
+
+        asyncio.run(
+            _maybe_rebuild_supplier_vat_voucher(
+                json_body=json_body,
+                saved_vars=saved_vars,
+                tripletex_client=client,
+                step_fixes=fixes,
+            )
+        )
+
+        assert [posting["account"]["id"] for posting in json_body["postings"]] == [
+            496755318,
+            271001,
+            496755107,
+        ]
+        assert json_body["postings"][0]["project"] == {"id": 402071932}
+        assert json_body["postings"][1]["amount"] == pytest.approx(7790)
+        assert sum(posting["amount"] for posting in json_body["postings"]) == pytest.approx(0)
+        assert any("explicit input VAT" in note for note in fixes)
+        assert client.calls == [("GET", "/ledger/account", {"number": "2710"})]
+
+
+class TestProjectActivityRepair:
+    def test_prefers_chargeable_project_activity_for_invoiced_project_timesheets(self):
+        client = _FakeTripletexClient(
+            [
+                {
+                    "id": 6150471,
+                    "displayName": "Prosjektadministrasjon",
+                    "isProjectActivity": True,
+                    "isChargeable": False,
+                    "isDisabled": False,
+                    "rate": 0.0,
+                },
+                {
+                    "id": 6150472,
+                    "displayName": "Fakturerbart arbeid",
+                    "isProjectActivity": True,
+                    "isChargeable": True,
+                    "isDisabled": False,
+                    "rate": 1250.0,
+                },
+            ]
+        )
+        saved_vars = {}
+        json_body = {
+            "employee": {"id": 18774911},
+            "project": {"id": 402071932},
+            "activity": {"id": 6150471},
+            "date": "2026-03-22",
+            "hours": 75,
+        }
+        fixes = []
+
+        asyncio.run(
+            _maybe_select_project_activity(
+                prompt="Registrer timer pa prosjektet og opprett kundefaktura etterpa.",
+                json_body=json_body,
+                saved_vars=saved_vars,
+                tripletex_client=client,
+                step_fixes=fixes,
+            )
+        )
+
+        assert json_body["activity"] == {"id": 6150472}
+        assert saved_vars["activity_id"] == 6150472
+        assert any("Replaced activity 6150471" in note for note in fixes)
+        assert client.calls == [("GET", "/activity", {"isProjectActivity": True, "count": 100})]
+
+
+class TestLedgerVoucherBlocking:
+    def test_blocks_unbalanced_ledger_voucher_errors(self):
+        assert _should_block_ledger_voucher(
+            "/ledger/voucher",
+            ["Postings amount sum=-7790.00 does not balance to 0"],
+        )
+        assert not _should_block_ledger_voucher(
+            "/supplierInvoice",
+            ["Postings amount sum=-7790.00 does not balance to 0"],
+        )
+
+
+class TestInvoiceVatNormalization:
+    def test_rewrites_input_and_invalid_vat_ids_to_sales_ids(self):
+        json_body = {
+            "invoiceDate": "2026-03-22",
+            "invoiceDueDate": "2026-04-21",
+            "orders": [
+                {
+                    "customer": {"id": 1},
+                    "orderLines": [
+                        {"product": {"id": 10}, "vatType": {"id": 1}},
+                        {"product": {"id": 11}, "vatType": {"id": 33}},
+                        {"product": {"id": 12}, "vatType": {"id": 7}},
+                    ],
+                }
+            ],
+        }
+        fixes = []
+
+        _normalize_invoice_vat_types(json_body, fixes)
+
+        order_lines = json_body["orders"][0]["orderLines"]
+        assert order_lines[0]["vatType"] == {"id": 3}
+        assert order_lines[1]["vatType"] == {"id": 32}
+        assert order_lines[2]["vatType"] == {"id": 6}
+        assert len(fixes) == 3
+
+
+class TestPlanPathNormalization:
+    def test_accepts_variable_id_segments_in_catalog_paths(self):
+        validator = ApiCallValidator()
+
+        invoice_payment_step = {
+            "step_id": "7",
+            "method": "PUT",
+            "path": "/invoice/$invoice_id/:payment",
+            "params": {"paymentDate": "2026-03-22", "paymentTypeId": 1, "paidAmount": 100},
+        }
+        result = validator.validate_step(invoice_payment_step)
+        assert result.valid
+
+        project_update_step = {
+            "step_id": "4",
+            "method": "PUT",
+            "path": "/project/$project_id",
+            "json_body": {
+                "id": "$project_id",
+                "name": "CRM Integration",
+                "isInternal": False,
+                "projectManager": {"id": "$employee_id"},
+                "startDate": "2026-03-22",
+            },
+        }
+        result = validator.validate_step(project_update_step)
         assert result.valid

@@ -687,6 +687,61 @@ def _fix_invoice_orders(json_body: dict[str, Any], fixes: list[str]) -> None:
             fixes.append("Injected missing 'deliveryDate' with today's date")
 
 
+def _normalize_invoice_vat_types(json_body: dict[str, Any], fixes: list[str]) -> None:
+    """Normalize invoice line VAT ids to sales-compatible Tripletex VAT types."""
+    orders = json_body.get("orders")
+    if not isinstance(orders, list):
+        return
+
+    # Map common wrong/input VAT ids and code-number confusion to sales VAT ids.
+    sales_vat_map = {
+        1: 3,
+        2: 3,
+        3: 3,
+        4: 3,
+        11: 31,
+        21: 31,
+        31: 31,
+        12: 32,
+        22: 32,
+        32: 32,
+        33: 32,
+        111: 32,
+        5: 6,
+        6: 6,
+        7: 6,
+    }
+
+    for order_index, order in enumerate(orders, start=1):
+        if not isinstance(order, dict):
+            continue
+        order_lines = order.get("orderLines")
+        if not isinstance(order_lines, list):
+            continue
+
+        for line_index, line in enumerate(order_lines, start=1):
+            if not isinstance(line, dict):
+                continue
+            vat_type = line.get("vatType")
+            if not isinstance(vat_type, dict):
+                continue
+
+            vat_type_id = vat_type.get("id")
+            if isinstance(vat_type_id, str) and vat_type_id.isdigit():
+                vat_type_id = int(vat_type_id)
+            if not isinstance(vat_type_id, int):
+                continue
+
+            corrected_id = sales_vat_map.get(vat_type_id)
+            if corrected_id is None or corrected_id == vat_type_id:
+                continue
+
+            vat_type["id"] = corrected_id
+            fixes.append(
+                f"Normalized invoice VAT type on order {order_index} line {line_index}: {vat_type_id} -> {corrected_id}"
+            )
+
+
 def _voucher_balance_errors(json_body: dict[str, Any]) -> list[str]:
     """Return voucher balance errors for amount and amountGross sums."""
     postings = json_body.get("postings")
@@ -820,6 +875,29 @@ def _find_saved_account_number(saved_vars: dict[str, Any], account_id: Any) -> i
         match = re.fullmatch(r"account_(\d+)_id", name)
         if match:
             return int(match.group(1))
+    return None
+
+
+def _get_saved_account_id(saved_vars: dict[str, Any], account_number: int) -> int | None:
+    """Return a previously saved ledger account ID for an account number."""
+    for key in (f"account_{account_number}_id", f"acc_{account_number}_id"):
+        value = saved_vars.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def _posting_vat_type_id(posting: dict[str, Any]) -> int | None:
+    """Extract a posting vatType id when present."""
+    vat_type = posting.get("vatType")
+    if isinstance(vat_type, dict):
+        vat_type = vat_type.get("id")
+    if isinstance(vat_type, int):
+        return vat_type
+    if isinstance(vat_type, str) and vat_type.isdigit():
+        return int(vat_type)
     return None
 
 
@@ -999,6 +1077,264 @@ async def _maybe_fix_supplier_invoice_account(
         step_fixes.append(
             f"Re-routed supplier invoice expense account {account_number} using query '{query}'"
         )
+
+
+async def _lookup_account_id(
+    *,
+    tripletex_client: TripletexClient,
+    saved_vars: dict[str, Any],
+    account_number: int,
+) -> int | None:
+    """Return an account ID from cache or exact account-number lookup."""
+    cached = _get_saved_account_id(saved_vars, account_number)
+    if cached is not None:
+        return cached
+
+    payload = await tripletex_client.request(
+        "GET",
+        "/ledger/account",
+        params={"number": str(account_number)},
+        expected_status=(200,),
+    )
+    values = payload.get("values", []) if isinstance(payload, dict) else []
+    for account in values:
+        if not isinstance(account, dict):
+            continue
+        account_id = account.get("id")
+        if isinstance(account_id, int):
+            saved_vars[f"account_{account_number}_id"] = account_id
+            return account_id
+    return None
+
+
+def _find_supplier_voucher_pair(
+    json_body: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Return (expense_posting, payable_posting) for 2-line supplier vouchers."""
+    postings = json_body.get("postings")
+    if not isinstance(postings, list) or len(postings) != 2:
+        return None
+
+    expense_posting = None
+    payable_posting = None
+    for posting in postings:
+        if not isinstance(posting, dict):
+            return None
+        amount_gross = posting.get("amountGross")
+        account = posting.get("account")
+        if not isinstance(amount_gross, (int, float)) or not isinstance(account, dict):
+            return None
+        if float(amount_gross) > 0 and _posting_vat_type_id(posting) == 3:
+            expense_posting = posting
+        elif float(amount_gross) < 0 and isinstance(posting.get("supplier"), dict):
+            payable_posting = posting
+
+    if expense_posting is None or payable_posting is None:
+        return None
+    return expense_posting, payable_posting
+
+
+async def _maybe_rebuild_supplier_vat_voucher(
+    *,
+    json_body: dict[str, Any],
+    saved_vars: dict[str, Any],
+    tripletex_client: TripletexClient,
+    step_fixes: list[str],
+) -> None:
+    """Convert 2-line supplier vouchers into deterministic 3-line VAT vouchers."""
+    pair = _find_supplier_voucher_pair(json_body)
+    if pair is None:
+        return
+
+    expense_posting, payable_posting = pair
+    gross = abs(float(expense_posting.get("amountGross", 0)))
+    if gross <= 0:
+        return
+
+    vat_account_id = await _lookup_account_id(
+        tripletex_client=tripletex_client,
+        saved_vars=saved_vars,
+        account_number=2710,
+    )
+    if vat_account_id is None:
+        return
+
+    expense_account = expense_posting.get("account")
+    payable_account = payable_posting.get("account")
+    supplier = payable_posting.get("supplier") or expense_posting.get("supplier")
+    if not isinstance(expense_account, dict) or not isinstance(payable_account, dict) or not isinstance(supplier, dict):
+        return
+
+    net = round(gross / 1.25, 2)
+    input_vat = round(gross - net, 2)
+    expense_description = str(
+        expense_posting.get("description")
+        or json_body.get("description")
+        or "Leverandorkostnad"
+    )
+    payable_description = str(
+        payable_posting.get("description")
+        or json_body.get("description")
+        or "Leverandorgjeld"
+    )
+
+    rebuilt_postings: list[dict[str, Any]] = [
+        {
+            "row": 1,
+            "account": expense_account,
+            "amount": net,
+            "amountCurrency": net,
+            "amountGross": gross,
+            "amountGrossCurrency": gross,
+            "vatType": {"id": 3},
+            "description": expense_description,
+        },
+        {
+            "row": 2,
+            "account": {"id": vat_account_id},
+            "amount": input_vat,
+            "amountCurrency": input_vat,
+            "amountGross": input_vat,
+            "amountGrossCurrency": input_vat,
+            "description": f"Inngaende MVA 25% - {expense_description}",
+        },
+        {
+            "row": 3,
+            "account": payable_account,
+            "supplier": supplier,
+            "amount": -gross,
+            "amountCurrency": -gross,
+            "amountGross": -gross,
+            "amountGrossCurrency": -gross,
+            "description": payable_description,
+        },
+    ]
+
+    project = expense_posting.get("project")
+    if isinstance(project, dict):
+        rebuilt_postings[0]["project"] = project
+
+    json_body["postings"] = rebuilt_postings
+    step_fixes.append("Rebuilt supplier voucher with explicit input VAT posting (25%)")
+
+
+def _prompt_requires_project_invoicing(prompt: str) -> bool:
+    """Return True when the prompt suggests timesheets will be invoiced."""
+    text = _normalize_text(prompt)
+    keywords = (
+        "invoice",
+        "customer invoice",
+        "kundefaktura",
+        "faktura",
+        "fakturere",
+        "invoic",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
+def _select_project_activity(
+    activities: list[dict[str, Any]],
+    *,
+    prefer_chargeable: bool,
+) -> dict[str, Any] | None:
+    """Pick the safest project activity for project timesheet entries."""
+    best: tuple[int, dict[str, Any]] | None = None
+    for activity in activities:
+        if not isinstance(activity, dict):
+            continue
+        if not activity.get("isProjectActivity") or activity.get("isDisabled"):
+            continue
+
+        score = 0
+        name = _normalize_text(str(activity.get("displayName") or activity.get("name") or ""))
+        rate = activity.get("rate")
+        chargeable = bool(activity.get("isChargeable"))
+
+        if prefer_chargeable and chargeable:
+            score += 50
+        if prefer_chargeable and isinstance(rate, (int, float)) and float(rate) > 0:
+            score += 20
+        if not prefer_chargeable and not chargeable:
+            score += 10
+        if "fakturer" in name or "charge" in name or "billable" in name:
+            score += 10 if prefer_chargeable else 0
+        if "prosjektadmin" in name or "administrasjon" in name:
+            score += 5 if not prefer_chargeable else -10
+
+        if best is None or score > best[0]:
+            best = (score, activity)
+
+    return best[1] if best is not None else None
+
+
+async def _maybe_select_project_activity(
+    *,
+    prompt: str,
+    json_body: dict[str, Any],
+    saved_vars: dict[str, Any],
+    tripletex_client: TripletexClient,
+    step_fixes: list[str],
+) -> None:
+    """Ensure project timesheets use project activities and prefer chargeable ones when invoicing follows."""
+    project = json_body.get("project")
+    activity = json_body.get("activity")
+    if not isinstance(project, dict) or not isinstance(activity, dict):
+        return
+
+    current_activity_id = activity.get("id")
+    if not isinstance(current_activity_id, int):
+        return
+
+    cached = saved_vars.get("_project_activity_candidates")
+    if isinstance(cached, list):
+        activities = cached
+    else:
+        payload = await tripletex_client.request(
+            "GET",
+            "/activity",
+            params={"isProjectActivity": True, "count": 100},
+            expected_status=(200,),
+        )
+        activities = payload.get("values", []) if isinstance(payload, dict) else []
+        saved_vars["_project_activity_candidates"] = activities
+
+    current_activity = next(
+        (
+            candidate for candidate in activities
+            if isinstance(candidate, dict) and candidate.get("id") == current_activity_id
+        ),
+        None,
+    )
+    prefer_chargeable = _prompt_requires_project_invoicing(prompt)
+    if current_activity and current_activity.get("isProjectActivity") and (
+        not prefer_chargeable or current_activity.get("isChargeable")
+    ):
+        return
+
+    replacement = _select_project_activity(
+        [candidate for candidate in activities if isinstance(candidate, dict)],
+        prefer_chargeable=prefer_chargeable,
+    )
+    if replacement is None:
+        return
+
+    replacement_id = replacement.get("id")
+    if not isinstance(replacement_id, int) or replacement_id == current_activity_id:
+        return
+
+    json_body["activity"] = {"id": replacement_id}
+    saved_vars["activity_id"] = replacement_id
+    step_fixes.append(
+        f"Replaced activity {current_activity_id} with project activity {replacement_id}"
+    )
+
+
+def _should_block_ledger_voucher(path: str, errors: list[str]) -> bool:
+    """Return True when a POST /ledger/voucher payload still has balance errors."""
+    return (
+        "/ledger/voucher" in path
+        and any("does not balance" in error for error in errors)
+    )
 
 
 def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
@@ -1467,10 +1803,17 @@ class LLMApiExecutor:
                 # Auto-fix invoice orders: inject required date fields
                 if method == "POST" and "/invoice" in path:
                     _fix_invoice_orders(json_body, step_fixes)
+                    _normalize_invoice_vat_types(json_body, step_fixes)
                 # Auto-fix voucher: inject date if missing + propagate employee refs
                 if method == "POST" and "/voucher" in path:
                     await _maybe_fix_supplier_invoice_account(
                         prompt=prompt,
+                        json_body=json_body,
+                        saved_vars=saved_vars,
+                        tripletex_client=tripletex_client,
+                        step_fixes=step_fixes,
+                    )
+                    await _maybe_rebuild_supplier_vat_voucher(
                         json_body=json_body,
                         saved_vars=saved_vars,
                         tripletex_client=tripletex_client,
@@ -1499,25 +1842,28 @@ class LLMApiExecutor:
                                             p["employee"] = {"id": int(vid) if str(vid).isdigit() else vid}
                                             step_fixes.append(f"Injected employee from ${vname}")
                                     break
+                if method == "POST" and "/timesheet/entry" in path:
+                    await _maybe_select_project_activity(
+                        prompt=prompt,
+                        json_body=json_body,
+                        saved_vars=saved_vars,
+                        tripletex_client=tripletex_client,
+                        step_fixes=step_fixes,
+                    )
                 schema_result = self._schema_validator.validate_and_clean(
                     method, path, json_body
                 )
                 json_body = schema_result.cleaned_body
                 step_fixes = schema_result.fixes_applied + step_fixes
                 step_removed = schema_result.fields_removed
-                if "/voucher" in path:
-                    balance_errors = [e for e in schema_result.errors if "does not balance" in e]
-                    if balance_errors and _voucher_balances_in_tripletex(json_body):
-                        schema_result.errors = [
-                            e for e in schema_result.errors if "does not balance" not in e
-                        ]
-                        schema_result.valid = len(schema_result.errors) == 0
                 if step_fixes:
                     all_details[f"step_{step_id}_fixes"] = step_fixes
                 if not schema_result.valid:
                     # Block vouchers with balance errors — they will always fail
-                    balance_errors = [e for e in schema_result.errors if "does not balance" in e]
-                    if balance_errors and "/voucher" in path:
+                    if _should_block_ledger_voucher(path, schema_result.errors):
+                        balance_errors = [
+                            e for e in schema_result.errors if "does not balance" in e
+                        ]
                         error_msg = f"Voucher blocked: {balance_errors}"
                         logger.error("Step %s blocked due to balance error: %s", step_id, error_msg)
                         all_details[f"step_{step_id}_error"] = error_msg

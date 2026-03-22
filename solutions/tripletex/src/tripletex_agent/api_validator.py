@@ -35,6 +35,8 @@ def _normalize_path(path: str) -> str:
     for part in parts:
         if part.isdigit():
             normalized.append("{id}")
+        elif part.startswith("$"):
+            normalized.append("{id}")
         elif part.startswith("{") and part.endswith("}"):
             normalized.append("{id}")
         else:
