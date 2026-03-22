@@ -17,7 +17,7 @@ This file defines how AI assistants should operate in this repository.
 | Astar Island — Viking World Prediction | AD (Andrew) | `solutions/astar-island/` |
 | NorgesGruppen Data — Object Detection | Chris | `solutions/norgesgruppen-data/` |
 
-Patrick is not active during competition week.
+Patrick participating remotely during competition week.
 
 **When starting a new session:** Read the challenge-local handoff first (`solutions/<challenge>/next-steps.md` when it exists). For Astar Island, start with `solutions/astar-island/next-steps.md`. Use root `next-steps.md` only for repo-wide coordination, then read the relevant `solutions/<challenge>/README.md` for technical detail.
 
