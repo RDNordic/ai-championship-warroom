@@ -41,7 +41,6 @@
 - [ ] Repro command works from clean environment.
 - [ ] Metrics and failure modes documented.
 - [ ] Compliance checklist complete.
-- [ ] Two-person sign-off done.
 
 ## 7) Escalation Path
 - SEV-1 owner:
