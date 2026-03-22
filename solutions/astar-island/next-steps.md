@@ -3,55 +3,72 @@
 ## Quick Start
 
 ```bash
-cd "c:/Users/John Brown/astar-bayesian-run/solutions/astar-island"
-python -c "import astar_api, json; rounds=astar_api.api_get('/rounds',auth=False); print(json.dumps([{k:r.get(k) for k in ['round_number','status','round_weight']} for r in rounds[:3]], indent=2))"
-```
+# Check round status
+cd "c:/Users/John Brown/ai-championship-warroom/solutions/astar-island"
+python -c "import astar_api,json; rounds=astar_api.api_get('/rounds',auth=False); [print(f'R{r[\"round_number\"]}: {r[\"status\"]} w={r[\"round_weight\"]:.2f}') for r in sorted(rounds, key=lambda x:x['round_number'])[-5:]]"
 
-If a round is active, run the pipeline:
-```bash
+# Run pipeline (when a round is active)
 cd "c:/Users/John Brown/astar-bayesian-run" && python solutions/astar-island/run_bayesian.py
-```
 
-After scoring, pull scores:
-```bash
-cd "c:/Users/John Brown/astar-bayesian-run/solutions/astar-island"
+# Pull scores
+cd "c:/Users/John Brown/ai-championship-warroom/solutions/astar-island"
 python -c "import astar_api,json; [print(f'R{r[\"round_number\"]}: {r[\"round_score\"]} rank={r[\"rank\"]}/{r[\"total_teams\"]}') for r in astar_api.api_get('/my-rounds',auth=True) if r.get('round_score')]"
+
+# Export ground truth after scoring
+python export_round_analysis.py --round-id <uuid> --seeds 5
 ```
 
-## State
+## State (2026-03-22 early morning)
 
-- **Rank 8** (174.65 weighted), gap to #1 is 2.5 points — very tight top 15
-- **Deadline:** March 22, 15:00 CET
-- **R15 submitted** (weight 2.08x, dynamic regime) — awaiting score. ~8 rounds remain after R15
+- **Weighted avg: 68.0** (collapsed from 87 peak — three sub-70 rounds at the heaviest weights)
+- **Deadline:** March 22, 15:00 CET (~13h remain)
+- **R18 completed** (65.2, weight 2.41x — worst timing). Awaiting R19
 - **Branch:** `experimental/bayesian-astar` in worktree `c:/Users/John Brown/astar-bayesian-run/`
-- **Pipeline:** 3-phase Bayesian (5 sentinel → 40 coverage → 5 refinement = 50 queries), regime-adaptive C
-- **Regime detection:** 1 query, >99% confidence. Dynamic → C=15/floor=0.01. Collapse → C=30/floor=0.005
-- **Auto-watcher:** unreliable (laptop sleep kills it). Prefer manual runs
-- **No code changes planned.** Pipeline is stable — variance is in the sim, not our model
+- **Pipeline:** 3-phase Bayesian (5 sentinel → 40 coverage → 5 refinement = 50 queries), regime-adaptive
+- **Decision: no code changes.** Pipeline scores 79-88 on favorable rounds. Bad rounds are hidden-param variance
+- **Strategy: keep submitting.** Every high-weight round we score well on helps recovery
 
 ## Score History
 
 | Rnd | Score | Wt | Regime | Note |
 |-----|-------|----|--------|------|
-| 1 | 42.6 | 1.05 | D | Hand-tuned priors |
+| 1 | 42.6 | 1.05 | D | Hand-tuned priors (early pipeline) |
 | 2 | 40.8 | 1.10 | D | Over-predicted settlements |
 | 3 | 29.2 | 1.16 | C | Missed regime |
 | 4 | MISS | 1.22 | ? | — |
 | 5 | 54.6 | 1.28 | D | Collapse detector added |
 | 6 | 73.6 | 1.34 | D | Bayesian pipeline debut |
 | 7 | 42.7 | 1.41 | D | Regression — bucket bug |
-| **8** | **88.1** | **1.48** | **C** | **Best — C fix** |
+| **8** | **88.1** | **1.48** | **C** | **Best ever — C fix** |
 | **9** | **83.8** | **1.55** | **D** | **Best dynamic** |
 | 10 | 70.2 | 1.63 | C | Peaked truth outlier |
 | 11 | 74.6 | 1.71 | D | — |
 | 12 | MISS | 1.80 | ? | PC sleep |
-| **13** | **82.9** | **1.89** | **D** | Seeds: 84.6, 82.1, 81.8, 82.8, 83.0 |
-| **14** | **66.6** | **1.98** | **D** | Drop — settlement underestimation (see below) |
-| 15 | *pending* | 2.08 | D | Submitted, awaiting score |
+| **13** | **82.9** | **1.89** | **D** | Consistent |
+| 14 | 66.6 | 1.98 | D | Extreme settlement expansion |
+| **15** | **82.9** | **2.08** | **D** | Consistent |
+| 16 | 69.1 | 2.18 | D | Under-predicted settlements |
+| 17 | 79.1 | 2.29 | D | Decent but below mean |
+| 18 | 65.2 | 2.41 | D | Worst seed ever (57.9). Settlement variance |
 
-## R14 Post-Mortem (66.6 avg, seeds: 67.7, 68.4, 68.4, 65.6, 62.7)
+## The Problem
 
-Pipeline used C=15 (same as all prior dynamic rounds — the new dynamic-C code made no difference). Settlement layer was the failure: predicted sparse settlements, ground truth showed aggressive expansion. Cause is round variance in hidden sim parameters, not a code regression. **No revert needed.**
+Three sub-70 rounds (R14, R16, R18) all landed at the heaviest weights (1.98, 2.18, 2.41). This is pure bad luck — the pipeline scores 79-88 on ~60% of dynamic rounds but the weighted scoring amplified the bad ones.
+
+Settlement prediction is always the #1 KL source:
+- Our 5 observation samples sometimes don't represent the Monte Carlo mean well
+- This is a sample-size problem with a 50-query hard cap
+- No code change fixes it without more queries
+
+## Ground Truth Retrieval
+
+```
+GET /analysis/{round_id}/{seed_index}   (auth required)
+```
+
+Returns `{ground_truth, prediction, score, width, height, initial_grid}` — ground_truth is 40×40×6 tensor.
+
+**All completed rounds (R1–R18) have ground truth exported** to `artifacts/round_{id}/analysis/`.
 
 ## Key Rules
 
@@ -68,28 +85,6 @@ cd "c:/Users/John Brown/ai-championship-warroom"
 git worktree add ../astar-bayesian-run experimental/bayesian-astar
 cp solutions/astar-island/.token ../astar-bayesian-run/solutions/astar-island/.token
 ```
-
-## Ground Truth Retrieval
-
-**RESOLVED.** The endpoint was already in the codebase:
-
-```
-GET /analysis/{round_id}/{seed_index}   (auth required)
-```
-
-Returns: `{ground_truth, prediction, score, width, height, initial_grid}` — ground_truth is a 40×40×6 probability tensor.
-
-Export all seeds for a completed round:
-```bash
-cd "c:/Users/John Brown/ai-championship-warroom/solutions/astar-island"
-python export_round_analysis.py --round-id <uuid> --seeds 5
-```
-
-**All 14 completed rounds (R1–R14) now have ground truth exported** to `artifacts/round_{id}/analysis/`. The replay system (`replay_bayesian.py`) can validate against any of them, not just R10.
-
-## Known Gaps
-
-- *(Ground truth gap resolved — see above)*
 
 ## Research Archive
 

@@ -2,7 +2,8 @@
 
 Challenge: Tripletex
 Owner: KO
-Date: 2026-03-19
+Date: 2026-03-22 (final submission)
+Created: 2026-03-19
 
 ---
 
@@ -45,7 +46,7 @@ Rationale:
 
 - [x] Model card created: `governance/tripletex/model-card.md`
 - [x] Data card created: `governance/tripletex/data-card.md`
-- [ ] Decision log updated in `ops/decision-log.md` — ongoing during competition
+- [x] Decision log updated in `ops/decision-log.md`
 
 ---
 
@@ -54,7 +55,7 @@ Rationale:
 - [x] **Failure mode — LLM hallucination:** Agent may call wrong endpoints, supply wrong fields, or misinterpret multilingual prompts. Mitigation: sandbox testing before competition; local validation logic; see R-002.
 - [x] **Failure mode — Efficiency penalty:** Every 4xx error reduces efficiency bonus. Mitigation: pre-validate inputs; plan API sequence before first call.
 - [x] **Abuse consideration:** Agent executes arbitrary accounting actions on behalf of a prompt. Could be misused with adversarial prompts. In competition context: sandboxed, scoped to one company per session, token expires after use.
-- [ ] Edge-case tests run (multilingual task classification) — pending
+- [x] Edge-case tests run (multilingual task classification) — 7-language prompt set tested; 23+ fixes applied during competition
 
 ---
 

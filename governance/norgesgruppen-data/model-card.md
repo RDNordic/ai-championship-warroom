@@ -3,7 +3,7 @@
 Challenge: NorgesGruppen Data
 Owner: Chris
 Version: v1 (competition)
-Date: 2026-03-19
+Date: 2026-03-22 (final submission)
 
 ---
 
@@ -57,7 +57,7 @@ Date: 2026-03-19
   1. **Banned import (`import os`) triggers code scanner → submission rejected.** Mitigation: use `pathlib`; grep for banned imports before packaging.
   2. **Version mismatch → silent weight load failure.** Mitigation: pin ultralytics==8.1.0, torch==2.6.0; test ONNX loading in clean env.
   3. **`run.py` in wrong zip path → submission fails.** Mitigation: always package from within the submission directory; verify with `unzip -l`.
-  4. **Inference timeout on large test set.** Mitigation: benchmark locally on RTX 5090 Mobile first.
+  4. **Inference timeout on large test set.** Mitigation: benchmark locally on 24GB VRAM GPU first.
   5. **Overfitting to public leaderboard.** Mitigation: do not chase public decimal points; final ranking is on private test set.
 - **Mitigations:** See R-010 through R-013 in risk register.
 
@@ -67,7 +67,7 @@ Date: 2026-03-19
 
 - **Repro command:**
   ```bash
-  # Training (KO's machine)
+  # Training
   yolo detect train data=norgesgruppen.yaml model=yolov8m.pt epochs=50 imgsz=640 batch=16 seed=42
 
   # Local evaluation (mandatory before submission)

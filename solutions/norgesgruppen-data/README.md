@@ -141,7 +141,7 @@ Do NOT use right-click → Compress — it nests files in a subfolder.
 | Network | **None — fully offline** |
 | Timeout | **300 seconds** |
 
-**KO's RTX 5090 Mobile = 24 GB VRAM** — same VRAM as the sandbox L4. Local benchmarks are directly representative of sandbox performance. No surprises.
+Local GPU has 24 GB VRAM — same as the sandbox L4. Local benchmarks are directly representative of sandbox performance.
 
 ### Pre-installed Packages (use without bundling)
 
@@ -187,7 +187,7 @@ These will cause rejection:
 
 ---
 
-## Training Setup (KO's Machine)
+## Training Setup
 
 ```bash
 # Match sandbox versions exactly
@@ -350,7 +350,7 @@ if __name__ == "__main__":
 2. **Detection-only first** — gets up to 0.70 score with no training risk. De-risks day 1.
 3. **YOLOv8 is the path of least resistance** — pre-installed at 8.1.0, no ONNX conversion needed for straightforward workflow.
 4. **Reference images are underexploited** — 7-angle product photos. Most teams won't use them.
-5. **KO's GPU matches sandbox exactly** — 24GB VRAM on both. Benchmark inference time locally; if it runs in <300s on KO's machine it'll pass the sandbox timeout.
+5. **Local GPU matches sandbox exactly** — 24GB VRAM on both. Benchmark inference time locally; if it runs in <300s locally it'll pass the sandbox timeout.
 6. **254 images is small** — 80/20 split = 203 train / 51 val. Use aggressive augmentation. Consider cross-validation.
 7. **Private test set divergence** — don't sacrifice generalisation chasing public leaderboard decimal points.
 8. **FP16 everywhere** — faster on L4, smaller weights, stays under 420 MB.

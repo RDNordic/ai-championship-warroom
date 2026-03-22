@@ -13,7 +13,7 @@ Date: 2026-03-19
 - **Architecture:** LLM agent — Claude API (claude-sonnet-4-6 or equivalent) with structured API call planning
 - **Owner:** KO
 - **Challenge:** NM i AI — Tripletex
-- **Date:** 2026-03-19
+- **Date:** 2026-03-22 (final submission)
 
 ---
 

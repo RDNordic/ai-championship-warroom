@@ -1616,6 +1616,11 @@ async def _build_invoice_order_line(
     count = line_fields.get("count")
     normalized_count = count if isinstance(count, (int, float)) else 1
 
+    # Also check for inclusive VAT price as fallback
+    unit_price_inc = line_fields.get("unitPriceIncludingVatCurrency")
+    if not isinstance(unit_price, (int, float)) and isinstance(unit_price_inc, (int, float)):
+        unit_price = unit_price_inc / 1.25  # Convert from inclusive to exclusive (25% MVA)
+
     if product_id is None and not isinstance(description, str):
         raise WorkflowExecutionError(
             "Invoice line requires either a product reference or a description"

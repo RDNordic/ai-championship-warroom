@@ -1,272 +1,201 @@
 # SESSION_HANDOFF.md
 
-## Read This First
+## Checkpoint (2026-03-22)
 
-This is now the single authoritative Tripletex handoff.
-
-- Read this file first in the next chat.
-- `solutions/tripletex/next-steps.md` is intentionally only a pointer to this file.
-- Do not spend another submission until the public worker has been restarted onto current local code.
-
-## Current State
-
-- Date: `2026-03-21`
-- Repo branch: `main`
-- Working tree: dirty, with uncommitted Tripletex changes
-- Last older confirmed leaderboard snapshot:
-  - score `5.0`
-  - rank `#221`
-  - solved `11/30`
-- Latest later user-reported submission outcomes on `2026-03-21` Oslo time:
-  - `0/14`
-  - `0/8`
-
-## Runtime Status
-
-- Current supervisor state file says the active public endpoint is:
-  - `https://concerts-remarks-carol-display.trycloudflare.com/solve`
-- Supervisor state file:
-  - `solutions/tripletex/logs/public-endpoint-state-8003.json`
-- Supervisor log:
-  - `solutions/tripletex/logs/public-supervisor-8003.stdout.log`
-- Live service log:
-  - `solutions/tripletex/logs/public-uvicorn-8003.log`
-- Solve trace log:
-  - `solutions/tripletex/logs/solve-events.jsonl`
-
-Important:
-
-- the tunnel is not the current blocker
-- the current blocker is stale deployed runtime behavior
-- the currently running public worker is behind the current local code
-
-## What Is Proven Locally
-
-Current narrow gate:
-
-```powershell
-cd solutions/tripletex
-.\.venv\Scripts\python.exe -m pytest -q tests\test_planner.py tests\test_workflows.py tests\test_api_call_planner.py --basetemp "C:\Users\John Brown\.codex\memories\tripletex-pytest-run"
-.\.venv\Scripts\python.exe scripts\replay_prompt_fixtures.py --keyword-only
-```
-
-Results:
-
-- `66 passed`
-- replay fixtures pass for:
-  - supplier invoice containment
-  - voucher reversal lookup extraction
-  - project-lifecycle fail-closed
-  - month-end fail-closed
-  - attachment-led employee onboarding fail-closed
-
-Local planner behavior now intentionally fail-closes these unsupported families:
-
-1. project lifecycle / project delivery compound prompts
-2. month-end / period-close prompts
-3. attachment-led employee onboarding prompts that depend on PDF offer-letter contents
-
-Practical meaning:
-
-- these families should now route to `unknown` / `StubWorkflow`
-- they should not hit live write workflows on the current local code
-
-## What Is Still Live-Proven Good
-
-1. Invoice payment with amount stated excluding VAT
-2. Invoice create-and-send
-3. Travel expense creation
-4. Basic customer creation
-5. Basic product creation
-
-These were proven in earlier live traces and are still the stable base.
-
-## Most Important New Live Traces
-
-### 1. Employee Onboarding Via PDF Hit Old Worker Behavior
-
-- `trace_id=c24268f2-b7c5-4fb8-9ce7-db3525b2770a`
-- received at `2026-03-21 13:48` Oslo time
-
-Prompt family:
-
-- Portuguese
-- attachment-led employee onboarding
-- PDF offer letter referenced
-- create employee
-- assign department
-- configure employment percentage
-- configure annual salary
-- configure standard working hours
-
-Observed live behavior:
-
-- planned to `EmployeeCreateWorkflow`
-- extracted only a generic `comments` field about the PDF
-- failed before any Tripletex API call with:
-  - `Employee creation requires firstName`
-
-Meaning:
-
-- the public worker was still serving old code after the local fail-closed patch existed
-- this is direct evidence of stale runtime, not just a planner-quality problem
-
-### 2. Order -> Invoice -> Payment Still Misroutes Live
-
-- `trace_id=702235e7-9398-4473-9da3-7936ab79814c`
-- received at `2026-03-21 14:00` Oslo time
-
-Prompt:
-
-```text
-Opprett en ordre for kunden Stormberg AS (org.nr 870531559) med produktene Vedlikehold (4665) til 35200 kr og Systemutvikling (7431) til 4400 kr. Konverter ordren til faktura og registrer full betaling.
-```
-
-Observed live behavior:
-
-- planned to `InvoicePaymentWorkflow`
-- operation became `register_payment`
-- order creation and invoice creation steps were lost
-- API calls:
-  - `GET /customer` -> matched Stormberg AS
-  - `GET /invoice` -> no results
-- failed with:
-  - `No invoice matched lookup {'customerLookup': {'customerName': 'Stormberg AS', 'organizationNumber': '870531559'}}`
-
-Meaning:
-
-- `order -> invoice -> payment` is still not live-proven
-- the live worker did not use the intended local route for this family
-- this is another sign the public worker is stale
-
-### 3. Older But Still Relevant Live Traces
-
-- `8ce83963-d7d7-4d55-ae1d-ecdd2e5d18e7`
-  - French project-lifecycle prompt
-  - old live worker degraded into invoice/supplier containment
-- `68855094-7ec9-4302-8da7-576c0afa7b6b`
-  - German month-end close
-  - old live worker degraded into `InvoiceCreateWorkflow`
-- `44e888d3-38c8-4b46-94d9-352b2280b179`
-  - voucher reversal
-  - old live worker lost lookup and failed before Tripletex API call
-
-These are still relevant as regression targets, but the immediate operational issue is stale deployment.
-
-## Current Highest-Priority Problems
-
-1. The live public worker is stale.
-2. The latest submissions were spent against code that does not match current local patches.
-3. `order -> invoice -> payment` still is not live-proven.
-4. Voucher reversal is still only partially validated live.
-5. Attachment/PDF tasks are only contained, not solved.
+- Branch: `tripletex/complex-multi-step-project`
+- Local HEAD: `8278f5f` (`tripletex: harden solve path and plan validation`)
+- Working tree: additional local, uncommitted fixes in `api_validator.py`, `llm_executor.py`, and `tests/test_llm_executor.py`
+- Service: `captains-tripletex`
+- Cloud Run URL: `https://captains-tripletex-339414168231.europe-north1.run.app`
+- Submission page: `https://app.ainm.no/submit/tripletex`
+- Last documented leaderboard snapshot in repo history: `~53.2` on `2026-03-22 ~08:00 CET`
+- Latest observed score set this session: `0/8, 8/8, 2/8` from `run_20260322_111308.log`
 
 ## Current Objective
 
-Do not do more local planner work first.
+Deploy and verify the current local patch that targets the latest deployed blockers:
+- plan validation rejects valid `/$var` endpoint paths too early
+- invoice line VAT ids are still drifting into input/invalid VAT codes on `POST /invoice`
 
-The next objective is:
+The recent voucher/accounting hardening should be kept; the current bottleneck moved further upstream into planning/normalization.
 
-1. restart the public worker onto the current local code
-2. re-check local and public health
-3. submit once
-4. inspect `solve-events.jsonl` immediately
+## Active Architecture
 
-## What The Next Submission Must Validate
-
-On the first fresh post-restart traces, verify:
-
-1. employee PDF onboarding now fails closed to `unknown` / `StubWorkflow`
-2. project-lifecycle prompts fail closed
-3. month-end close prompts fail closed
-4. `order -> invoice -> payment` routes to `OrderInvoicePaymentWorkflow`
-
-If `order -> invoice -> payment` still misroutes after restart, then it becomes the next code-fix target.
-
-## Recommended Action Sequence
-
-1. Restart the public worker.
-   - Do not assume the current uvicorn process picked up local edits.
-
-2. Re-check health.
-
-```powershell
-Invoke-WebRequest http://127.0.0.1:8003/health
-Invoke-WebRequest https://concerts-remarks-carol-display.trycloudflare.com/health
-```
-
-3. Re-run the narrow local gate if needed.
-
-4. Submit once.
-
-5. Inspect logs immediately.
-
-```powershell
-cd solutions/tripletex
-.\.venv\Scripts\python.exe scripts\inspect_solve_logs.py recent --limit 20
-Get-Content logs\public-uvicorn-8003.log -Tail 120
-```
-
-## Key Files
-
-- planner: `solutions/tripletex/src/tripletex_agent/planner.py`
-- workflows: `solutions/tripletex/src/tripletex_agent/workflows/live.py`
-- service: `solutions/tripletex/src/tripletex_agent/service.py`
-- replay harness: `solutions/tripletex/scripts/replay_prompt_fixtures.py`
-- replay fixtures: `solutions/tripletex/fixtures/replay_prompt_fixtures.json`
-- public endpoint supervisor: `solutions/tripletex/scripts/run_public_endpoint.py`
-- solve trace log: `solutions/tripletex/logs/solve-events.jsonl`
-- live service log: `solutions/tripletex/logs/public-uvicorn-8003.log`
-
-## What Is Assumed
-
-- the current tunnel URL remains live until the current `cloudflared` process dies
-- the current local code is the desired version to deploy
-- the stale behavior is from an old worker process, not from missing local edits
-
-## Do Not Spend Time On
-
-- blaming the tunnel by default
-- broad new unsupported feature work before restarting the worker
-- implementing full PDF extraction right now
-- reading both handoff files; this file is enough
-
-## Restart Prompt
+The live `/solve` path is:
 
 ```text
-Read solutions/tripletex/SESSION_HANDOFF.md first. Do not read next-steps.md for detail; it is only a pointer.
-
-Current state:
-- Latest later user-reported runs on 2026-03-21 Oslo time: 0/14, then 0/8
-- Current public endpoint in the supervisor state file:
-  https://concerts-remarks-carol-display.trycloudflare.com/solve
-- Tunnel health is not the blocker
-- The blocker is stale public worker behavior relative to local code
-- Local narrow gate passes with 66 tests
-- Local replay fixtures pass for:
-  - project lifecycle fail-closed
-  - month-end fail-closed
-  - employee PDF onboarding fail-closed
-
-Most important live traces:
-- c24268f2-b7c5-4fb8-9ce7-db3525b2770a
-  - Portuguese PDF-led employee onboarding
-  - live worker routed to EmployeeCreateWorkflow
-  - failed with Employee creation requires firstName
-
-- 702235e7-9398-4473-9da3-7936ab79814c
-  - Norwegian order -> invoice -> payment
-  - live worker routed to InvoicePaymentWorkflow
-  - it only did GET /customer then GET /invoice
-  - failed with No invoice matched lookup ...
-
-Goal for this chat:
-- restart the public worker onto current local code
-- re-check health
-- submit once
-- inspect fresh traces immediately
-- confirm whether:
-  - employee PDF onboarding now fails closed
-  - project/month-end now fail closed
-  - order -> invoice -> payment routes to OrderInvoicePaymentWorkflow
+POST /solve
+  -> app.py
+  -> service.py
+  -> LLMApiExecutor in llm_executor.py
+  -> TripletexClient
 ```
+
+Important:
+- `service.py` currently builds the solver around `LLMApiExecutor`.
+- `ANTHROPIC_API_KEY` is required for the default app/service boot path.
+- The older deterministic workflows under `src/tripletex_agent/workflows/` are still in the repo, but they are not the active competition path right now.
+- If the goal is "more handling" for the deployed solver, patch `llm_executor.py` and its validators/prompts first, not `workflows/live.py`, unless you intentionally rewire `service.py`.
+
+## Deployment Loop
+
+1. From `solutions\tripletex\`, run `.\scripts\deploy-ko.ps1`
+2. Verify the new Cloud Run revision still has `ANTHROPIC_API_KEY`
+3. Submit on `https://app.ainm.no/submit/tripletex`
+4. Run `.\scripts\post-score.ps1`
+5. Inspect the newest file in `solutions/tripletex/logs/`
+6. Compare only log entries after the latest `DELETE /logs` boundary
+
+## Artifact Reference
+
+Primary files for the next session:
+- `solutions/tripletex/src/tripletex_agent/llm_executor.py`
+- `solutions/tripletex/src/tripletex_agent/api_validator.py`
+- `solutions/tripletex/src/tripletex_agent/schema_validator.py`
+- `solutions/tripletex/src/tripletex_agent/service.py`
+- `solutions/tripletex/src/tripletex_agent/app.py`
+- `solutions/tripletex/tests/test_llm_executor.py`
+- `solutions/tripletex/tests/test_service.py`
+
+Key recent log artifacts already referenced by the repo:
+- `solutions/tripletex/logs/run_20260322_092146.log`
+- `solutions/tripletex/logs/run_20260322_101830.log`
+- `solutions/tripletex/logs/run_20260322_111308.log`
+
+## What Is Proven
+
+- The deploy-submit-log loop works end to end.
+- The service preserves the competition response contract and returns HTTP `200` with `{"status":"completed"}`.
+- Runtime hardening from `8278f5f` is in place:
+  - invalid/non-object plans are rejected before execution
+  - missing correction prompt files no longer crash the request path
+  - executor/service/app failure handling logs internal failures more truthfully
+- Executor-side recovery is in place for unresolved variables and some ID derivation paths.
+- Supplier-invoice account rerouting exists for some generic prompts.
+- Additional local fixes now exist in the working tree:
+  - strict blocking of unbalanced `POST /ledger/voucher`
+  - deterministic rebuild of 25% supplier vouchers with explicit input VAT posting
+  - project timesheet activity repair toward project/chargeable activities
+  - variable-id path normalization in the API validator
+  - deterministic invoice VAT normalization for sales invoices
+- The targeted regression suite passes from the actual Tripletex venv:
+  - command: `& '.\.venv\Scripts\python.exe' -m pytest tests\test_llm_executor.py`
+  - result: `40 passed`
+- The latest deployed run in `run_20260322_111308.log` suggests the voucher hardening did not regress:
+  - payroll/manual voucher flow completed cleanly and is the strongest candidate for the observed `8/8`
+  - no fresh evidence in that log shows the old "schema warned but still sent bad voucher" failure mode
+
+## What Is Not Proven
+
+- The current local `api_validator.py` + invoice-VAT patch has not yet been verified in a fresh deployment/log after it was written.
+- Full `pytest` is not currently a clean green gate from a cold shell. It fails during `tests/test_app.py` collection if `ANTHROPIC_API_KEY` is not set because `app.py` builds the default service at import time.
+- The older workflow files are not proof of deployed capability because the live path does not route through them.
+- The old `~53.2` leaderboard snapshot should be treated as historical context, not a guaranteed current score.
+
+## Last Strong Evidence From Logs
+
+The freshest concrete evidence is now in `run_20260322_111308.log`:
+
+1. Fixed-price milestone prompt likely drove the `0/8`
+   - the plan failed before execution
+   - validator rejected `PUT /project/$project_id` as "not in catalog"
+   - the invoice step in that same plan was also missing `deliveryDate`
+
+2. Payroll/manual voucher flow likely drove the `8/8`
+   - the request completed with a balanced `POST /ledger/voucher`
+   - this is evidence that the recent voucher/accounting hardening did not introduce a regression on that path
+
+3. Mixed-VAT invoice prompt likely drove the `2/8`
+   - first `POST /invoice` failed `422 Ugyldig mva-kode`
+   - the deployed solver was still looking up `/ledger/vatType` and drifting into wrong invoice VAT ids
+   - a corrected retry succeeded, which means the deployed path is recoverable but still semantically brittle
+
+## Current Assessment
+
+The current highest-value remaining losses are no longer the original supplier-voucher/project-activity failures.
+
+The dominant issues after the latest deployed run are:
+- path normalization during plan validation for valid `/$var` endpoints
+- invoice VAT normalization on sales invoices
+
+Runtime crashes are not the main bottleneck, and the voucher-balance issue should stay fixed.
+
+## Next Highest-Priority Task
+
+Deploy the current local working-tree patch, then validate the next log specifically for these two cases:
+
+1. Variable-id path normalization
+   - confirm prompts using `/project/$project_id` and `/invoice/$invoice_id/:payment` now pass plan validation
+
+2. Sales invoice VAT normalization
+   - confirm `POST /invoice` no longer emits input/invalid VAT ids like `1` or `33`
+   - the intended steady-state sales mappings are:
+     - `25% -> 3`
+     - `15% -> 31`
+     - `12% -> 32`
+     - `0% -> 6`
+
+If that fresh deployment still shows partials:
+- next patch should move from normalization to a more deterministic fixed-price/milestone invoice builder or order/invoice flow guard
+
+## Secondary Backlog
+
+After the deploy/verify cycle above, the next likely wins are still:
+- tighten exact-account fallback after empty `number=` lookups such as `6030` and `1219`
+- stronger routing of clear supplier-invoice prompts toward `/supplierInvoice`
+- better fixed-price / milestone invoice handling
+- travel expense reliability beyond the current partial recipe coverage
+
+## Known Limitations
+
+- `/solve` can still return `200 {"status":"completed"}` for semantically bad runs, so logs remain mandatory.
+- The current local fixes are not yet captured in a commit; `HEAD` still points at `8278f5f`.
+- Supplier-invoice rerouting is still heuristic and keyword-limited.
+- Account fallback logic can still overfit to the first broad-search hit after an exact miss.
+- Project invoicing is still not fully deterministic; the recent local patch normalizes VAT ids, but it does not yet introduce a dedicated fixed-price/milestone builder.
+- Log files can contain multiple runs; always isolate the fresh run using the latest `DELETE /logs` line.
+- `README.md`, `PLAN.md`, and `PLAN_CHRIS_TAKEOVER.md` contain useful context but are not perfectly aligned with the active unified-executor path.
+
+## Repro / Validation Commands
+
+From `solutions\tripletex\`:
+
+- Targeted tests:
+  - `& '.\.venv\Scripts\python.exe' -m pytest tests\test_llm_executor.py`
+- Deploy:
+  - `.\scripts\deploy-ko.ps1`
+- Post-deploy score snapshot:
+  - `.\scripts\post-score.ps1`
+- Full test sweep if env is configured:
+  - `$env:ANTHROPIC_API_KEY='...'; & '.\.venv\Scripts\python.exe' -m pytest`
+- Local smoke:
+  - `& '.\.venv\Scripts\python.exe' scripts\smoke_read_only.py`
+
+## Current State
+
+Current objective:
+- deploy and verify the current local patch for variable-id path normalization and sales-invoice VAT normalization on the unified executor path
+
+Exact artifact reference:
+- branch `tripletex/complex-multi-step-project`
+- local HEAD `8278f5f`
+- working tree includes uncommitted edits in:
+  - `src/tripletex_agent/api_validator.py`
+  - `src/tripletex_agent/llm_executor.py`
+  - `tests/test_llm_executor.py`
+- service `captains-tripletex`
+
+What is proven:
+- deploy/submit/log loop works
+- runtime hardening is deployed
+- latest deployed payroll/manual voucher path is healthy
+- local targeted executor regression suite passes (`40 passed`)
+
+What is assumed:
+- the latest `0/8` is dominated by pre-execution plan rejection on variable-path endpoints
+- the latest `2/8` is dominated by brittle invoice VAT mapping rather than a voucher-accounting regression
+
+Next highest-priority task:
+- deploy the current working-tree patch and inspect the next fresh log for:
+  - successful plan validation on `/project/$project_id`-style paths
+  - correct invoice VAT ids on `POST /invoice`

@@ -117,11 +117,11 @@ class OpenAIApiCallPlanner:
 
 
 def build_default_api_call_planner(settings: AppSettings) -> ApiCallPlanner | None:
-    if not settings.enable_api_call_plan or not settings.openai_api_key:
+    if not settings.enable_api_call_plan or not settings.anthropic_api_key:
         return None
     try:
         return OpenAIApiCallPlanner(
-            api_key=settings.openai_api_key,
+            api_key=settings.anthropic_api_key,
             model=settings.api_call_plan_model,
         )
     except Exception:

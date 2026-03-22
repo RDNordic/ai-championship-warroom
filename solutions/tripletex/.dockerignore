@@ -1,0 +1,12 @@
+.env
+.venv/
+.git/
+logs/
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+tests/
+scripts/
+*.md
+!src/tripletex_agent/prompts/*.md

@@ -86,22 +86,22 @@ class SolveEventLogger:
     def record_completed(
         self,
         *,
-        plan: TaskPlan,
+        plan: TaskPlan | None = None,
         workflow_name: str,
         result: WorkflowResult,
         context: SolveRequestContext,
     ) -> None:
-        self._append(
-            {
-                "event": "completed",
-                "trace_id": context.trace_id,
-                "task_family": plan.task_family.value,
-                "operation": plan.operation.value,
-                "workflow": workflow_name,
-                "result": result.model_dump(mode="json"),
-                "request_meta": _context_payload(context),
-            }
-        )
+        payload: dict[str, Any] = {
+            "event": "completed",
+            "trace_id": context.trace_id,
+            "workflow": workflow_name,
+            "result": result.model_dump(mode="json"),
+            "request_meta": _context_payload(context),
+        }
+        if plan is not None:
+            payload["task_family"] = plan.task_family.value
+            payload["operation"] = plan.operation.value
+        self._append(payload)
 
     def record_api_call_plan(
         self,
