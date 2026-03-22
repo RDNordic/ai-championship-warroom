@@ -1,37 +1,45 @@
 # NM i AI Championship — Final Handoff
 
-**Competition deadline: March 22, 2026**
-**Repo must be public by: 15:00 CET today (prize eligibility)**
+**Competition deadline: March 22, 2026 at 15:00 CET**
+**Repo link deadline: 15:15 CET (15 min grace after close)**
 
 ---
 
-## Current Status (as of 2026-03-22)
+## Current Status (as of 2026-03-22 ~14:15 CET)
 
 | Challenge | Owner | Status | Score |
 |-----------|-------|--------|-------|
 | Tripletex — AI Accounting Agent | KO | Endpoint live on Cloud Run | 53.2 |
 | NorgesGruppen — Object Detection | Chris | Model submitted | 0.8329 |
-| Astar Island — Viking World Prediction | AD | 14 rounds completed | Active |
+| Astar Island — Viking World Prediction | AD | Round 23 active (50/50 queries used, 5/5 seeds submitted) | Best: 88.1 (R8) |
 
-**`main` branch is clean and up to date.** All governance documentation complete.
+**`main` is clean, up to date, and security-verified. All governance documentation complete.**
 
 ---
 
-## FINAL ACTIONS — Do These Now
+## FINAL ACTIONS — T-45 MIN
 
-### 1. Make the repo public (REQUIRED for prize eligibility)
+### 1. At ~14:58 — Make repo public
 - Go to: `https://github.com/RDNordic/ai-championship-warroom/settings`
-- Scroll to **Danger Zone** → **Change repository visibility** → **Make public**
-- Deadline: **15:00 CET today**
+- **Danger Zone → Change repository visibility → Make public**
+- Do this as late as safely possible to avoid competitors scanning the repo
 
-### 2. Confirm all three challenge submissions are registered
-- Tripletex: endpoint URL registered at `app.ainm.no/submit/tripletex` ✓
+### 2. Immediately after — Submit repo link at `app.ainm.no/finals`
+- URL: `https://github.com/RDNordic/ai-championship-warroom`
+- Label: All three challenges — Tripletex, Astar Island, NorgesGruppen
+- Notes: Full EU AI Act + GDPR governance documentation included (`governance/`)
+- Deadline: **15:15 CET** (hard lock)
+
+### 3. Confirm all three challenge submissions are registered
+- Tripletex: `https://captains-tripletex-339414168231.europe-north1.run.app/solve` registered at `app.ainm.no/submit/tripletex` ✓
 - NorgesGruppen: latest zip uploaded at `app.ainm.no` ✓
-- Astar Island: all 5 seeds submitted for each round ✓
+- Astar Island: 5/5 seeds submitted for all rounds ✓
 
-### 3. Two-person final sign-off
-- AD (compliance) + Chris (technical) must confirm before deadline
-- See `playbooks/submission-runbook.md` — all gates are checked
+### 4. Astar Island scoring note
+- Leaderboard score = **best (round_score × round_weight)** across all rounds
+- Round weight = `1.05^round_number` — later rounds worth more
+- Round 23 still active — if AD gets a strong score it will likely be the best weighted result
+- Do not skip submitting Round 23 even if the raw score looks modest
 
 ---
 
@@ -93,7 +101,8 @@ These rules must be satisfied for submission to count. **Do not bypass.**
 
 ## Session Log
 
-- **2026-03-22:** Final governance review complete. All 3 challenges have full EU AI Act + GDPR documentation. PRs merged to main. Repo clean.
+- **2026-03-22 ~14:15:** Repo tidied for public release. README, next-steps, Tripletex live endpoint URL documented. Security scan clean. Awaiting 14:58 to make public and submit repo link.
+- **2026-03-22 morning:** Final governance review complete. All 3 challenges have full EU AI Act + GDPR documentation. PRs merged to main. Repo clean.
 - **2026-03-21:** Tripletex iterative hardening: score 22 → 42.2 → 53.2 (23+ fixes).
 - **2026-03-20:** NorgesGruppen Run 2: score 0.8329. Governance docs created for all challenges.
 - **2026-03-19:** Competition began 18:00 CET. All 3 challenges read and ownership assigned. Baselines established.
