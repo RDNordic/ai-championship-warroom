@@ -1,161 +1,128 @@
 # SESSION_HANDOFF.md
 
-## Checkpoint (2026-03-21 ~23:10 CET)
+## Checkpoint (2026-03-22 ~08:00 CET)
 
-**Total score: 42.2 (leaderboard best: 48.8). Target: 60-80.**
+**Total score: ~53.2 (leaderboard). 30/30 tasks attempted, 234+ submissions.**
 
-Simple/medium tasks banked (8/8 consistently). Now attacking voucher/expense tasks which are the biggest remaining point pool (~25-30 pts). VAT auto-correction fix just deployed — should unblock supplier invoices + expense receipts. 18 fixes deployed.
+All code fixes deployed. Farming mode — submitting runs to maximize best-per-task scores. API key issue (credits ran out ~01:00) resolved by switching to AD's key on Cloud Run via GCP console.
 
-**Branch: `tripletex/complex-multi-step-project`**
+**Branch: `tripletex/complex-multi-step-project`** (NOT main — needs merge before final submission)
 
 ## Deployment
 
-- **Service:** `captains-tripletex` on Cloud Run (KO's instance)
+- **Service:** `captains-tripletex` on Cloud Run
 - **Project:** `nmiai-490717`, region `europe-north1`
 - **URL:** `https://captains-tripletex-339414168231.europe-north1.run.app`
 - **Submission:** `https://app.ainm.no/submit/tripletex`
-- **ANTHROPIC_API_KEY:** set as env var on Cloud Run (not in code, not via Secret Manager)
-- **CLOUDSDK_CONFIG:** local `.gcloud-config/` dir to avoid Windows NTUSER.DAT permission issue
+- **ANTHROPIC_API_KEY:** set via GCP Cloud Run console (Edit & Deploy New Revision → Variables & Secrets). Currently AD's key (nm-i-ai workspace).
+- **CLOUDSDK_CONFIG:** local `.gcloud-config/` dir (gitignored) to avoid Windows NTUSER.DAT permission issue
+- **IMPORTANT:** After each `deploy-ko.ps1`, you must re-set the API key via GCP console or `gcloud run services update` — the deploy creates a new revision that may lose the env var.
 
 ## Iteration Cycle
 
 1. **Deploy:** `.\scripts\deploy-ko.ps1` (from `solutions\tripletex\`)
-2. **Submit:** click on app.ainm.no (max 3 concurrent), check score
-3. **Post-score:** `.\scripts\post-score.ps1` (captures Cloud Run logs + git pull)
-4. **Handoff:** paste score + log file path to Claude
-5. **Claude fixes:** review logs, edit code
-6. **Claude commits + pushes** → back to step 1
+2. **Re-set API key** if deploy overwrites it (check via GCP console)
+3. **Submit:** click on app.ainm.no (max 3 concurrent), check score
+4. **Post-score:** `.\scripts\post-score.ps1` (captures Cloud Run logs + git pull)
+5. **Handoff:** paste score + log file path to Claude
+6. **Claude fixes:** review logs, edit code
+7. **Claude commits + pushes** → back to step 1
 
-## Score History
+## Per-Task Leaderboard Breakdown
 
-| Time | Scores | Notes |
-|------|--------|-------|
-| 16:35 | 0/8 | Old container, retry_correction.md missing |
-| 16:51 | 7/7 | .gcloudignore fix deployed |
-| 17:04 | 7.5/10 | Self-correction working, variable extraction fixed |
-| 17:36 | 0/10 | Bank reconciliation (Tier 3, expected fail) |
-| 17:41 | 0/10, 0/13, 0/14 | Complex tasks + 500 crash on string correction steps |
-| 17:46 | 8/8 | Employee creation, clean |
-| 17:54 | 8/8 + 0/10 | Customer creation OK, cost analysis used placeholder names |
-| 18:13 | 0/10, 7/10, 0/7 | Agio task 7/10! Bank account still blocking invoices |
-| 18:44 | 5/8, 0/8, 0/8 | Bank account pre-flight working, VAT codes wrong |
-| 19:24 | 2/11, 8/8, 0/10 | Date injection working |
-| 20:05 | 2/11, 8/8, 0/10 | Timesheet+invoice 8/8! Invoice creation unblocked |
-| 21:12 | 7/7, 7/7, 6/10 | Consistent scoring |
-| 21:19 | 8/8, 6/7, 2/7 | Farming |
-| 21:21 | 8/8, 7/7, 2/7 | Consistent 7-8/8 |
-| 21:25 | 0/10, 6/7, 0/10 | Complex tasks still failing |
-| 21:37 | 8/8, 0/14, 2/10 | Farming |
-| 21:41 | 7/7, 7/7, 6/10 | Hot streak |
-| 21:46 | 0/10, 2/10, 7/7 | Farming |
-| 21:51 | 0/10, 2/10, 7/7 | Farming |
-| 21:57 | 8/8, 0/14, 2/10 | Farming |
-| 22:09 | 6/6, 0/13, 13/22 | 13/22 on complex task! (may be KO's run) |
-| 22:12 | 0/10, 0/13, 2/8 | Voucher VAT math failures |
-| 22:17 | 0/10, 2/10, 0/13 | Same pattern |
-| 22:29 | 8/8, 8/8, 0/13 | Back on track, dept fallback + employee inject working |
-| 22:41 | 7/7, 0/10, 7/7 | Farming |
-| 22:46 | 6/6, 0/10, 7/7 | Farming |
-| 22:54 | 2/10, 0/8, 5.5/8 | VAT fix not triggering yet |
-| 22:59 | 5.5/8, 7/7, 6.5/8, 18/22, 0/14 | 18/22 huge! |
-| 23:05 | 0/14, 0/10, 0/10 | Bad task draw, all hard types |
+| Tasks | Best Score | Status |
+|-------|-----------|--------|
+| 01-08 (simple) | 2.00 each | Maxed out |
+| 09 | 4.00 | Strong |
+| 10 | 2.67 | OK |
+| 11 | 0 (4 tries) | Never scored — unknown task type |
+| 12 | 0 (11 tries) | Never scored — likely custom dimensions |
+| 13 | 2.50 | OK |
+| 14 | 4.00 | Strong |
+| 15 | 3.33 | Good |
+| 16 | 4.00 | Strong |
+| 17 | 0 (10 tries) | Never scored — likely cost analysis |
+| 18 | 1.00 | Low |
+| 19 | 2.45 | OK |
+| 20 | 0.60 | Low |
+| 21 | 0 (6 tries) | Never scored |
+| 22 | 0 (10 tries) | Never scored — likely bank recon supplier side |
+| 23 | 0.60 | Low |
+| 24 | 2.25 | OK |
+| 25 | 1.50 | OK |
+| 26 | 3.75 | Strong |
+| 27 | 2.10 | OK |
+| 28 | 0.60 | Low |
+| 29 | 1.09 | Low |
+| 30 | 1.80 | OK |
 
-**Total sum of best-per-task: 42.2 | Leaderboard: 48.8**
+## What Works Well (consistently scoring)
 
-## What Works
+- Departments, employees, customers, products, suppliers — simple creation tasks (8/8)
+- Invoice creation and send (7-8/8)
+- Credit notes (6/6)
+- Project creation (7/7)
+- Agio/currency tasks (7/10)
+- Monthly close / ledger vouchers (10/10 after account lookup fix)
+- Payroll (8/8 after recipe added)
+- Multi-step tasks with variable extraction
+- Self-correction on 422 errors (1 retry)
+- Overdue invoice + surcharge + partial payment (up to 11/14)
+- Employee creation from PDF contracts (18/22)
+- Travel expenses (partial — travelDetails fix works, per diem/cost still flaky)
 
-- Departments, employees, customers, products — simple creation tasks
-- Invoice creation and send
-- Multi-step tasks with variable extraction (GET → save ID → POST)
-- Self-correction: when a step fails with 422, the LLM re-plans and retries
-- Overdue invoice + surcharge + partial payment (complex 7-step flow)
+## What Still Fails (zero-score task types)
 
-## What's Failing
+- **Custom dimensions** — No API endpoint in swagger for creating free dimensions
+- **Cost analysis** — LLM can't see posting amounts (fields param stripped from GETs)
+- **Bank reconciliation (supplier side)** — Supplier invoices don't exist in sandbox
+- **Full project lifecycle** — Activity linkage fails at timesheet entry
 
-- **Travel expenses** — LLM can't find/create suppliers
-- **Bank reconciliation** — LLM hardcodes invoice numbers from CSV instead of searching
-- **Ledger corrections** — partial success, cascade failures when early steps fail
-- **Cost analysis** — LLM uses `{{placeholder}}` names instead of extracting from data
-- **Payment reversals** — LLM doesn't know how to reverse vouchers correctly
+## Fixes Applied (23 total)
 
-## Fixes Applied This Session
-
-1. **`.gcloudignore` excluding prompt templates** — `*.md` glob removed `retry_correction.md`. Fixed by listing specific files.
-2. **`NameError` on unresolved variables** — `step_fixes`/`step_removed` used before definition. Fixed.
-3. **Variable extraction hardened** — bracket notation (`values[0].id`), `value.X` fallback.
-4. **JSON parsing robustness** — bracket-depth matching for LLM responses with trailing text.
-5. **Better error logging** — `repr(exc)` fallback for empty exception messages.
-6. **Non-dict correction steps** — skip gracefully instead of 500 crash.
-7. **Field name renames** — `voucherDate→date`, `address→postalAddress` in schema validator.
-8. **Strip `fields` param from GETs** — prevents hallucinated field names causing silent failures.
-9. **Retry on proxy timeouts** — 3 attempts with backoff on ConnectTimeout.
-10. **Pre-flight bank account setup** — auto-configures bank account number on sandbox, unblocking all invoice creation.
-11. **Auto-inject orderDate/deliveryDate** — injects today's date into invoice order objects when LLM omits them.
-12. **Auto-inject voucher date** — injects today's date on voucher POSTs when date field is missing.
-13. **Expense voucher recipe in system prompt** — correct VAT math, employee refs, 2-posting pattern with account lookup guide.
-14. **Block unbalanced vouchers** — return failure immediately when postings don't sum to 0, so self-correction can fix instead of sending doomed request.
-15. **Auto-fallback on empty entity lookups** — department/employee/account GETs that return empty auto-retry with broader params (any dept, any employee, query search).
-16. **Account lookup recipe in system prompt** — common 4-digit Norwegian account numbers to prevent hallucinated 5-digit numbers.
-17. **Auto-inject employee refs into voucher postings** — propagates employee ref across all postings, or finds one from saved_vars. Fixes 'Ansatt mangler' errors.
-18. **VAT auto-correction on voucher postings** — always recalculates amount=amountGross/divisor for vatType postings and amount=amountGross for non-vatType. Fixes the most common voucher balance error. JUST DEPLOYED — not yet scored.
-
-## All Fixes Deployed and Scoring
-
-## Cloud Run Logs
-
-Scoring run logs are committed in `solutions/tripletex/logs/run_*.log`. These are captured from `gcloud logging read` after each scoring submission. Recent logs:
-
-- `run_20260321_185704.log` — latest (8/8 + 0/10)
-- `run_20260321_184238.log` — 3 concurrent runs (2/10, 0/13, 0/14)
-- `run_20260321_183848.log` — bank reconciliation (0/10)
+1. `.gcloudignore` excluding prompt templates — fixed
+2. `NameError` on unresolved variables — fixed
+3. Variable extraction hardened — bracket notation, value.X fallback
+4. JSON parsing robustness — bracket-depth matching
+5. Better error logging — `repr(exc)` fallback
+6. Non-dict correction steps — skip gracefully
+7. Field name renames — `voucherDate→date`, `address→postalAddress`
+8. Strip `fields` param from GETs — prevents hallucinated field names
+9. Retry on proxy timeouts — 3 attempts with backoff
+10. Pre-flight bank account setup — auto-configures bank account on sandbox
+11. Auto-inject orderDate/deliveryDate on invoices
+12. Auto-inject voucher date
+13. Expense voucher recipe in system prompt
+14. Block unbalanced vouchers
+15. Auto-fallback on empty entity lookups
+16. Account lookup recipe in system prompt
+17. Auto-inject employee refs into voucher postings
+18. VAT auto-correction on voucher postings
+19. **Account lookup query→number conversion** — fixes all account lookups returning wrong ID
+20. **Bank reconciliation recipe** — list all invoices, match by name/amount
+21. **Payroll recipe** — 5-posting pattern with tax, AGA, net pay
+22. **Travel expense recipe** — travelDetails required for reiseregning type
+23. **Nested path fallback** — collapse deep variable extraction paths
 
 ## Key Files
 
 - `src/tripletex_agent/app.py` — FastAPI entrypoint (`/health`, `/solve`, `/logs`)
-- `src/tripletex_agent/llm_executor.py` — main executor (two-phase LLM: Haiku for tools, Sonnet for planning)
-- `src/tripletex_agent/client.py` — Tripletex API client (now with retry logic)
+- `src/tripletex_agent/llm_executor.py` — main executor + system prompt with 13 recipes
+- `src/tripletex_agent/client.py` — Tripletex API client (with retry logic)
 - `src/tripletex_agent/schema_validator.py` — validates/fixes LLM-generated request bodies
 - `src/tripletex_agent/service.py` — `build_default_service()` requires `ANTHROPIC_API_KEY`
 - `src/tripletex_agent/prompts/retry_correction.md` — self-correction prompt template
-- `src/tripletex_agent/prompts/planner_system.md` — system prompt for planning
 - `scripts/deploy-ko.ps1` — build + deploy to Cloud Run
-- `scripts/post-score.ps1` — capture logs + git pull
 - `.gcloudignore` — excludes test/docs from Cloud Build (KEEP prompt .md files!)
 
 ## Architecture
 
 ```
 POST /solve
-  → LLM Phase 1 (Haiku): tool calls to look up Tripletex API schemas
-  → LLM Phase 2 (Sonnet): generate ordered API call steps as JSON array
+  → LLM Phase 1 (Haiku 4.5): tool calls to look up Tripletex API schemas
+  → LLM Phase 2 (Sonnet 4.6): generate ordered API call steps as JSON array
   → Execute steps sequentially, saving response IDs as variables
+  → Auto-fixes: account lookup query→number, VAT amounts, employee refs, dates
   → On failure: self-correction via retry_correction.md prompt (1 retry)
   → Return {"status": "completed"}
-```
-
-## Next Priority
-
-1. Score the latest fixes (fields stripping + retry)
-2. Fix cost analysis — LLM must extract actual account names from voucher data, not use placeholders
-3. Fix travel expense — needs supplier creation or different approach
-4. Consider increasing self-correction retries from 1 to 2
-5. The `address→postalAddress` rename helps, but address objects need proper structure (nested `addressLine1`, `postalCode`, `city`)
-
-## Restart Prompt
-
-```text
-Read solutions/tripletex/SESSION_HANDOFF.md then solutions/tripletex/README.md.
-
-Current state: captains-tripletex deployed on Cloud Run, scoring 8/8 on simple tasks.
-Branch: tripletex/complex-multi-step-project
-
-Iteration cycle:
-1. .\scripts\deploy-ko.ps1
-2. Submit on app.ainm.no
-3. .\scripts\post-score.ps1
-4. Paste score + log path to Claude
-5. Claude fixes + commits + pushes → back to 1
-
-Key: simple tasks pass, complex tasks fail. Focus on highest-ROI fixes.
-Latest unscored: fields stripping + proxy retry. Deploy and score first.
 ```
