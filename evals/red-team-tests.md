@@ -49,8 +49,24 @@ Do **not** submit when:
 - API endpoint fails on any edge case in the "Input Edge Cases" category above.
 
 ## Quick Red Team Checklist (Pre-Submission)
-- [ ] Ran all input edge case tests.
-- [ ] Checked adversarial inputs (if applicable).
-- [ ] Stress tested API endpoint.
-- [ ] Verified no data leakage in outputs.
-- [ ] All High severity findings mitigated or explicitly accepted.
+
+### Tripletex
+- [x] Ran all input edge case tests — empty/null JSON body, missing session_token, malformed prompt.
+- [x] Checked adversarial inputs — prompt injection attempts blocked by system prompt scope restriction. Agent ignores instructions to deviate from accounting task context.
+- [x] Stress tested API endpoint — concurrent request handling verified; stateless design ensures no state leakage between sessions.
+- [x] Verified no data leakage in outputs — endpoint returns only `{"status": "completed"}`. No prompt content, API responses, or session tokens echoed.
+- [x] All High severity findings mitigated or explicitly accepted — see risk-register R-001 through R-005. Residual: LLM hallucination (R-002) accepted.
+
+### Astar Island
+- [x] Ran all input edge case tests — invalid viewport coordinates, seed_index out of range, expired JWT.
+- [x] Checked adversarial inputs — not applicable; pure read/compute pipeline with no user-controlled LLM input.
+- [x] Stress tested API endpoint — not applicable; no hosted endpoint. Outbound API calls only.
+- [x] Verified no data leakage in outputs — submissions contain only numeric probability tensors. No credentials or observations in submission payload.
+- [x] All High severity findings mitigated or explicitly accepted — see risk-register R-006 through R-009. Zero-probability risk (R-007) fully mitigated.
+
+### NorgesGruppen Data
+- [x] Ran all input edge case tests — empty image directory, unsupported image format, very small/large images.
+- [x] Checked adversarial inputs — not applicable; image-only model with no LLM or text input.
+- [x] Stress tested API endpoint — not applicable; offline inference only. Benchmarked inference time locally: within 300s limit.
+- [x] Verified no data leakage in outputs — COCO JSON predictions contain only bounding boxes and category IDs. No training data or weights exposed.
+- [x] All High severity findings mitigated or explicitly accepted — see risk-register R-010 through R-013. Banned import check (R-010) enforced pre-packaging.

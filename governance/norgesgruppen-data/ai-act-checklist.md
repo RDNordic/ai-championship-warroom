@@ -2,7 +2,8 @@
 
 Challenge: NorgesGruppen Data
 Owner: Chris
-Date: 2026-03-19
+Date: 2026-03-22 (final submission)
+Created: 2026-03-19
 
 ---
 
@@ -47,7 +48,7 @@ Rationale:
 
 - [x] Model card created: `governance/norgesgruppen-data/model-card.md`
 - [x] Data card created: `governance/norgesgruppen-data/data-card.md`
-- [ ] Decision log updated in `ops/decision-log.md` — ongoing during competition
+- [x] Decision log updated in `ops/decision-log.md`
 
 ---
 
@@ -55,9 +56,9 @@ Rationale:
 
 - [x] **Code scanner rejection risk:** Sandbox rejects `import os`, `import subprocess`, `import socket`, `import ctypes`, `import builtins`, `eval()`, `exec()`, `compile()`, `__import__()`. Mitigation: use `pathlib` exclusively; grep for banned imports before packaging.
 - [x] **Version mismatch risk:** Package versions in training environment must match sandbox exactly. Mismatch causes silent load failure. See risk R-011.
-- [x] **Timeout risk:** Inference must complete within 300 seconds on NVIDIA L4. Mitigated by benchmarking locally on RTX 5090 Mobile (same 24 GB VRAM).
+- [x] **Timeout risk:** Inference must complete within 300 seconds on NVIDIA L4. Mitigated by benchmarking locally on a 24 GB VRAM GPU (same as sandbox).
 - [x] **Abuse / misuse:** Not applicable — grocery product detection has no identified abuse vector.
-- [ ] Edge-case tests: local COCO eval run before every submission (mandatory gate)
+- [x] Edge-case tests: local COCO eval run before every submission (mandatory gate) — enforced throughout competition
 
 ---
 

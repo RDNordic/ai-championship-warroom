@@ -2,7 +2,8 @@
 
 Challenge: Astar Island
 Owner: AD (Andrew/John)
-Date: 2026-03-19
+Date: 2026-03-22 (final submission)
+Created: 2026-03-19
 
 ---
 
@@ -46,7 +47,7 @@ Rationale:
 
 - [x] Model card created: `governance/astar-island/model-card.md`
 - [x] Data card created: `governance/astar-island/data-card.md`
-- [ ] Decision log updated in `ops/decision-log.md` — ongoing during competition
+- [x] Decision log updated in `ops/decision-log.md`
 
 ---
 
