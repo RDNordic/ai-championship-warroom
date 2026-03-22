@@ -8,19 +8,23 @@ Use this checklist before every public `/solve` submission so we do not confuse 
 
 1. Verify sandbox credentials still work.
    - Run: `python scripts/smoke_read_only.py`
-2. Validate the raw API behavior for the workflow we are about to trust.
+2. Start the live worker and tunnel under one foreground supervisor.
+   - Run: `.\.venv\Scripts\python.exe scripts\run_public_endpoint.py`
+   - Keep that process open during the full submission window.
+   - Use the URL written to `logs/public-endpoint-state.json`. Do not reuse an older quick-tunnel hostname.
+3. Validate the raw API behavior for the workflow we are about to trust.
    - Use the sandbox directly when needed to confirm required fields, lookup params, and write semantics.
-3. Validate the workflow through the local runner.
+4. Validate the workflow through the local runner.
    - Run: `./.venv/bin/python scripts/run_prompt.py --execute "<prompt>"`
-4. Validate the full `/solve` HTTP contract with sandbox credentials.
+5. Validate the full `/solve` HTTP contract with sandbox credentials.
    - Send a real `POST /solve` request to the running public endpoint.
    - Use a sandbox `base_url` and `session_token` in `tripletex_credentials`.
    - Confirm the response is HTTP 200 with `{"status":"completed"}`.
-5. Verify the created or updated Tripletex record manually.
+6. Verify the created or updated Tripletex record manually.
    - Confirm the exact fields, not only that some entity exists.
-6. Check logs before submitting to the competition.
+7. Check logs before submitting to the competition.
    - Confirm prompt, parsed plan, selected workflow, API sequence, and absence of 4xx errors.
-7. Submit only after the exact scenario has passed all earlier gates.
+8. Submit only after the exact scenario has passed all earlier gates.
 
 ## Scenario Rules
 
@@ -69,6 +73,7 @@ What this proves:
 - the `/solve` contract is wired correctly
 - the current workflow can run with the provided credentials
 - the deployment path is working
+- the current quick-tunnel URL is alive right now, not just in an older handoff note
 
 What this does not prove:
 
@@ -100,3 +105,4 @@ What this does not prove:
 - If it fails in sandbox, assume it will fail in `/solve`.
 - If it works in sandbox, treat it as high confidence, not a guarantee.
 - Fresh competition accounts are stricter than the persistent sandbox because missing prerequisites are exposed immediately.
+- A dead quick tunnel can produce a pure deployment failure with no useful task logs. Always regenerate and re-check the public URL right before submitting.

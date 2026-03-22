@@ -365,6 +365,7 @@ if __name__ == "__main__":
 |-----|-------|------|--------|-----------|-------------|-------------|-------------|-----------|------------------|
 | 1 — Baseline | YOLOv8L | Original (248 img) | 50 | 0.646 | 1.002 | 0.781 | 0.570 | **0.7175** | Yes |
 | 2 — Augmented | YOLOv8L | Augmented (496 img) | 50 | 0.799 | 0.726 | — | — | **0.8329** | Yes |
+| 3 — Aug v2 + Section Prior | YOLOv8L | Augmented (496 img) | 50 | 0.814 | 0.577 | — | — | **0.8815** | Yes |
 
 > Scores in the table use inference tweaks: `conf=0.01`, `augment=True` (TTA), `max_det=1000`.
 > Run 1 baseline without inference tweaks scored 0.7039.
@@ -401,6 +402,27 @@ uv run python scripts/augment_copypaste.py --num-augmented 248 --pastes-per-imag
 
 # Step 2: Train on augmented data
 uv run python scripts/train.py --augmented --model-size l --epochs 50 --batch 4 --imgsz 1280 --name train_aug
+```
+
+### Run 3 — Augmented v2 + Store-Section Prior (2026-03-21)
+
+- **Config:** YOLOv8L, 50 epochs, batch 4, imgsz 1280, augmented 496 images (same as Run 2)
+- **Final val metrics:** mAP50=0.814, mAP50-95=0.616, cls_loss=0.577
+- **Leaderboard score:** **0.8815**
+- **Observation:** Significant score jump from 0.8329 to 0.8815. Val cls_loss dropped from 0.726 to 0.577 (+21%). Model still improving at epoch 50.
+- **Weights:** `runs/detect/train_aug_v2/weights/best.pt`
+
+**What changed from Run 2:**
+- Added **store-section prior** post-processing in `run.py`: detects which of the 4 store sections (Egg, Frokost, Knekkebrød, Varmedrikker) an image belongs to using a confidence-weighted vote, then penalizes low-confidence predictions whose category doesn't match the detected section (score × 0.15 penalty for predictions with score < 0.3)
+- Added **SAHI tiled inference** support (`scripts/tile_dataset.py`) for slicing images into 1280×1280 tiles with overlap — improves detection of small products on dense shelves
+- Retrained with same augmented dataset but improved training pipeline
+
+```bash
+# Train
+uv run python scripts/train.py --augmented --model-size l --epochs 50 --batch 4 --imgsz 1280 --name train_aug_v2
+
+# Build submission
+uv run python scripts/prepare_submission.py --model-size l
 ```
 
 ### Inference Tweaks (applied to all runs at eval time)

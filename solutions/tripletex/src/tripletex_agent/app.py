@@ -14,6 +14,8 @@ from .models import HealthResponse, SolveRequest, SolveResponse
 from .service import SolverService, build_default_service
 from .solve_logging import SolveRequestContext
 
+logger = logging.getLogger(__name__)
+
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,105 @@
+[
+  {
+    "id": "invoice_create_send_french",
+    "prompt": "Créez et envoyez une facture au client Lumière SARL (nº org. 827689114) de 8750 NOK hors TVA. La facture concerne Maintenance.",
+    "expected": {
+      "task_family": "invoicing",
+      "operation": "create",
+      "workflow": "InvoiceCreateWorkflow",
+      "completion_checks": [
+        "created:invoice",
+        "sent_to_customer:invoice"
+      ]
+    }
+  },
+  {
+    "id": "invoice_payment_ex_vat_spanish",
+    "prompt": "El cliente Solmar SL (org. nº 939332235) tiene una factura pendiente de 46700 NOK sin IVA por \"Diseño web\". Registre el pago completo de esta factura.",
+    "expected": {
+      "task_family": "invoicing",
+      "operation": "register_payment",
+      "workflow": "InvoicePaymentWorkflow",
+      "fields_to_set": {
+        "paidAmount": 46700.0,
+        "paidAmountExcludingVat": true
+      }
+    }
+  },
+  {
+    "id": "travel_expense_create_live_prompt",
+    "prompt": "Register a travel expense for William Wilson (william.wilson@example.org) for \"Client visit Trondheim\". The trip lasted 2 days with per diem (daily rate 800 NOK). Expenses: flight ticket 7600 NOK and taxi 700 NOK.",
+    "expected": {
+      "task_family": "travel_expenses",
+      "operation": "create",
+      "workflow": "TravelExpenseCreateWorkflow",
+      "completion_checks": [
+        "created:travel_expense"
+      ]
+    }
+  },
+  {
+    "id": "voucher_reverse_returned_payment_french",
+    "prompt": "Le paiement de Rivière SARL (nº org. 937044488) pour la facture \"Design web\" (33050 NOK HT) a été retourné par la banque. Annulez le paiement afin que la facture affiche à nouveau le montant impayé.",
+    "expected": {
+      "task_family": "corrections",
+      "operation": "reverse",
+      "workflow": "VoucherReverseWorkflow",
+      "lookup": {
+        "name": "Rivière SARL",
+        "organizationNumber": "937044488"
+      }
+    }
+  },
+  {
+    "id": "supplier_registration_portuguese",
+    "prompt": "Registe o fornecedor Luz do Sol Lda com número de organização 962006930. E-mail: faktura@luzdosollda.no.",
+    "expected": {
+      "task_family": "customers_products",
+      "operation": "create",
+      "workflow": "CustomerCreateWorkflow"
+    }
+  },
+  {
+    "id": "supplier_invoice_containment_spanish",
+    "prompt": "Hemos recibido la factura INV-2026-8702 del proveedor Sierra SL (org. nº 933305228) por 6850 NOK con IVA incluido. El importe corresponde a servicios de oficina (cuenta 6590). Registre la factura del proveedor con el IVA soportado correcto (25 %).",
+    "expected": {
+      "task_family": "invoicing",
+      "operation": "create",
+      "workflow": "StubWorkflow"
+    }
+  }
+,
+  {
+    "id": "project_lifecycle_fail_closed_french",
+    "prompt": "Executez le cycle de vie complet du projet 'Migration Cloud Colline' (Colline SARL, org. 910455052) : 1) Le projet a un budget de 323050 NOK. 2) Enregistrez le temps : Jules Durand 46 heures et Hugo Durand 46 heures. 3) Enregistrez un cout fournisseur de 36900 NOK de Lumiere SARL (org. 985264287). 4) Creez une facture client pour le projet.",
+    "expected": {
+      "task_family": "unknown",
+      "operation": "unknown",
+      "workflow": "StubWorkflow"
+    }
+  },
+  {
+    "id": "month_end_fail_closed_german",
+    "prompt": "Fuhren Sie den Monatsabschluss fur Marz 2026 durch. Buchen Sie die Rechnungsabgrenzung (2200 NOK pro Monat von Konto 1720 auf Aufwand). Erfassen Sie die monatliche Abschreibung fur eine Anlage mit Anschaffungskosten 291700 NOK und Nutzungsdauer 5 Jahre. Uberprufen Sie, ob die Saldenbilanz null ergibt. Buchen Sie ausserdem eine Gehaltsruckstellung.",
+    "expected": {
+      "task_family": "unknown",
+      "operation": "unknown",
+      "workflow": "StubWorkflow"
+    }
+  },
+  {
+    "id": "employee_offer_letter_fail_closed_portuguese",
+    "prompt": "Voce recebeu uma carta de oferta (ver PDF anexo) para um novo funcionario. Complete a integracao: crie o funcionario, atribua o departamento correto, configure os detalhes de emprego com percentagem e salario anual, e configure as horas de trabalho padrao.",
+    "attachments": [
+      {
+        "filename": "files/tilbudsbrev_pt_03.pdf",
+        "mime_type": "application/pdf"
+      }
+    ],
+    "expected": {
+      "task_family": "unknown",
+      "operation": "unknown",
+      "workflow": "StubWorkflow"
+    }
+  }
+]

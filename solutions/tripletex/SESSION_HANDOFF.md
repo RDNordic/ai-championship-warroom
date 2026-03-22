@@ -171,7 +171,7 @@ From `solutions\tripletex\`:
 - Local smoke:
   - `& '.\.venv\Scripts\python.exe' scripts\smoke_read_only.py`
 
-## Handoff Contract
+## Current State
 
 Current objective:
 - deploy and verify the current local patch for variable-id path normalization and sales-invoice VAT normalization on the unified executor path

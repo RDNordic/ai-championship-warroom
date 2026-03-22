@@ -151,6 +151,11 @@ def build_default_service() -> SolverService:
         settings.llm_tool_model, settings.llm_executor_model,
     )
 
+
+def build_default_service() -> SolverService:
+    settings = AppSettings.load()
+    workflows = build_default_workflow_registry()
+
     return SolverService(
         llm_executor=executor,
         client_factory=TripletexClient.from_credentials,
