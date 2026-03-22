@@ -1,6 +1,16 @@
 # AI Championship War Room
 
-Private prep repo for the Norwegian AI Championship (March 19-22, 2026).
+Competition repo for the Norwegian AI Championship (NM i AI), March 19–22, 2026.
+
+## Results
+
+| Challenge | Sponsor | Owner | Score |
+|-----------|---------|-------|-------|
+| Tripletex — AI Accounting Agent | Tripletex | KO (Oddar) | 53.2 |
+| NorgesGruppen — Object Detection | NorgesGruppen Data | Chris | 0.8329 |
+| Astar Island — Viking World Prediction | Astar | AD (Andrew) | Active |
+
+---
 
 ## Purpose
 - Ship high-performing challenge solutions fast.
@@ -8,118 +18,78 @@ Private prep repo for the Norwegian AI Championship (March 19-22, 2026).
 - Run a repeatable team workflow under competition pressure.
 
 ## Team
-- **Andrew Davidson** — Team Captain
-- **Christopher Coello** — NorgesGruppen Object Detection
-- **Oddar** — Tripletex Accounting Agent
+- **Andrew Davidson (AD)** — Team Captain, Governance, Astar Island
+- **Christopher Coello (Chris)** — NorgesGruppen Object Detection
+- **Oddar (KO)** — Tripletex Accounting Agent
+- **Patrick** — Advisory (Signal)
 
-Role assignments are in `AGENTS.md`.
+Full role assignments in `AGENTS.md`.
+
+---
 
 ## Repo Layout
-- `CLAUDE.md`: Operating rules for AI coding assistants.
-- `AGENTS.md`: Team roster, agent roles, contracts, and handoffs.
-- `CONTRIBUTING.md`: Branch naming and PR workflow reference.
-- `playbooks/`: Execution runbooks for intake, submission, and incidents.
-- `governance/`: Compliance and governance templates.
-- `evals/`: Evaluation harness and red-team test guidance.
-- `solutions/`: Per-challenge implementation folders.
-- `ops/`: Decision log, assumptions, and postmortems.
-- `.github/pull_request_template.md`: Auto-fills PR descriptions.
+
+```
+solutions/          Per-challenge implementation (active competition work)
+  tripletex/          Challenge 1 — AI Accounting Agent
+  astar-island/       Challenge 2 — Viking World Prediction
+  norgesgruppen-data/ Challenge 3 — Grocery Object Detection
+  grocerybot-simulator/     } Pre-competition trial work only —
+  grocerybot-trial-vs-code/ } not part of the NM i AI 2026 submission
+
+submissions/        Packaged submission artifacts from pre-competition trials
+governance/         EU AI Act + GDPR compliance docs for all three challenges
+  README.md           Structure guide and AI Act classification summary
+  risk-register.md    All risks across all challenges
+  tripletex/          AI Act checklist, model card, data card, privacy checklist
+  astar-island/       AI Act checklist, model card, data card, privacy checklist
+  norgesgruppen-data/ AI Act checklist, model card, data card, privacy checklist
+playbooks/          Execution runbooks (submission, intake, incident response)
+evals/              Red-team tests and evaluation guidance
+ops/                Decision log and postmortems
+CLAUDE.md           Operating rules for AI coding assistants
+AGENTS.md           Team roster, roles, and handoff contracts
+CONTRIBUTING.md     Branch naming and PR workflow reference
+```
+
+---
 
 ## How We Work (Git Workflow)
 
-`main` is protected. Nobody pushes directly to it. All changes go through pull requests.
-
-### Step by step
+`main` is the submission branch. All significant changes go through pull requests.
 
 ```bash
 # 1. Make sure you're on main and up to date
-git checkout main
-git pull
+git checkout main && git pull
 
-# 2. Create a branch for your work (see naming convention below)
-git checkout -b challenge-1/my-feature
+# 2. Create a branch
+git checkout -b tripletex/my-fix
 
-# 3. Do your work — edit files, add code, etc.
+# 3. Commit your changes
+git add <files>
+git commit -m "tripletex: describe what changed"
 
-# 4. Stage and commit your changes
-git add <files you changed>
-git commit -m "Add baseline model for challenge 1"
-
-# 5. Push your branch to GitHub
-git push -u origin challenge-1/my-feature
-
-# 6. Open a pull request
-#    Go to the link GitHub prints in your terminal, or visit:
-#    https://github.com/RDNordic/ai-championship-warroom/pulls
-#    Click "New pull request", select your branch, fill in the template.
-
-# 7. Get at least 1 approval from a teammate, then merge.
-
-# 8. After merging, switch back to main and pull
-git checkout main
-git pull
+# 4. Push and open a PR
+git push -u origin tripletex/my-fix
+# https://github.com/RDNordic/ai-championship-warroom/pulls
 ```
 
-### Branch naming convention
+### Branch naming
 
-| Prefix | When to use | Example |
-|--------|-------------|---------|
-| `challenge-N/` | Solution work for challenge N | `challenge-1/baseline` |
-| `governance/` | Compliance, risk, AI Act work | `governance/ai-act-checklist` |
-| `infra/` | Tooling, CI, eval harness | `infra/eval-harness` |
-| `docs/` | Documentation changes | `docs/update-readme` |
-| `hotfix/` | Urgent leaderboard or reliability fixes | `hotfix/api-timeout` |
+| Prefix | When to use |
+|--------|-------------|
+| `tripletex/` | Tripletex challenge work |
+| `astar-island/` | Astar Island challenge work |
+| `norgesgruppen/` | NorgesGruppen challenge work |
+| `governance/` | Compliance, risk, AI Act |
+| `docs/` | Documentation |
+| `hotfix/` | Urgent fixes |
 
-### Common situations
-
-**"I accidentally committed to main and can't push"**
-```bash
-# Save your work to a new branch
-git branch my-branch-name
-
-# Reset main back to match the remote
-git reset --hard origin/main
-
-# Switch to your branch and push it
-git checkout my-branch-name
-git push -u origin my-branch-name
-
-# Then open a PR on GitHub
-```
-
-**"I want to get someone else's latest changes"**
-```bash
-git checkout main
-git pull
-```
-
-**"I'm working on a branch and main has been updated"**
-```bash
-git checkout main
-git pull
-git checkout my-branch
-git rebase main
-```
-
-## Challenge Kickoff (Captain Action)
-When organizers release the challenge repository, paste the link here and start intake.
-
-- Captain: Andrew Davidson
-- Challenge Repo URL: `PASTE_URL_HERE`
-- Kickoff command set:
-  - Clone or add remote to local workspace.
-  - Create challenge branch (`challenge-1/*`, `challenge-2/*`, or `challenge-3/*`).
-  - Execute `playbooks/challenge-intake.md` immediately.
+---
 
 ## Minimum Evidence Before Any Submission
 - Repro command and pinned dependencies.
-- Metrics + known failure modes.
-- Risk and compliance checklist completed.
+- Metrics + known failure modes documented.
+- Risk and compliance checklist completed (`governance/<challenge>/ai-act-checklist.md`).
 - Named owner and rollback strategy.
-
-## Quick Start (New Team Member)
-1. Clone the repo: `git clone https://github.com/RDNordic/ai-championship-warroom.git`
-2. Read this README and `CONTRIBUTING.md`.
-3. Check your role in `AGENTS.md`.
-4. Before kickoff, run one full dry-run using `playbooks/submission-runbook.md`.
-5. For each challenge, copy governance templates and complete minimum fields.
+- Two-person sign-off (Andrew + Christopher).
