@@ -26,7 +26,7 @@ Competition repo for the Norwegian AI Championship (NM i AI), March 19–22, 202
 - **Oddar (KO)** — Tripletex Accounting Agent
 - **Patrick** — Advisory (Signal)
 
-Full role assignments in `AGENTS.md`.
+Full role assignments in `CLAUDE.md`.
 
 ---
 
@@ -50,8 +50,7 @@ governance/         EU AI Act + GDPR compliance docs for all three challenges
 playbooks/          Execution runbooks (submission, intake, incident response)
 evals/              Red-team tests and evaluation guidance
 ops/                Decision log and postmortems
-CLAUDE.md           Operating rules for AI coding assistants
-AGENTS.md           Team roster, roles, and handoff contracts
+CLAUDE.md           Operating rules for AI coding assistants (includes team roster)
 CONTRIBUTING.md     Branch naming and PR workflow reference
 ```
 
@@ -95,4 +94,3 @@ git push -u origin tripletex/my-fix
 - Metrics + known failure modes documented.
 - Risk and compliance checklist completed (`governance/<challenge>/ai-act-checklist.md`).
 - Named owner and rollback strategy.
-- Two-person sign-off (Andrew + Christopher).
