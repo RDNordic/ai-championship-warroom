@@ -178,16 +178,16 @@ have per diem or mileage allowances.
      "purpose": "trip purpose"}}
 3. POST /travelExpense/perDiemCompensation (for daily allowances):
    - travelExpense: {{"id": $travel_id}}
-   - rateCategory: {{"id": 1}}
    - overnightAccommodation: "HOTEL"
    - location: "city name"
    - count: number_of_days
+   - NOTE: Do NOT include rateCategory — it is auto-assigned
 4. POST /travelExpense/cost (for each expense like flight, taxi):
    - travelExpense: {{"id": $travel_id}}
    - date: "YYYY-MM-DD"
    - description: "what was purchased"
    - amount: cost_amount
-   - paymentType: "OWN"
+   - paymentType: {{"id": 0}}
    - category: {{"id": $category_id}} — use GET /travelExpense/costCategory to find
 
 ## Timesheet Entry
