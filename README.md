@@ -4,11 +4,14 @@ Competition repo for the Norwegian AI Championship (NM i AI), March 19–22, 202
 
 ## Results
 
-| Challenge | Sponsor | Owner | Score |
+| Challenge | Sponsor | Owner | Score (normalised) |
 |-----------|---------|-------|-------|
-| Tripletex — AI Accounting Agent | Tripletex | KO (Oddar) | 53.2 |
-| NorgesGruppen — Object Detection | NorgesGruppen Data | Chris | 0.8329 |
-| Astar Island — Viking World Prediction | Astar | AD (Andrew) | Active |
+| NorgesGruppen — Object Detection | NorgesGruppen Data | Chris | 96.0 |
+| Tripletex — AI Accounting Agent | Tripletex | KO (Oddar) | 51.8 |
+| Astar Island — Viking World Prediction | Astar | AD (Andrew) | 85.5 |
+| **Overall (rank 142)** | | | **77.8** |
+
+*Preliminary results — subject to code review and verification by organizers.*
 
 ---
 
