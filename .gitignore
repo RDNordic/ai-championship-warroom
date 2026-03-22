@@ -22,6 +22,19 @@ venv/
 # Pre-competition prep (not part of submission)
 past-championships-data/
 submissions/
+solutions/grocerybot-simulator/
+solutions/grocerybot-trial-vs-code/
+
+# NorgesGruppen submission zip artifacts (large binaries, kept locally)
+solutions/norgesgruppen-data/submission/*.zip
+
+# Internal session/handoff docs (kept locally)
+solutions/tripletex/next-steps.md
+solutions/tripletex/SESSION_HANDOFF.md
+solutions/tripletex/KO_HANDOFF_2026-03-21.md
+solutions/tripletex/PLAN_CHRIS_TAKEOVER.md
+solutions/tripletex/session_archive/
+solutions/astar-island/next-steps.md
 
 # Generated run artifacts (solutions)
 solutions/grocerybot-trial-vs-code/logs/
