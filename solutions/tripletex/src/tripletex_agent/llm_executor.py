@@ -114,6 +114,30 @@ Common Norwegian expense accounts:
 - 6800: Kontorrekvisita (office supplies)
 - 7100: Bilkostnader (vehicle costs)
 - 7140: Reisekostnader (travel costs)
+- 8060: Valutagevinst / agio (foreign exchange GAIN)
+- 8070: Valutatap / disagio (foreign exchange LOSS)
+
+## Currency Exchange (Agio/Disagio)
+When an invoice is paid at a different exchange rate than when issued:
+- GAIN (agio): payment rate > invoice rate → credit account 8060
+- LOSS (disagio): payment rate < invoice rate → debit account 8070
+CRITICAL: 8060 is for GAINS only, 8070 is for LOSSES only. Never mix them.
+Steps:
+1. GET /customer or /supplier to find entity
+2. GET /invoice to find the invoice
+3. GET /invoice/paymentType to get payment type ID
+4. PUT /invoice/{{id}}/:payment with the actual received amount in NOK
+5. GET /ledger/account?number=8070 (for loss) or ?number=8060 (for gain)
+6. GET /ledger/account?number=1500 (Kundefordringer) for customer invoices
+7. POST /ledger/voucher with 2 postings:
+   - Row 1: exchange difference amount on 8070 (loss) or 8060 (gain)
+   - Row 2: opposite amount on 1500 (customer) or 2400 (supplier)
+   - Include customer/supplier ref on the 1500/2400 posting
+
+## Department
+If a specific department is named but GET /department?name=X returns empty, \
+POST /department with {{"name": "X"}} to create it. Departments are simple — \
+only the name field is required.
 
 ## Ledger Voucher (Journal Entry)
 CRITICAL posting rules:
@@ -1329,12 +1353,128 @@ async def _maybe_select_project_activity(
     )
 
 
+async def _maybe_fix_single_posting_voucher(
+    *,
+    json_body: dict[str, Any],
+    saved_vars: dict[str, Any],
+    tripletex_client: TripletexClient,
+    step_fixes: list[str],
+) -> None:
+    """Auto-add a counterparty posting for single-posting vouchers.
+
+    Tripletex requires at least 2 postings that balance.  When the LLM
+    produces a single-posting correction/reversal voucher, we add a bank
+    account (1920) posting as counterparty.
+    """
+    postings = json_body.get("postings")
+    if not isinstance(postings, list) or len(postings) != 1:
+        return
+
+    posting = postings[0]
+    if not isinstance(posting, dict):
+        return
+
+    amount_gross = posting.get("amountGross")
+    if not isinstance(amount_gross, (int, float)):
+        amount_gross = posting.get("amount")
+        if not isinstance(amount_gross, (int, float)):
+            return
+
+    # Look up bank account 1920
+    bank_account_id = await _lookup_account_id(
+        tripletex_client=tripletex_client,
+        saved_vars=saved_vars,
+        account_number=1920,
+    )
+    if bank_account_id is None:
+        return
+
+    counter_amount = -float(amount_gross)
+    counterparty: dict[str, Any] = {
+        "row": 2,
+        "account": {"id": bank_account_id},
+        "amount": counter_amount,
+        "amountCurrency": counter_amount,
+        "amountGross": counter_amount,
+        "amountGrossCurrency": counter_amount,
+        "description": posting.get("description", "Counterparty posting"),
+    }
+
+    # Propagate employee ref if present on the original posting
+    emp = posting.get("employee")
+    if isinstance(emp, dict):
+        counterparty["employee"] = emp
+
+    postings.append(counterparty)
+    # Ensure original posting has row=1
+    if posting.get("row") is None or posting.get("row") == 0:
+        posting["row"] = 1
+    step_fixes.append(
+        f"Added bank (1920) counterparty posting for single-posting voucher"
+    )
+    logger.info("Auto-added bank counterparty to single-posting voucher")
+
+
+def _auto_balance_voucher(json_body: dict[str, Any], step_fixes: list[str]) -> None:
+    """Try to auto-balance a voucher by adjusting the non-VAT counterparty posting.
+
+    Uses Tripletex effective balance semantics:
+    - Postings WITH vatType: effective = amountGross
+    - Postings WITHOUT vatType: effective = amount
+    """
+    postings = json_body.get("postings")
+    if not isinstance(postings, list) or len(postings) < 2:
+        return
+
+    # Calculate effective sum and find the non-VAT counterparty
+    effective_sum = 0.0
+    non_vat_postings: list[dict[str, Any]] = []
+
+    for posting in postings:
+        if not isinstance(posting, dict):
+            continue
+        if "vatType" in posting:
+            ag = posting.get("amountGross")
+            if isinstance(ag, (int, float)):
+                effective_sum += float(ag)
+        else:
+            a = posting.get("amount")
+            if isinstance(a, (int, float)):
+                effective_sum += float(a)
+            non_vat_postings.append(posting)
+
+    if abs(effective_sum) <= 0.01:
+        return  # Already balanced
+
+    # If there's exactly one non-VAT posting, adjust it to fix the balance
+    if len(non_vat_postings) == 1:
+        target = non_vat_postings[0]
+        old_amount = target.get("amount")
+        if not isinstance(old_amount, (int, float)):
+            return
+        new_amount = float(old_amount) - effective_sum
+        new_amount = round(new_amount, 2)
+        target["amount"] = new_amount
+        target["amountCurrency"] = new_amount
+        target["amountGross"] = new_amount
+        target["amountGrossCurrency"] = new_amount
+        step_fixes.append(
+            f"Auto-balanced voucher: adjusted counterparty amount "
+            f"{float(old_amount):.2f} -> {new_amount:.2f}"
+        )
+        logger.info("Auto-balanced voucher by adjusting counterparty posting")
+
+
 def _should_block_ledger_voucher(path: str, errors: list[str]) -> bool:
     """Return True when a POST /ledger/voucher payload still has balance errors."""
-    return (
-        "/ledger/voucher" in path
-        and any("does not balance" in error for error in errors)
-    )
+    if "/ledger/voucher" not in path:
+        return False
+    for error in errors:
+        if "does not balance" in error:
+            return True
+        if "at least 2 postings" in error:
+            return True
+    return False
 
 
 def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
@@ -1820,6 +1960,13 @@ class LLMApiExecutor:
                         step_fixes=step_fixes,
                     )
                     _fix_voucher_vat_amounts(json_body, step_fixes)
+                    await _maybe_fix_single_posting_voucher(
+                        json_body=json_body,
+                        saved_vars=saved_vars,
+                        tripletex_client=tripletex_client,
+                        step_fixes=step_fixes,
+                    )
+                    _auto_balance_voucher(json_body, step_fixes)
                     from datetime import date as _date
                     if "date" not in json_body:
                         json_body["date"] = _date.today().isoformat()
@@ -1989,13 +2136,36 @@ class LLMApiExecutor:
                                         expected_status=(200,),
                                     )
                                 elif "/department" in path and "name" in params:
-                                    # Department lookup: retry getting any department
-                                    retry_desc = f"department '{params['name']}'"
-                                    retry_payload = await tripletex_client.request(
-                                        "GET", "/department",
-                                        params={"count": 1, "sorting": "id"},
-                                        expected_status=(200,),
-                                    )
+                                    # Department lookup: create it if not found
+                                    dept_name = str(params["name"])
+                                    retry_desc = f"department '{dept_name}'"
+                                    try:
+                                        create_payload = await tripletex_client.request(
+                                            "POST", "/department",
+                                            json_body={"name": dept_name},
+                                            expected_status=(200, 201),
+                                        )
+                                        if isinstance(create_payload, dict) and create_payload.get("value"):
+                                            retry_payload = {
+                                                "fullResultSize": 1,
+                                                "values": [create_payload["value"]],
+                                            }
+                                            logger.info(
+                                                "Auto-created department '%s' (id=%s)",
+                                                dept_name,
+                                                create_payload["value"].get("id"),
+                                            )
+                                    except Exception as create_exc:
+                                        logger.warning(
+                                            "Failed to create department '%s': %s",
+                                            dept_name, create_exc,
+                                        )
+                                        # Fall back to getting any department
+                                        retry_payload = await tripletex_client.request(
+                                            "GET", "/department",
+                                            params={"count": 1, "sorting": "id"},
+                                            expected_status=(200,),
+                                        )
                                 elif "/employee" in path:
                                     # Employee lookup: retry getting any employee
                                     retry_desc = "employee"

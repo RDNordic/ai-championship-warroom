@@ -8,6 +8,8 @@ import pytest
 
 from tripletex_agent.api_validator import ApiCallValidator
 from tripletex_agent.llm_executor import (
+    _auto_balance_voucher,
+    _maybe_fix_single_posting_voucher,
     _maybe_rebuild_supplier_vat_voucher,
     _maybe_fix_supplier_invoice_account,
     _maybe_select_project_activity,
@@ -18,6 +20,7 @@ from tripletex_agent.llm_executor import (
     _should_block_ledger_voucher,
     _substitute_vars,
 )
+from tripletex_agent.schema_validator import SchemaValidator
 
 # ── _resolve_value ────────────────────────────────────────────
 
@@ -531,11 +534,17 @@ class TestLedgerVoucherBlocking:
     def test_blocks_unbalanced_ledger_voucher_errors(self):
         assert _should_block_ledger_voucher(
             "/ledger/voucher",
-            ["Postings amount sum=-7790.00 does not balance to 0"],
+            ["Postings effective sum=-7790.00 does not balance to 0"],
         )
         assert not _should_block_ledger_voucher(
             "/supplierInvoice",
-            ["Postings amount sum=-7790.00 does not balance to 0"],
+            ["Postings effective sum=-7790.00 does not balance to 0"],
+        )
+
+    def test_blocks_single_posting_vouchers(self):
+        assert _should_block_ledger_voucher(
+            "/ledger/voucher",
+            ["Voucher must have at least 2 postings to balance"],
         )
 
 
@@ -593,3 +602,154 @@ class TestPlanPathNormalization:
         }
         result = validator.validate_step(project_update_step)
         assert result.valid
+
+
+class TestSinglePostingVoucherFix:
+    def test_adds_bank_counterparty_to_single_posting_voucher(self):
+        client = _FakeTripletexClient([{"id": 19200001, "number": 1920}])
+        saved_vars = {}
+        json_body = {
+            "date": "2026-03-22",
+            "description": "Correction: Reverse posting",
+            "postings": [
+                {
+                    "row": 1,
+                    "account": {"id": 65401},
+                    "amount": -1050,
+                    "amountCurrency": -1050,
+                    "amountGross": -1050,
+                    "amountGrossCurrency": -1050,
+                    "description": "Reverse posting on 6540",
+                },
+            ],
+        }
+        fixes = []
+
+        asyncio.run(
+            _maybe_fix_single_posting_voucher(
+                json_body=json_body,
+                saved_vars=saved_vars,
+                tripletex_client=client,
+                step_fixes=fixes,
+            )
+        )
+
+        assert len(json_body["postings"]) == 2
+        counterparty = json_body["postings"][1]
+        assert counterparty["account"]["id"] == 19200001
+        assert counterparty["amount"] == 1050
+        assert counterparty["amountGross"] == 1050
+        assert any("bank" in note.lower() for note in fixes)
+
+    def test_skips_multi_posting_vouchers(self):
+        client = _FakeTripletexClient([])
+        json_body = {
+            "postings": [
+                {"row": 1, "amount": 100, "amountGross": 100},
+                {"row": 2, "amount": -100, "amountGross": -100},
+            ],
+        }
+        fixes = []
+
+        asyncio.run(
+            _maybe_fix_single_posting_voucher(
+                json_body=json_body,
+                saved_vars={},
+                tripletex_client=client,
+                step_fixes=fixes,
+            )
+        )
+
+        assert len(json_body["postings"]) == 2
+        assert fixes == []
+
+
+class TestAutoBalanceVoucher:
+    def test_balances_vat_aware_expense_receipt(self):
+        """An expense receipt: expense row with vatType + payment row without."""
+        json_body = {
+            "postings": [
+                {
+                    "row": 1,
+                    "account": {"id": 6540},
+                    "amount": 2296,
+                    "amountCurrency": 2296,
+                    "amountGross": 2870,
+                    "amountGrossCurrency": 2870,
+                    "vatType": {"id": 3},
+                },
+                {
+                    "row": 2,
+                    "account": {"id": 2910},
+                    "amount": -2870,
+                    "amountCurrency": -2870,
+                    "amountGross": -2870,
+                    "amountGrossCurrency": -2870,
+                },
+            ],
+        }
+        fixes = []
+        _auto_balance_voucher(json_body, fixes)
+
+        # This voucher already balances in Tripletex semantics:
+        # effective = amountGross(2870) + amount(-2870) = 0
+        assert fixes == []
+
+    def test_fixes_imbalanced_counterparty(self):
+        """Counterparty has wrong amount — should be auto-adjusted."""
+        json_body = {
+            "postings": [
+                {
+                    "row": 1,
+                    "amount": 2296,
+                    "amountGross": 2870,
+                    "vatType": {"id": 3},
+                },
+                {
+                    "row": 2,
+                    "amount": -2500,
+                    "amountGross": -2500,
+                },
+            ],
+        }
+        fixes = []
+        _auto_balance_voucher(json_body, fixes)
+
+        # effective sum was: 2870 + (-2500) = 370
+        # counterparty should be adjusted by -370 → -2500 - 370 = -2870
+        assert json_body["postings"][1]["amount"] == pytest.approx(-2870)
+        assert len(fixes) == 1
+
+
+class TestVATAwareVoucherBalance:
+    def test_expense_receipt_passes_schema_validation(self):
+        """Valid expense receipt should not be blocked by schema validator."""
+        validator = SchemaValidator()
+        json_body = {
+            "date": "2026-03-22",
+            "description": "Expense receipt",
+            "postings": [
+                {
+                    "row": 1,
+                    "account": {"id": 6540},
+                    "amount": 2296,
+                    "amountCurrency": 2296,
+                    "amountGross": 2870,
+                    "amountGrossCurrency": 2870,
+                    "vatType": {"id": 3},
+                    "description": "Furniture purchase",
+                },
+                {
+                    "row": 2,
+                    "account": {"id": 2910},
+                    "amount": -2870,
+                    "amountCurrency": -2870,
+                    "amountGross": -2870,
+                    "amountGrossCurrency": -2870,
+                    "description": "Credit card payment",
+                },
+            ],
+        }
+        result = validator.validate_and_clean("POST", "/ledger/voucher", json_body)
+        balance_errors = [e for e in result.errors if "balance" in e.lower()]
+        assert balance_errors == [], f"Unexpected balance errors: {balance_errors}"
