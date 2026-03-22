@@ -57,6 +57,13 @@ _CATALOG_INDEX = _build_catalog_index()
 _VALID_METHODS = {"GET", "POST", "PUT", "DELETE"}
 
 
+def _required_field_name(entry: Any) -> str:
+    """Extract the raw field name from a catalog display string."""
+    if not isinstance(entry, str):
+        return str(entry)
+    return entry.split(" ", 1)[0]
+
+
 class ApiCallValidator:
     """Validates proposed API call steps against the curated endpoint catalog."""
 
@@ -65,12 +72,16 @@ class ApiCallValidator:
 
     def validate_step(
         self,
-        step: dict[str, Any],
+        step: Any,
         *,
         available_vars: set[str] | None = None,
     ) -> ValidationResult:
         errors: list[str] = []
         warnings: list[str] = []
+
+        if not isinstance(step, dict):
+            errors.append(f"Step must be an object, got {type(step).__name__}")
+            return ValidationResult(valid=False, errors=errors)
 
         method = step.get("method", "")
         path = step.get("path", "")
@@ -92,7 +103,10 @@ class ApiCallValidator:
             return ValidationResult(valid=False, errors=errors)
 
         # 3. Check required fields in json_body (for POST/PUT)
-        required = catalog_entry.get("required_fields", [])
+        required = [
+            _required_field_name(field)
+            for field in catalog_entry.get("required_fields", [])
+        ]
         if required and method in ("POST", "PUT"):
             body = json_body or {}
             if not isinstance(body, dict):
@@ -105,8 +119,7 @@ class ApiCallValidator:
                         # Allow if it's a path param like {id} that gets substituted
                         if field_name == "id" and "{id}" in catalog_entry["path"]:
                             continue
-                        # Allow if the value references a saved var (starts with $)
-                        warnings.append(
+                        errors.append(
                             f"Step {step_id}: required field '{field_name}' missing from json_body"
                         )
 
@@ -127,7 +140,7 @@ class ApiCallValidator:
             warnings=warnings,
         )
 
-    def validate_plan(self, steps: list[dict[str, Any]]) -> PlanValidationResult:
+    def validate_plan(self, steps: list[Any]) -> PlanValidationResult:
         """Validate all steps in an API call plan."""
         all_errors: list[str] = []
         step_results: list[ValidationResult] = []
@@ -137,6 +150,8 @@ class ApiCallValidator:
             result = self.validate_step(step, available_vars=available_vars)
             step_results.append(result)
             all_errors.extend(result.errors)
+            if not isinstance(step, dict):
+                continue
 
             # Track variables saved by this step
             save_fields = step.get("save_response_fields_as", {})

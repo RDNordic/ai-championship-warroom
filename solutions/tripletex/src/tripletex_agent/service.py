@@ -82,6 +82,19 @@ class SolverService:
             )
             raise
 
+        if not result.completed:
+            error_message = str(
+                result.details.get("error", "LLM executor did not complete request")
+            )
+            self._record_failed(error=RuntimeError(error_message), trace=trace)
+            logger.warning(
+                "Solve request ended with internal failure trace_id=%s workflow=%s details=%s",
+                trace.trace_id,
+                result.name,
+                json.dumps(result.details, ensure_ascii=False, default=str),
+            )
+            return SolveResponse(status="completed")
+
         self._record_completed(result=result, trace=trace)
         logger.info(
             "Solved request trace_id=%s workflow=%s operations=%s resources=%s details=%s",

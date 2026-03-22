@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,6 +13,9 @@ from .config import AppSettings, configure_logging, load_local_env
 from .models import HealthResponse, SolveRequest, SolveResponse
 from .service import SolverService, build_default_service
 from .solve_logging import SolveRequestContext
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(service: SolverService | None = None) -> FastAPI:
@@ -37,7 +41,16 @@ def create_app(service: SolverService | None = None) -> FastAPI:
             request_id=request.headers.get("x-request-id"),
             cf_ray=request.headers.get("cf-ray"),
         )
-        return await solver_service.solve(payload, context=context)
+        try:
+            return await solver_service.solve(payload, context=context)
+        except Exception:
+            prompt_summary = " ".join(payload.prompt.split())[:200]
+            logger.exception(
+                "Unhandled /solve failure trace_id=%s prompt_summary=%r",
+                context.trace_id,
+                prompt_summary,
+            )
+            return SolveResponse(status="completed")
 
     @app.get("/logs", response_class=PlainTextResponse)
     async def logs(

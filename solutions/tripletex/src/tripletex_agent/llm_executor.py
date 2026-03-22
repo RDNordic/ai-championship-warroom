@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import json
 import logging
 import re
+import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -386,6 +388,254 @@ def _find_unresolved_vars(
     return unresolved
 
 
+_VAR_TOKEN_SYNONYMS = {
+    "acc": "account",
+    "acct": "account",
+    "cust": "customer",
+    "dept": "department",
+    "emp": "employee",
+    "inv": "invoice",
+}
+
+_ENTITY_TOKENS = {"account", "customer", "department", "employee", "invoice", "supplier"}
+
+
+def _tokenize_var_name(name: str) -> list[str]:
+    """Normalize a variable name into comparable tokens."""
+    cleaned = name[1:] if name.startswith("$") else name
+    raw_tokens = re.findall(r"[a-z]+|\d+", cleaned.lower())
+    return [_VAR_TOKEN_SYNONYMS.get(token, token) for token in raw_tokens]
+
+
+def _parse_saved_structure(value: Any) -> Any:
+    """Parse a saved list/dict that may have been stringified."""
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    if not stripped or stripped[0] not in "[{":
+        return value
+
+    try:
+        return json.loads(stripped)
+    except Exception:
+        try:
+            return ast.literal_eval(stripped)
+        except Exception:
+            return value
+
+
+def _coerce_saved_objects(value: Any) -> list[dict[str, Any]]:
+    """Return a list of dict objects from a saved value or response payload."""
+    parsed = _parse_saved_structure(value)
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    if isinstance(parsed, dict):
+        values = parsed.get("values")
+        if isinstance(values, list):
+            return [item for item in values if isinstance(item, dict)]
+    return []
+
+
+def _extract_object_id(obj: dict[str, Any], entity: str) -> Any:
+    """Extract an entity id from a saved object using common field layouts."""
+    candidate_paths = [
+        f"{entity}.id",
+        f"{entity}Id",
+        f"order.{entity}.id",
+        f"order.{entity}Id",
+        f"orders.0.{entity}.id",
+        f"orders.0.{entity}Id",
+        f"value.{entity}.id",
+        f"value.{entity}Id",
+    ]
+    for path in candidate_paths:
+        value = _resolve_value(obj, path)
+        if value is not None:
+            return value
+    return None
+
+
+def _find_saved_object_by_id(saved_vars: dict[str, Any], object_id: Any) -> dict[str, Any] | None:
+    """Search saved vars for an object with the given id."""
+    for value in saved_vars.values():
+        parsed = _parse_saved_structure(value)
+        if isinstance(parsed, dict) and parsed.get("id") == object_id:
+            return parsed
+        for item in _coerce_saved_objects(parsed):
+            if item.get("id") == object_id:
+                return item
+    return None
+
+
+def _find_prefixed_saved_id(
+    saved_vars: dict[str, Any],
+    *,
+    prefix_tokens: list[str],
+    entity: str,
+) -> tuple[str, Any] | None:
+    """Find a saved entity id whose variable name matches the unresolved prefix."""
+    matches: list[tuple[str, Any]] = []
+    prefix_set = set(prefix_tokens)
+    for name, value in saved_vars.items():
+        tokens = _tokenize_var_name(name)
+        if entity not in tokens or "id" not in tokens:
+            continue
+        if prefix_set and not prefix_set.issubset(set(tokens)):
+            continue
+        matches.append((name, value))
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _select_invoice_candidate(var_name: str, invoices: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Select an invoice object from a cached list using number or ordinal hints."""
+    if not invoices:
+        return None
+
+    numbers = [int(token) for token in _tokenize_var_name(var_name) if token.isdigit()]
+    for number in numbers:
+        for invoice in invoices:
+            if invoice.get("invoiceNumber") == number or invoice.get("number") == number:
+                return invoice
+
+    for number in numbers:
+        ordinal = number % 1000 if number >= 1000 else number
+        if 1 <= ordinal <= len(invoices):
+            return invoices[ordinal - 1]
+
+    if len(invoices) == 1:
+        return invoices[0]
+    return None
+
+
+def _find_alias_source(
+    var_name: str,
+    saved_vars: dict[str, Any],
+) -> tuple[str, Any] | None:
+    """Find a safe alias source for an unresolved variable."""
+    target_tokens = _tokenize_var_name(var_name)
+    target_set = set(target_tokens)
+    exact_matches: list[tuple[str, Any]] = []
+    subset_matches: list[tuple[str, Any]] = []
+
+    for saved_name, saved_value in saved_vars.items():
+        saved_tokens = _tokenize_var_name(saved_name)
+        saved_set = set(saved_tokens)
+        if saved_tokens == target_tokens:
+            exact_matches.append((saved_name, saved_value))
+            continue
+        if target_set and target_set.issubset(saved_set):
+            subset_matches.append((saved_name, saved_value))
+
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    if len(subset_matches) == 1:
+        return subset_matches[0]
+    return None
+
+
+def _derive_unresolved_value(
+    var_name: str,
+    saved_vars: dict[str, Any],
+) -> tuple[Any, str] | None:
+    """Derive an unresolved variable from previously saved invoice context."""
+    tokens = _tokenize_var_name(var_name)
+    if not tokens or "id" not in tokens:
+        return None
+
+    if "customer" in tokens:
+        prefix_tokens = tokens[:tokens.index("customer")]
+        invoice_match = _find_prefixed_saved_id(
+            saved_vars, prefix_tokens=prefix_tokens, entity="invoice"
+        )
+        if invoice_match is None:
+            return None
+        invoice_name, invoice_id = invoice_match
+        invoice_obj = _find_saved_object_by_id(saved_vars, invoice_id)
+        if invoice_obj is None:
+            return None
+        customer_id = _extract_object_id(invoice_obj, "customer")
+        if customer_id is not None:
+            return customer_id, f"{invoice_name} -> customer.id"
+        return None
+
+    if "invoice" not in tokens:
+        return None
+
+    prefix_tokens = tokens[:tokens.index("invoice")]
+    supplier_invoices = _coerce_saved_objects(saved_vars.get("all_supplier_invoices"))
+    if supplier_invoices:
+        supplier_match = _find_prefixed_saved_id(
+            saved_vars, prefix_tokens=prefix_tokens, entity="supplier"
+        )
+        if supplier_match is not None:
+            supplier_name, supplier_id = supplier_match
+            filtered = [
+                invoice
+                for invoice in supplier_invoices
+                if _extract_object_id(invoice, "supplier") == supplier_id
+            ]
+            selected = _select_invoice_candidate(var_name, filtered)
+            if selected is not None and selected.get("id") is not None:
+                return selected["id"], f"all_supplier_invoices via {supplier_name}"
+
+    invoices = _coerce_saved_objects(saved_vars.get("all_invoices"))
+    selected = _select_invoice_candidate(var_name, invoices)
+    if selected is not None and selected.get("id") is not None:
+        return selected["id"], "all_invoices"
+    return None
+
+
+def _recover_unresolved_step_vars(
+    path: Any,
+    params: Any,
+    json_body: Any,
+    saved_vars: dict[str, Any],
+) -> tuple[Any, Any, Any, list[str], list[str]]:
+    """Recover unresolved step vars using saved aliases and cached invoice context."""
+    recovery_notes: list[str] = []
+
+    unresolved = _find_unresolved_vars(path, params, json_body)
+    for unresolved_var in unresolved:
+        var_name = unresolved_var[1:]
+        if var_name in saved_vars:
+            continue
+        alias_match = _find_alias_source(var_name, saved_vars)
+        if alias_match is None:
+            continue
+        source_name, source_value = alias_match
+        saved_vars[var_name] = source_value
+        recovery_notes.append(f"Recovered ${var_name} from alias ${source_name}")
+
+    path = _substitute_vars(path, saved_vars)
+    if params:
+        params = _substitute_vars(params, saved_vars)
+    if json_body:
+        json_body = _substitute_vars(json_body, saved_vars)
+
+    unresolved = _find_unresolved_vars(path, params, json_body)
+    for unresolved_var in unresolved:
+        var_name = unresolved_var[1:]
+        if var_name in saved_vars:
+            continue
+        derived = _derive_unresolved_value(var_name, saved_vars)
+        if derived is None:
+            continue
+        derived_value, source = derived
+        saved_vars[var_name] = derived_value
+        recovery_notes.append(f"Derived ${var_name} from {source}")
+
+    path = _substitute_vars(path, saved_vars)
+    if params:
+        params = _substitute_vars(params, saved_vars)
+    if json_body:
+        json_body = _substitute_vars(json_body, saved_vars)
+
+    return path, params, json_body, recovery_notes, _find_unresolved_vars(path, params, json_body)
+
+
 def _normalize_save_fields(save_fields: dict[str, str]) -> dict[str, str]:
     """Fix inverted save_response_fields_as mappings.
 
@@ -555,9 +805,221 @@ def _fix_voucher_vat_amounts(json_body: dict[str, Any], step_fixes: list[str]) -
         logger.info("VAT auto-correction applied to voucher postings")
 
 
+def _normalize_text(text: str) -> str:
+    """Lowercase and strip accents for keyword matching."""
+    normalized = unicodedata.normalize("NFKD", text)
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    return ascii_text.lower()
+
+
+def _find_saved_account_number(saved_vars: dict[str, Any], account_id: Any) -> int | None:
+    """Recover an account number from saved account-id variables."""
+    for name, value in saved_vars.items():
+        if value != account_id:
+            continue
+        match = re.fullmatch(r"account_(\d+)_id", name)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _prompt_mentions_account_number(prompt: str, account_number: int | None) -> bool:
+    """Return True when the user prompt explicitly specifies an account number."""
+    if account_number is None:
+        return False
+    normalized = _normalize_text(prompt)
+    patterns = (
+        rf"\b(account|konto|compte|cuenta|conta)\s+{account_number}\b",
+        rf"\b{account_number}\s*(account|konto|compte|cuenta|conta)\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in patterns)
+
+
+def _infer_supplier_invoice_account_query(*texts: str) -> str | None:
+    """Infer a semantic account-search query from supplier-invoice line text."""
+    combined = _normalize_text(" ".join(text for text in texts if text))
+    if not combined:
+        return None
+
+    keyword_groups = (
+        (("programvare", "software", "lisens", "license", "saas"), "programvare"),
+        (("it-konsulent", "it konsulent", "consult", "consulting", "konsulent"), "konsulent"),
+        (("nettverk", "network"), "data"),
+        (("kontor", "office", "bureau"), "kontor"),
+    )
+    for keywords, query in keyword_groups:
+        if any(keyword in combined for keyword in keywords):
+            return query
+    return None
+
+
+def _select_best_account_candidate(
+    accounts: list[dict[str, Any]],
+    *,
+    query: str,
+    description_text: str,
+) -> dict[str, Any] | None:
+    """Pick the most relevant account from a query search result."""
+    query_tokens = set(re.findall(r"[a-z]+", _normalize_text(query)))
+    description_tokens = set(re.findall(r"[a-z]+", _normalize_text(description_text)))
+    blocked_numbers = {6300, 6340}
+
+    best: tuple[int, dict[str, Any]] | None = None
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        account_id = account.get("id")
+        account_number = account.get("number")
+        if account_id is None or not isinstance(account_number, int):
+            continue
+        if account.get("type") != "OPERATING_EXPENSES":
+            continue
+        if account.get("isInactive"):
+            continue
+
+        text = " ".join(
+            str(account.get(key, ""))
+            for key in ("name", "displayName", "description")
+        )
+        account_tokens = set(re.findall(r"[a-z]+", _normalize_text(text)))
+        score = 0
+        score += 6 * len(query_tokens & account_tokens)
+        score += 2 * len(description_tokens & account_tokens)
+        if account_number in blocked_numbers:
+            score -= 10
+        if best is None or score > best[0]:
+            best = (score, account)
+
+    if best is not None and best[0] > 0:
+        return best[1]
+
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        account_number = account.get("number")
+        if (
+            isinstance(account.get("id"), int)
+            and isinstance(account_number, int)
+            and account.get("type") == "OPERATING_EXPENSES"
+            and not account.get("isInactive")
+            and account_number not in blocked_numbers
+        ):
+            return account
+    return None
+
+
+async def _maybe_fix_supplier_invoice_account(
+    *,
+    prompt: str,
+    json_body: dict[str, Any],
+    saved_vars: dict[str, Any],
+    tripletex_client: TripletexClient,
+    step_fixes: list[str],
+) -> None:
+    """Repair obviously wrong supplier-invoice expense accounts before posting."""
+    if "vendorInvoiceNumber" not in json_body:
+        return
+
+    postings = json_body.get("postings")
+    if not isinstance(postings, list):
+        return
+
+    expense_posting = None
+    for posting in postings:
+        if not isinstance(posting, dict):
+            continue
+        account = posting.get("account")
+        supplier = posting.get("supplier")
+        amount_gross = posting.get("amountGross")
+        if (
+            isinstance(account, dict)
+            and supplier
+            and posting.get("vatType")
+            and isinstance(amount_gross, (int, float))
+            and float(amount_gross) > 0
+        ):
+            expense_posting = posting
+            break
+
+    if expense_posting is None:
+        return
+
+    account = expense_posting.get("account")
+    if not isinstance(account, dict):
+        return
+    account_id = account.get("id")
+    if account_id is None:
+        return
+
+    account_number = _find_saved_account_number(saved_vars, account_id)
+    if account_number not in {6300, 6340}:
+        return
+    if _prompt_mentions_account_number(prompt, account_number):
+        return
+
+    description_text = " ".join(
+        str(value)
+        for value in (
+            expense_posting.get("description"),
+            json_body.get("description"),
+        )
+        if value
+    )
+    query = _infer_supplier_invoice_account_query(description_text)
+    if query is None:
+        return
+
+    payload = await tripletex_client.request(
+        "GET",
+        "/ledger/account",
+        params={"query": query, "count": 10},
+        expected_status=(200,),
+    )
+    candidates = payload.get("values", []) if isinstance(payload, dict) else []
+    replacement = _select_best_account_candidate(
+        candidates,
+        query=query,
+        description_text=description_text,
+    )
+    if replacement is None:
+        return
+
+    replacement_id = replacement.get("id")
+    replacement_number = replacement.get("number")
+    if replacement_id is None or replacement_id == account_id:
+        return
+
+    expense_posting["account"] = {"id": replacement_id}
+    if isinstance(replacement_number, int):
+        saved_vars[f"account_{replacement_number}_id"] = replacement_id
+        step_fixes.append(
+            f"Re-routed supplier invoice expense account {account_number} -> {replacement_number} based on '{query}'"
+        )
+    else:
+        step_fixes.append(
+            f"Re-routed supplier invoice expense account {account_number} using query '{query}'"
+        )
+
+
 def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
     """Parse the LLM response into a list of step dicts."""
     text = raw_text.strip()
+
+    def _validated_step_list(parsed: Any) -> list[dict[str, Any]]:
+        if not isinstance(parsed, list):
+            raise ValueError(f"Expected JSON array, got {type(parsed).__name__}")
+
+        non_dict_indexes = [
+            str(index) for index, step in enumerate(parsed)
+            if not isinstance(step, dict)
+        ]
+        if non_dict_indexes:
+            raise ValueError(
+                "Expected JSON array of step objects, found non-object items at indexes: "
+                + ", ".join(non_dict_indexes)
+            )
+        return parsed
+
     if text.startswith("```"):
         lines = text.split("\n")
         text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
@@ -566,10 +1028,11 @@ def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
     # Try direct parse first
     try:
         parsed = json.loads(text)
-        if isinstance(parsed, list):
-            return parsed
+        return _validated_step_list(parsed)
     except json.JSONDecodeError:
         pass
+    except ValueError:
+        raise
 
     # Find the first complete JSON array using bracket matching
     start = text.find("[")
@@ -597,8 +1060,7 @@ def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
                 if depth == 0:
                     try:
                         parsed = json.loads(text[start:i + 1])
-                        if isinstance(parsed, list):
-                            return parsed
+                        return _validated_step_list(parsed)
                     except json.JSONDecodeError:
                         break
 
@@ -607,12 +1069,19 @@ def _parse_steps(raw_text: str) -> list[dict[str, Any]]:
     if match:
         try:
             parsed = json.loads(match.group())
-            if isinstance(parsed, list):
-                return parsed
+            return _validated_step_list(parsed)
         except json.JSONDecodeError:
             pass
 
     raise ValueError(f"Could not parse LLM response as JSON array: {text[:200]}")
+
+
+def _step_id_as_int(step_id: Any) -> int | None:
+    """Best-effort numeric step_id parsing without raising."""
+    try:
+        return int(str(step_id).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 class LLMApiExecutor:
@@ -665,10 +1134,23 @@ class LLMApiExecutor:
 
         # Validate route-level
         validation = self._validator.validate_plan(steps)
+        validation_messages = validation.errors + [
+            warning
+            for step_result in validation.step_results
+            for warning in step_result.warnings
+        ]
         if not validation.valid:
             logger.warning(
-                "LLM plan validation failed: %s — executing anyway",
-                validation.errors,
+                "LLM plan validation failed: %s",
+                validation_messages,
+            )
+            return WorkflowResult(
+                name="unified_executor",
+                completed=False,
+                details={
+                    "error": "Invalid API plan",
+                    "validation_messages": validation_messages,
+                },
             )
 
         # Execute steps
@@ -680,11 +1162,12 @@ class LLMApiExecutor:
             "steps_executed": 0,
             "tool_model": self._tool_model,
             "executor_model": self._executor_model,
-            "validation_errors": validation.errors,
+            "validation_messages": validation_messages,
         }
 
-        result = await self._execute_steps(
+        execution_failure = await self._execute_steps(
             steps=steps,
+            prompt=prompt,
             tripletex_client=tripletex_client,
             saved_vars=saved_vars,
             executed_operations=executed_operations,
@@ -693,8 +1176,9 @@ class LLMApiExecutor:
         )
 
         # Self-correction on failure (max 1 retry)
-        if result is not None and not all_details.get("retried"):
-            failed_step_id = result["step_id"]
+        if execution_failure is not None and not all_details.get("retried"):
+            failed_step_id = execution_failure["step_id"]
+            failed_step_id_int = _step_id_as_int(failed_step_id)
             logger.info(
                 "Step %s failed — requesting LLM self-correction",
                 failed_step_id,
@@ -707,15 +1191,21 @@ class LLMApiExecutor:
                 completed_steps=executed_operations,
                 saved_vars=saved_vars,
                 failed_step_id=failed_step_id,
-                failed_method=result["method"],
-                failed_path=result["path"],
-                error_detail=result["error"],
-                auto_fixes=result["auto_fixes"],
-                fields_removed=result["fields_removed"],
+                failed_method=execution_failure["method"],
+                failed_path=execution_failure["path"],
+                error_detail=execution_failure["error"],
+                auto_fixes=execution_failure["auto_fixes"],
+                fields_removed=execution_failure["fields_removed"],
                 remaining_steps=[
                     s for s in steps
-                    if int(s.get("step_id", "0")) > int(failed_step_id)
-                    or s.get("step_id") == failed_step_id
+                    if (
+                        s.get("step_id") == failed_step_id
+                        or (
+                            failed_step_id_int is not None
+                            and _step_id_as_int(s.get("step_id")) is not None
+                            and _step_id_as_int(s.get("step_id")) > failed_step_id_int
+                        )
+                    )
                 ],
             )
 
@@ -725,8 +1215,9 @@ class LLMApiExecutor:
                     len(correction_steps),
                 )
                 all_details["correction_steps"] = len(correction_steps)
-                await self._execute_steps(
+                execution_failure = await self._execute_steps(
                     steps=correction_steps,
+                    prompt=prompt,
                     tripletex_client=tripletex_client,
                     saved_vars=saved_vars,
                     executed_operations=executed_operations,
@@ -735,8 +1226,11 @@ class LLMApiExecutor:
                 )
 
         all_details["saved_vars"] = {k: str(v) for k, v in saved_vars.items()}
+        if execution_failure is not None:
+            all_details["error"] = execution_failure["error"]
+            all_details["failed_step_id"] = execution_failure["step_id"]
 
-        completed = all_details.get("steps_executed", 0) > 0
+        completed = execution_failure is None
         return WorkflowResult(
             name="unified_executor",
             completed=completed,
@@ -869,6 +1363,7 @@ class LLMApiExecutor:
         self,
         *,
         steps: list[dict[str, Any]],
+        prompt: str,
         tripletex_client: TripletexClient,
         saved_vars: dict[str, Any],
         executed_operations: list[str],
@@ -909,6 +1404,9 @@ class LLMApiExecutor:
                 params = _substitute_vars(params, saved_vars)
             if json_body:
                 json_body = _substitute_vars(json_body, saved_vars)
+            path, params, json_body, recovery_notes, unresolved = _recover_unresolved_step_vars(
+                path, params, json_body, saved_vars
+            )
 
             # Strip empty dicts — LLM sometimes generates {} instead of null
             if isinstance(params, dict) and not params:
@@ -947,9 +1445,11 @@ class LLMApiExecutor:
             # Validate and clean json_body against swagger schema
             step_fixes: list[str] = []
             step_removed: list[str] = []
+            if recovery_notes:
+                step_fixes.extend(recovery_notes)
+                logger.info("Recovered step %s vars: %s", step_id, recovery_notes)
 
             # Check for unresolved $variable references — don't send if found
-            unresolved = _find_unresolved_vars(path, params, json_body)
             if unresolved:
                 error_msg = f"Unresolved variables: {unresolved}. Saved vars: {list(saved_vars.keys())}"
                 logger.error("Step %s has unresolved vars — skipping: %s", step_id, error_msg)
@@ -969,6 +1469,13 @@ class LLMApiExecutor:
                     _fix_invoice_orders(json_body, step_fixes)
                 # Auto-fix voucher: inject date if missing + propagate employee refs
                 if method == "POST" and "/voucher" in path:
+                    await _maybe_fix_supplier_invoice_account(
+                        prompt=prompt,
+                        json_body=json_body,
+                        saved_vars=saved_vars,
+                        tripletex_client=tripletex_client,
+                        step_fixes=step_fixes,
+                    )
                     _fix_voucher_vat_amounts(json_body, step_fixes)
                     from datetime import date as _date
                     if "date" not in json_body:
@@ -1227,7 +1734,16 @@ class LLMApiExecutor:
         remaining_steps: list[dict[str, Any]],
     ) -> list[dict[str, Any]] | None:
         """Ask the LLM to fix the failed step with schema context."""
-        template = (_PROMPTS_DIR / "retry_correction.md").read_text(encoding="utf-8")
+        retry_prompt_path = _PROMPTS_DIR / "retry_correction.md"
+        try:
+            template = retry_prompt_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning(
+                "Skipping LLM correction because retry prompt could not be loaded from %s: %s",
+                retry_prompt_path,
+                exc,
+            )
+            return None
 
         endpoint_schema = self._schema_validator.describe_endpoint_fields(
             failed_method, failed_path
