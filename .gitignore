@@ -6,6 +6,7 @@
 
 # Local IDE/tool settings
 .claude/settings.local.json
+.vscode/
 
 # Screenshots / non-essential assets
 ops/google-cloud-application.png
