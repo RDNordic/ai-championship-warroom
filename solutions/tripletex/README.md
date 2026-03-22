@@ -182,7 +182,9 @@ Prompt (multilingual)
 ```
 
 **LLM:** Claude API (handles all 7 languages natively)
-**Hosting:** FastAPI + cloudflared tunnel or GCP endpoint
+**Hosting:** FastAPI on GCP Cloud Run
+**Live endpoint:** `https://captains-tripletex-339414168231.europe-north1.run.app/solve`
+**Registered at:** `https://app.ainm.no/submit/tripletex`
 
 ---
 
